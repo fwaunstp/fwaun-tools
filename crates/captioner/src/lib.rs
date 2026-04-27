@@ -150,31 +150,55 @@ impl Captioner {
         drop(encoder_outputs);
 
         // 5. Greedy decoder loop (no KV cache).
+        //
+        // This export's decoder takes `inputs_embeds` (not `input_ids`), so each
+        // step we re-embed the full decoder sequence via `embed_tokens` and
+        // feed the resulting embeddings to the decoder. The decoder also emits
+        // `present.*.{key,value}` KV-cache tensors that we discard — wiring
+        // those into a separate `decoder_with_past_model.onnx` would speed up
+        // generation from O(n²) to O(n), but is left for a follow-up.
         let mut decoder_ids: Vec<i64> = vec![DECODER_START_TOKEN_ID];
         let mut generated: Vec<u32> = Vec::new();
 
         for _ in 0..self.max_new_tokens {
             let cur_len = decoder_ids.len();
+
+            // Embed the current decoder sequence.
+            let dec_ids_tensor =
+                Tensor::from_array(([1_i64, cur_len as i64], decoder_ids.clone()))?;
+            let dec_embed_outputs = self
+                .embed
+                .run(ort::inputs![dec_ids_tensor])
+                .map_err(|e| CaptionerError::Ort(format!("embed_tokens (decode step): {e}")))?;
+            let dec_embeds_data = {
+                let (shape, data) = dec_embed_outputs[0].try_extract_tensor::<f32>()?;
+                check_rank(shape, 3, "embed_tokens (decode step) output")?;
+                data.to_vec()
+            };
+            drop(dec_embed_outputs);
+
             let enc_state_tensor = Tensor::from_array((
                 [1_i64, enc_seq as i64, enc_dim as i64],
                 enc_data.clone(),
             ))?;
             let enc_mask_tensor =
                 Tensor::from_array(([1_i64, enc_seq as i64], attention_mask.clone()))?;
-            let dec_ids_tensor =
-                Tensor::from_array(([1_i64, cur_len as i64], decoder_ids.clone()))?;
+            let dec_embeds_tensor = Tensor::from_array((
+                [1_i64, cur_len as i64, enc_dim as i64],
+                dec_embeds_data,
+            ))?;
 
             let dec_outputs = self
                 .decoder
                 .run(ort::inputs! {
-                    "encoder_hidden_states" => enc_state_tensor,
                     "encoder_attention_mask" => enc_mask_tensor,
-                    "input_ids" => dec_ids_tensor,
+                    "encoder_hidden_states" => enc_state_tensor,
+                    "inputs_embeds" => dec_embeds_tensor,
                 })
                 .map_err(|e| CaptionerError::Ort(format!("decoder_model: {e}")))?;
             let next_id = {
                 let (shape, data) = dec_outputs[0].try_extract_tensor::<f32>()?;
-                check_rank(shape, 3, "decoder_model output")?;
+                check_rank(shape, 3, "decoder_model logits output")?;
                 let vocab = shape[2] as usize;
                 let last_offset = (cur_len - 1) * vocab;
                 argmax_i64(&data[last_offset..last_offset + vocab])

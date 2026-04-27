@@ -23,6 +23,12 @@ use tokenizers::Tokenizer;
 /// BART-family decoder convention used by Florence-2.
 const DECODER_START_TOKEN_ID: i64 = 2;
 const EOS_TOKEN_ID: i64 = 2;
+/// BART's `forced_bos_token_id` — generation forces the first generated token
+/// to be `<s>` (id 0) regardless of logits. Without this, greedy decoding
+/// often collapses to echoing the prompt back.
+const FORCED_BOS_TOKEN_ID: i64 = 0;
+/// Cap on how many decode-step diagnostics we print per image.
+const LOG_FIRST_N_STEPS: usize = 20;
 
 #[derive(Debug, Error)]
 pub enum CaptionerError {
@@ -72,6 +78,18 @@ impl Captioner {
             .encode(profile.prompt.as_str(), true)
             .map_err(|e| CaptionerError::Tokenizer(e.to_string()))?;
         let prompt_token_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let prompt_surfaces: Vec<&str> = encoding.get_tokens().iter().map(|s| s.as_str()).collect();
+        eprintln!(
+            "[captioner:prompt] {:?} -> ids={:?} surfaces={:?}",
+            profile.prompt, prompt_token_ids, prompt_surfaces
+        );
+        if prompt_token_ids.len() > 5 {
+            eprintln!(
+                "[captioner:prompt] WARNING: prompt encoded into {} tokens — task token may not be \
+                 recognized as a single special token. Caption will likely degenerate.",
+                prompt_token_ids.len()
+            );
+        }
 
         Ok(Self {
             vision,
@@ -157,10 +175,14 @@ impl Captioner {
         // `present.*.{key,value}` KV-cache tensors that we discard — wiring
         // those into a separate `decoder_with_past_model.onnx` would speed up
         // generation from O(n²) to O(n), but is left for a follow-up.
+        //
+        // Step 0 is forced to BART's `<s>` regardless of the decoder's argmax
+        // (matches HF `forced_bos_token_id=0`). Without this, greedy decoding
+        // often collapses to echoing the prompt token back as the caption.
         let mut decoder_ids: Vec<i64> = vec![DECODER_START_TOKEN_ID];
         let mut generated: Vec<u32> = Vec::new();
 
-        for _ in 0..self.max_new_tokens {
+        for step in 0..self.max_new_tokens {
             let cur_len = decoder_ids.len();
 
             // Embed the current decoder sequence.
@@ -196,7 +218,7 @@ impl Captioner {
                     "inputs_embeds" => dec_embeds_tensor,
                 })
                 .map_err(|e| CaptionerError::Ort(format!("decoder_model: {e}")))?;
-            let next_id = {
+            let argmax_id = {
                 let (shape, data) = dec_outputs[0].try_extract_tensor::<f32>()?;
                 check_rank(shape, 3, "decoder_model logits output")?;
                 let vocab = shape[2] as usize;
@@ -205,6 +227,22 @@ impl Captioner {
             };
             drop(dec_outputs);
 
+            let next_id = if step == 0 {
+                FORCED_BOS_TOKEN_ID
+            } else {
+                argmax_id
+            };
+
+            if step < LOG_FIRST_N_STEPS {
+                let surface = self
+                    .tokenizer
+                    .id_to_token(next_id as u32)
+                    .unwrap_or_default();
+                eprintln!(
+                    "[captioner:step {step}] argmax={argmax_id} chosen={next_id} surface={surface:?}"
+                );
+            }
+
             if next_id == EOS_TOKEN_ID {
                 break;
             }
@@ -212,11 +250,14 @@ impl Captioner {
             decoder_ids.push(next_id);
         }
 
+        eprintln!("[captioner:done] generated {} tokens", generated.len());
+
         // 6. Detokenize, strip special tokens.
         let caption = self
             .tokenizer
             .decode(&generated, true)
             .map_err(|e| CaptionerError::Tokenizer(e.to_string()))?;
+        eprintln!("[captioner:decoded] {caption:?}");
         Ok(caption.trim().to_string())
     }
 }
@@ -259,8 +300,10 @@ fn argmax_i64(slice: &[f32]) -> i64 {
 /// Florence-2 preprocessing: resize to size×size (bilinear), RGB,
 /// per-channel ImageNet normalization, layout NCHW.
 fn preprocess_florence2(img: &DynamicImage, size: u32) -> Vec<f32> {
+    // CatmullRom is closer to PIL's BICUBIC (which HF Florence-2 uses) than
+    // Triangle (bilinear). Subtle but matters for vision feature fidelity.
     let resized = img
-        .resize_exact(size, size, FilterType::Triangle)
+        .resize_exact(size, size, FilterType::CatmullRom)
         .to_rgb8();
     let s = size as usize;
     let mean = [0.485_f32, 0.456, 0.406];

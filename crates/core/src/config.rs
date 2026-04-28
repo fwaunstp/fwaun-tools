@@ -13,8 +13,13 @@ pub const BUILT_IN_TAGGER_NAME: &str = "wd-eva02-large-v3";
 pub const BUILT_IN_TAGGER_REPO: &str = "SmilingWolf/wd-eva02-large-tagger-v3";
 
 /// Built-in captioner profile name + repo, used when nothing is configured.
-pub const BUILT_IN_CAPTIONER_NAME: &str = "florence2-base";
-pub const BUILT_IN_CAPTIONER_REPO: &str = "onnx-community/Florence-2-base-ft";
+pub const BUILT_IN_CAPTIONER_NAME: &str = "qwen3-vl-4b";
+pub const BUILT_IN_CAPTIONER_REPO: &str = "onnx-community/Qwen3-4B-VL-ONNX";
+/// onnx-community packs multiple variants (2B/4B/8B, different precision
+/// combos) into the same repo under variant-named subdirectories. The default
+/// is the 4B vision-fp32 / text-int4 build, the only prebuilt 4B variant
+/// published.
+pub const BUILT_IN_CAPTIONER_SUBDIR: &str = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -55,27 +60,43 @@ fn default_storage_threshold() -> f32 {
     0.10
 }
 
-/// HuggingFace-hosted Florence-2 captioner profile.
+/// HuggingFace-hosted Qwen3-VL-family captioner profile. The image pipeline
+/// is dynamic-resolution (32-pixel patch grid, smart-resized at runtime), so
+/// instead of a fixed `input_size` we cap the area via `max_pixels`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CaptionerProfile {
-    /// HuggingFace repo id, e.g. `"onnx-community/Florence-2-base-ft"`.
+    /// HuggingFace repo id, e.g. `"onnx-community/Qwen3-4B-VL-ONNX"`.
     pub repo: String,
     #[serde(default)]
     pub revision: Option<String>,
+    /// Subdirectory inside the repo holding the ONNX files
+    /// (`qwen3vl-vision.onnx`, `qwen3vl-embedding.onnx`, `model.onnx` +
+    /// `model.onnx.data`, `tokenizer.json`). onnx-community ships multiple
+    /// variants per repo under separate subdirs; for forks that put files at
+    /// the repo root, leave this empty / `""`.
+    #[serde(default)]
+    pub subdir: Option<String>,
+    /// Free-text instruction sent to the model after the image. Used as the
+    /// user turn in the chat template.
     #[serde(default = "default_caption_prompt")]
     pub prompt: String,
-    #[serde(default = "default_caption_input_size")]
-    pub input_size: u32,
+    /// Upper bound on (resized_h * resized_w) during smart_resize. Larger
+    /// values give richer captions but quadratically more vision tokens.
+    #[serde(default = "default_max_pixels")]
+    pub max_pixels: u32,
     #[serde(default = "default_max_new_tokens")]
     pub max_new_tokens: usize,
 }
 
 fn default_caption_prompt() -> String {
-    "<MORE_DETAILED_CAPTION>".to_string()
+    "Describe this image in detail.".to_string()
 }
 
-fn default_caption_input_size() -> u32 {
-    768
+fn default_max_pixels() -> u32 {
+    // 768*768. Smart-resize will round down to the nearest 28-multiple and
+    // produce ~196 vision tokens for a square image — a workable balance
+    // between detail and decode time on CPU.
+    589_824
 }
 
 fn default_max_new_tokens() -> usize {
@@ -154,8 +175,9 @@ impl CaptionerProfile {
         Self {
             repo: BUILT_IN_CAPTIONER_REPO.to_string(),
             revision: None,
+            subdir: Some(BUILT_IN_CAPTIONER_SUBDIR.to_string()),
             prompt: default_caption_prompt(),
-            input_size: default_caption_input_size(),
+            max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         }
     }

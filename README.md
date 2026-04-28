@@ -121,9 +121,9 @@ scene context). On export the merged caption is `"{manual} {auto}"`.
 
 Lives in the dataset directory. **Entirely optional** — with no config file at
 all, the CLI/GUI fall back to built-in tagger and captioner profiles
-(`SmilingWolf/wd-eva02-large-tagger-v3` and `onnx-community/Florence-2-base-ft`),
-auto-downloaded into the shared HuggingFace cache (`~/.cache/huggingface/hub`)
-on first run.
+(`SmilingWolf/wd-eva02-large-tagger-v3` and `onnx-community/Qwen3-4B-VL-ONNX`,
+4B vision-fp32 / text-int4 variant), auto-downloaded into the shared
+HuggingFace cache (`~/.cache/huggingface/hub`) on first run.
 
 ```toml
 default_profile   = "anima"
@@ -148,13 +148,14 @@ repo = "SmilingWolf/wd-eva02-large-tagger-v3"
 input_size = 448
 storage_threshold = 0.10           # filter tags below this when *storing*
 
-# Captioner profile — HuggingFace repo with the Florence-2 ONNX layout
-# (`onnx/{vision_encoder,embed_tokens,encoder_model,decoder_model}.onnx`
-# plus `tokenizer.json` at the root).
-[captioner.florence2-base]
-repo = "onnx-community/Florence-2-base-ft"
-prompt = "<MORE_DETAILED_CAPTION>"
-input_size = 768
+# Captioner profile — HuggingFace repo with the Qwen3-VL ONNX layout
+# (`<subdir>/{qwen3vl-vision,qwen3vl-embedding,model}.onnx` +
+# `model.onnx.data` + `tokenizer.json`).
+[captioner.qwen3-vl-4b]
+repo = "onnx-community/Qwen3-4B-VL-ONNX"
+subdir = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu"
+prompt = "Describe this image in detail."
+max_pixels = 589824                # smart_resize area cap (≈768x768)
 max_new_tokens = 1024
 ```
 
@@ -227,59 +228,65 @@ rows, filtered by threshold, sorted by score descending.
 The tagger uses ort's **positional** `inputs![tensor]` because WD14 models
 have only one input and naming varies between exports.
 
-### crates/captioner (Florence-2)
+### crates/captioner (Qwen3-VL)
 
-Four ONNX submodels in series:
+Three ONNX sessions in series, with a merged decoder:
 
 ```
-pixel_values ──► vision_encoder.onnx ────► image_features [1, V, D]
-input_ids   ──► embed_tokens.onnx   ────► text_embeds   [1, T, D]
-                          │
-                          ▼ concat along seq axis
-encoder_input  ──► encoder_model.onnx  ────► encoder_hidden_states
-                          │
-                          ▼ greedy decode loop (no KV cache yet)
-                  decoder_model.onnx
+pixel_values + image_grid_thw ──► qwen3vl-vision.onnx     ──► vision_hidden_states [Nv, 2560]
+input_ids + vision_hidden_states ──► qwen3vl-embedding.onnx ──► inputs_embeds [1, S, 2560]
+                                                  │
+                                                  ▼ greedy decode loop with KV cache
+                                          model.onnx (merged prefill / decode)
 ```
 
-Several non-obvious things had to be figured out empirically. They're worth
-remembering because re-discovering them is painful:
+Default repo: `onnx-community/Qwen3-4B-VL-ONNX`, subdir
+`qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu`. Picked because it ships
+a 3-session ONNX layout that matches the existing pattern, has a healthy
+abliterated / NSFW-tolerant finetune ecosystem (huihui-ai, prithivMLmods), and
+the INT4 decoder keeps the total download in the ~5 GB range.
 
-1. **Florence-2's user-facing task names are NOT tokens.** `<CAPTION>`,
-   `<MORE_DETAILED_CAPTION>` and friends are sugar that HF's
-   `Florence2Processor` expands to natural-language questions
-   ("Describe with a paragraph what is shown in the image.") *before*
-   tokenization. The model is trained on the expanded text. We mirror the
-   table in `expand_task_prompt`. The added_tokens.json contains only
-   `<loc_*>` coordinate tokens and structural tokens (`<od>`, `<seg>`,
-   `<cap>`, `<dcap>`, etc.), not task tokens.
+Things to remember on a re-read or before swapping models:
 
-2. **The decoder takes `inputs_embeds`, not `input_ids`.** This particular
-   ONNX export expects pre-embedded decoder tokens, and emits a full set
-   of `present.*.{decoder,encoder}.{key,value}` KV cache tensors that we
-   currently discard. Each decode step we re-embed the running token
-   sequence through `embed_tokens.onnx` — O(n²) in caption length but
-   correct. Wiring `decoder_with_past_model.onnx` into the loop would
-   restore O(n) (see TODO).
+1. **Embedding session is fused.** `qwen3vl-embedding.onnx` does
+   `embed_tokens(input_ids)` *and* in-graph `masked_scatter` of
+   `vision_hidden_states` into the rows where `input_ids == <|image_pad|>`
+   (151655). The caller only needs to expand the single `<|image_pad|>` token
+   from the chat template to `n_vision_tokens = (grid_h*grid_w)/4` copies and
+   pass both tensors in.
 
-3. **Force `<s>` (id 0) at decode step 0.** BART-style models have
-   `forced_bos_token_id=0` in their generation config. Without forcing,
-   greedy decoding regularly collapses into degenerate output (e.g.
-   echoing the prompt characters back as the "caption"). We override the
-   step-0 argmax unconditionally.
+2. **Patch geometry: 16/2/2.** `patch_size=16`, `merge_size=2`,
+   `temporal_patch_size=2`, so smart_resize aligns to `factor=32`. Each
+   pixel_values row is `3 * 2 * 16 * 16 = 1536`. Vision output hidden dim is
+   2560 — same as the LLM hidden_size, no projection needed.
 
-4. **ImageNet normalization, RGB, NCHW, 768×768, CatmullRom resize.** PIL
-   bicubic is what HF uses; `image::imageops::FilterType::CatmullRom` is
-   the closest equivalent. `Triangle` (bilinear) is subtly different and
-   may degrade quality.
+3. **Plain (0.5, 0.5, 0.5) mean/std**, not CLIP / not ImageNet. Easy to miss.
 
-5. **Decoder start = EOS = id 2.** BART convention: decoder starts at
-   `</s>` (id 2), and stops when `</s>` (also id 2) is generated again.
-   Step 0 is forced past this with `<s>` (id 0).
+4. **Decoder is INT4-quantized.** External weights live in `model.onnx.data`
+   (~2.4 GB). ort needs to resolve the external-data path relative to
+   `model.onnx`, so the decoder is loaded via `commit_from_file` (requires
+   the `std` feature on `ort` — disabled by `default-features = false`, so
+   we add it back explicitly in the workspace toml).
+
+5. **3D MROPE position_ids.** `[3, 1, S]`: row 0 = temporal index, row 1 =
+   h-index, row 2 = w-index. For text tokens all three rows hold the running
+   text position. For image tokens at position k, rows hold `(t_idx, h_idx,
+   w_idx)` within the merged-patch grid offset by where the image span
+   starts. Text after the image resumes at `max(image positions) + 1`. See
+   `Qwen2VLForConditionalGeneration.get_rope_index` in HF transformers for
+   the canonical derivation; the algorithm is unchanged from Qwen2-VL.
+
+6. **GQA-shaped KV cache.** 36 layers × 2 (key, value), shape
+   `[1, 8, past_seq, 128]` (8 KV heads vs 32 attention heads). Empty initial
+   tensors (`past_seq = 0`) are how we tell the merged decoder it's a
+   prefill call.
+
+7. **Chat template has no system message** by default (different from
+   Qwen2-VL). One user turn, one assistant turn.
 
 The build_session helper logs each session's actual input/output names on
-load — keep this if you ever swap to a different Florence-2 export, since
-the input names vary.
+load — keep this if you ever swap to a different Qwen3-VL export, since the
+input names occasionally drift between builders.
 
 ### crates/booru
 
@@ -349,16 +356,23 @@ non-shuffled metadata file diffs cleanly across runs.
 
 ## Known limitations / TODO
 
-- **Captioner is O(n²)**. The `decoder_with_past_model.onnx` from the same
-  HF repo, plus the `present.*.key/value` tensors we currently discard,
-  would let us run the decoder incrementally. Big payoff for caption
-  quality (could afford beam search) and throughput.
+- **Captioner is INT4-only.** Only the int4 4B variant is published as a
+  prebuilt ONNX. fp16 / fp32 require running the upstream `builder.py` to
+  re-export. Quality is good enough for caption-style outputs but worse than
+  fp16 would be, especially on non-photographic / illustrative inputs.
+- **No caption-side beam search.** Greedy decoding only. With the merged
+  decoder's KV cache already wired in, beam-3 would be cheap to add.
 - **GUI freezes during long ops**. Tagger / captioner / booru runs block
   the dioxus event loop. Move to `spawn_blocking` + a progress signal so
   the user can see progress and cancel.
 - **Single image at a time** for tagger and captioner. Batching would
-  reduce per-image overhead, especially for the encoder/embed sessions
-  in the captioner pipeline.
+  reduce per-image overhead, especially for the vision and embedding
+  sessions.
+- **No NSFW-finetune helper.** Switching to e.g.
+  `prithivMLmods/Qwen3-VL-8B-Abliterated-Caption-it` requires manually
+  re-exporting that model to the same 3-session ONNX layout (the upstream
+  repo only ships safetensors). Once that's done it's a `repo = "..."` line
+  swap, but the export step itself isn't automated here.
 - **Bulk caption editing**. Currently single-image only — by design for
   per-character names, but a "append this fragment to all selected" might
   be useful.
@@ -394,13 +408,16 @@ on a small sample and inspecting the resulting `.ron` sidecars.
 
 When picking the captioner back up:
 
-- Florence-2 paper and HF model card (microsoft/Florence-2-base-ft and
-  the onnx-community mirror).
-- HF transformers' `Florence2Processor` source — particularly
-  `_construct_prompts` and `task_prompts_without_inputs`. The
-  expand_task_prompt table here mirrors that dict.
-- HF transformers' BART decoder, especially `forced_bos_token_id` handling
-  in `LogitsProcessor`.
+- Qwen3-VL model card and the `onnx-community/Qwen3-4B-VL-ONNX` repo —
+  particularly `builder.py` (defines the exact ONNX I/O signatures) and
+  `qwen3vl-oga-inference.py` (end-to-end reference using onnxruntime-genai;
+  note its preprocessor skips the smart_resize step that the upstream HF
+  processor does, so we still need to do that ourselves).
+- HF transformers' `Qwen2VLForConditionalGeneration.get_rope_index` for the
+  canonical 3D MROPE position_ids algorithm — unchanged for Qwen3-VL even
+  though the internal `mrope_section` splits differ.
+- HF transformers' `Qwen2VLImageProcessorFast.smart_resize` for the resize
+  algorithm (Qwen3-VL inherits it; only `factor` changes from 28 to 32).
 
 When picking the tagger back up:
 

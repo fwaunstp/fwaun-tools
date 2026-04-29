@@ -65,16 +65,19 @@ fn App() -> Element {
     let images = use_signal(Vec::<ImageItem>::new);
     let selected = use_signal(HashSet::<PathBuf>::new);
     let filter = use_signal(|| Filter::All);
+    let tag_filter = use_signal(String::new);
     let loading = use_signal(|| false);
     let tag_input = use_signal(String::new);
     let error_msg = use_signal(|| None::<String>);
     let tagger_state: Signal<Option<Tagger>> = use_signal(|| None);
     let captioner_state: Signal<Option<Captioner>> = use_signal(|| None);
 
+    let tag_query = tag_filter.read().trim().to_lowercase();
     let visible: Vec<ImageItem> = images
         .read()
         .iter()
         .filter(|i| filter.read().matches(i))
+        .filter(|i| tag_query.is_empty() || matches_tag_query(i, &tag_query))
         .cloned()
         .collect();
 
@@ -82,8 +85,8 @@ fn App() -> Element {
         style { {APP_CSS} }
         div { class: "app",
             Toolbar {
-                folder, images, selected, filter, loading, error_msg,
-                tagger_state, captioner_state,
+                folder, images, selected, filter, tag_filter, loading,
+                error_msg, tagger_state, captioner_state,
             }
             ErrorBanner { error_msg }
             div { class: "workspace",
@@ -92,6 +95,33 @@ fn App() -> Element {
             }
         }
     }
+}
+
+/// Substring match (case-insensitive) against any of an image's manual /
+/// auto / booru tag stems. Used by the toolbar tag-filter so users can
+/// narrow to e.g. all images with `1girl` and bulk-edit them — say,
+/// suppress `-1girl` and add a manual replacement like `woman`.
+fn matches_tag_query(item: &ImageItem, needle_lower: &str) -> bool {
+    if item
+        .sidecar
+        .manual_tags
+        .iter()
+        .any(|t| t.to_lowercase().contains(needle_lower))
+    {
+        return true;
+    }
+    if item
+        .sidecar
+        .auto_tags
+        .iter()
+        .any(|at| at.tag.to_lowercase().contains(needle_lower))
+    {
+        return true;
+    }
+    item.sidecar
+        .booru_tags
+        .iter()
+        .any(|bt| bt.tag.to_lowercase().contains(needle_lower))
 }
 
 #[component]
@@ -118,6 +148,7 @@ fn Toolbar(
     mut images: Signal<Vec<ImageItem>>,
     mut selected: Signal<HashSet<PathBuf>>,
     mut filter: Signal<Filter>,
+    mut tag_filter: Signal<String>,
     mut loading: Signal<bool>,
     error_msg: Signal<Option<String>>,
     tagger_state: Signal<Option<Tagger>>,
@@ -145,9 +176,11 @@ fn Toolbar(
     let select_all_visible = move |_| {
         let imgs = images.read();
         let cur_filter = *filter.read();
+        let tag_query = tag_filter.read().trim().to_lowercase();
         let new_sel: HashSet<PathBuf> = imgs
             .iter()
             .filter(|i| cur_filter.matches(i))
+            .filter(|i| tag_query.is_empty() || matches_tag_query(i, &tag_query))
             .map(|i| i.path.clone())
             .collect();
         selected.set(new_sel);
@@ -191,6 +224,12 @@ fn Toolbar(
                 option { value: "No manual tags", "No manual tags" }
                 option { value: "No caption", "No caption" }
                 option { value: "No booru", "No booru" }
+            }
+            input {
+                class: "tag-filter",
+                placeholder: "filter by tag…",
+                value: "{tag_filter}",
+                oninput: move |evt| tag_filter.set(evt.value()),
             }
             button {
                 class: "secondary",
@@ -913,10 +952,12 @@ body {
 .toolbar button:disabled { background: #333; color: #666; cursor: not-allowed; }
 .toolbar button.secondary { background: #3a3a3a; color: #e6e6e6; }
 .toolbar button.secondary:hover:not(:disabled) { background: #4a4a4a; }
-.toolbar select, .input-row input {
+.toolbar select, .input-row input, .toolbar input.tag-filter {
     background: #2a2a2a; border: 1px solid #444; color: #e6e6e6;
     padding: 4px 8px; border-radius: 4px; font-size: 12px;
 }
+.toolbar input.tag-filter { width: 160px; }
+.toolbar input.tag-filter:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
 .error-banner {
     background: #5a1f1f; color: #ffd0d0;
     padding: 6px 12px; border-bottom: 1px solid #732;
@@ -942,7 +983,7 @@ body {
     overflow: hidden; cursor: pointer;
     background: #2a2a2a; position: relative; user-select: none;
 }
-.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
 .thumb.selected { border-color: #4a9eff; }
 .thumb-status {
     position: absolute; top: 4px; right: 4px;

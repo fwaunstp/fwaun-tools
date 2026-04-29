@@ -1,11 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const CONFIG_FILE: &str = "anima-tagger.toml";
+/// Per-user config file relative to `$XDG_CONFIG_HOME` (defaulting to
+/// `~/.config`). Provides shared defaults for `[captioner.*]` /
+/// `[tagger.*]` / `[export.*]` profiles so each dataset directory
+/// doesn't need its own copy. Per-directory `anima-tagger.toml` still
+/// wins on key collision.
+pub const USER_CONFIG_RELATIVE: &str = "anima-tagger/config.toml";
 pub const DEFAULT_PROFILE_NAME: &str = "anima";
 
 /// Built-in tagger profile name + repo, used when nothing is configured.
@@ -282,24 +288,84 @@ pub enum ConfigError {
 }
 
 impl ProjectConfig {
-    pub fn load(dir: &Path) -> Result<Option<Self>, ConfigError> {
-        let path = dir.join(CONFIG_FILE);
+    /// Resolve `$XDG_CONFIG_HOME/anima-tagger/config.toml`, falling back to
+    /// `$HOME/.config/anima-tagger/config.toml`. Returns `None` if neither
+    /// env var is set (no usable home).
+    pub fn user_config_path() -> Option<PathBuf> {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
+            return Some(PathBuf::from(xdg).join(USER_CONFIG_RELATIVE));
+        }
+        std::env::var_os("HOME")
+            .filter(|s| !s.is_empty())
+            .map(|home| PathBuf::from(home).join(".config").join(USER_CONFIG_RELATIVE))
+    }
+
+    fn load_path(path: &Path) -> Result<Option<Self>, ConfigError> {
         if !path.exists() {
             return Ok(None);
         }
-        let s = fs::read_to_string(&path).map_err(|source| ConfigError::Io {
-            path: path.clone(),
+        let s = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
             source,
         })?;
         let cfg = toml::from_str(&s).map_err(|source| ConfigError::Parse {
-            path: path.clone(),
+            path: path.to_path_buf(),
             source,
         })?;
         Ok(Some(cfg))
     }
 
+    /// Load only the per-directory `anima-tagger.toml`, ignoring the user
+    /// config. Kept for callers that need to inspect what a single
+    /// dataset declared.
+    pub fn load(dir: &Path) -> Result<Option<Self>, ConfigError> {
+        Self::load_path(&dir.join(CONFIG_FILE))
+    }
+
+    /// User-level config (no merge with project).
+    pub fn load_user() -> Result<Option<Self>, ConfigError> {
+        match Self::user_config_path() {
+            Some(p) => Self::load_path(&p),
+            None => Ok(None),
+        }
+    }
+
+    /// Load the merged effective config: defaults ← user config ← project
+    /// config. Project entries override user entries with the same key,
+    /// and user entries override hard-coded defaults. Missing files are
+    /// not errors — only parse/IO failures bubble up.
     pub fn load_or_default(dir: &Path) -> Result<Self, ConfigError> {
-        Ok(Self::load(dir)?.unwrap_or_default())
+        let mut cfg = Self::default();
+        if let Some(user) = Self::load_user()? {
+            cfg.merge_from(user);
+        }
+        if let Some(project) = Self::load(dir)? {
+            cfg.merge_from(project);
+        }
+        Ok(cfg)
+    }
+
+    /// Overlay `other` onto `self`. `other`'s scalars overwrite `self`'s
+    /// when set; map entries union, with `other` winning on key collision.
+    fn merge_from(&mut self, other: ProjectConfig) {
+        if other.default_profile.is_some() {
+            self.default_profile = other.default_profile;
+        }
+        if other.default_tagger.is_some() {
+            self.default_tagger = other.default_tagger;
+        }
+        if other.default_captioner.is_some() {
+            self.default_captioner = other.default_captioner;
+        }
+        for (k, v) in other.export {
+            self.export.insert(k, v);
+        }
+        for (k, v) in other.tagger {
+            self.tagger.insert(k, v);
+        }
+        for (k, v) in other.captioner {
+            self.captioner.insert(k, v);
+        }
     }
 
     pub fn resolve_profile(&self, name: Option<&str>) -> ExportProfile {
@@ -344,5 +410,72 @@ impl ProjectConfig {
             BUILT_IN_CAPTIONER_NAME.to_string(),
             CaptionerProfile::built_in(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_project_overrides_user() {
+        let mut user = ProjectConfig::default();
+        user.default_captioner = Some("user-cap".into());
+        user.captioner.insert(
+            "shared".into(),
+            CaptionerProfile::Openai(OpenAiCaptionerProfile {
+                endpoint: "http://user".into(),
+                model: None,
+                api_key: None,
+                prompt: default_caption_prompt(),
+                max_tokens: 100,
+                temperature: None,
+                max_edge: 1024,
+                jpeg_quality: 90,
+                timeout_secs: 600,
+            }),
+        );
+
+        let mut project = ProjectConfig::default();
+        project.captioner.insert(
+            "shared".into(),
+            CaptionerProfile::Openai(OpenAiCaptionerProfile {
+                endpoint: "http://project".into(),
+                model: None,
+                api_key: None,
+                prompt: default_caption_prompt(),
+                max_tokens: 200,
+                temperature: None,
+                max_edge: 1024,
+                jpeg_quality: 90,
+                timeout_secs: 600,
+            }),
+        );
+
+        let mut merged = ProjectConfig::default();
+        merged.merge_from(user);
+        merged.merge_from(project);
+
+        assert_eq!(merged.default_captioner.as_deref(), Some("user-cap"));
+        match merged.captioner.get("shared").unwrap() {
+            CaptionerProfile::Openai(p) => assert_eq!(p.endpoint, "http://project"),
+            _ => panic!("expected openai variant"),
+        }
+    }
+
+    #[test]
+    fn project_only_keys_survive_merge() {
+        let user = ProjectConfig::default();
+        let mut project = ProjectConfig::default();
+        project.tagger.insert(
+            "wd-tagger".into(),
+            TaggerProfile::built_in(),
+        );
+
+        let mut merged = ProjectConfig::default();
+        merged.merge_from(user);
+        merged.merge_from(project);
+
+        assert!(merged.tagger.contains_key("wd-tagger"));
     }
 }

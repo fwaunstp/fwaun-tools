@@ -657,6 +657,18 @@ fn bulk_remove_manual(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>, t
     }
 }
 
+fn bulk_remove_caption(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>, model: String) {
+    let mut imgs = images.write();
+    for img in imgs.iter_mut() {
+        if !paths.contains(&img.path) {
+            continue;
+        }
+        if img.sidecar.remove_caption(&model) {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+}
+
 #[component]
 fn BulkDetail(
     items: Vec<ImageItem>,
@@ -671,28 +683,80 @@ fn BulkDetail(
         .filter(|i| selected_paths.contains(&i.path))
         .collect();
 
-    let mut order: Vec<String> = Vec::new();
-    let mut counts: std::collections::BTreeMap<String, usize> =
+    let mut manual_order: Vec<String> = Vec::new();
+    let mut manual_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for item in &selected_items {
         for tag in &item.sidecar.manual_tags {
-            if !counts.contains_key(tag) {
-                order.push(tag.clone());
+            if !manual_counts.contains_key(tag) {
+                manual_order.push(tag.clone());
             }
-            *counts.entry(tag.clone()).or_insert(0) += 1;
+            *manual_counts.entry(tag.clone()).or_insert(0) += 1;
         }
     }
 
+    // Auto/booru tags shared across selected images. Keyed by lowercase stem
+    // so a tag emitted by both the tagger and booru with different casing
+    // collapses into one row. `2+ images` threshold drops the long tail of
+    // image-specific tags that would otherwise dominate the list.
+    let mut tag_order: Vec<String> = Vec::new();
+    let mut tag_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut tag_display: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    for item in &selected_items {
+        let mut seen_in_item: HashSet<String> = HashSet::new();
+        let auto_iter = item.sidecar.auto_tags.iter().map(|at| at.tag.as_str());
+        let booru_iter = item.sidecar.booru_tags.iter().map(|bt| bt.tag.as_str());
+        for tag_str in auto_iter.chain(booru_iter) {
+            let key = tag_str.to_lowercase();
+            if key.is_empty() || !seen_in_item.insert(key.clone()) {
+                continue;
+            }
+            if !tag_counts.contains_key(&key) {
+                tag_order.push(key.clone());
+                tag_display.insert(key.clone(), tag_str.to_string());
+            }
+            *tag_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut common_tags: Vec<(String, usize)> = tag_order
+        .into_iter()
+        .filter_map(|key| {
+            let c = tag_counts[&key];
+            if c >= 2 {
+                Some((tag_display.remove(&key).unwrap_or(key), c))
+            } else {
+                None
+            }
+        })
+        .collect();
+    common_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let mut caption_order: Vec<String> = Vec::new();
+    let mut caption_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for item in &selected_items {
+        for model in item.sidecar.captions.keys() {
+            if !caption_counts.contains_key(model) {
+                caption_order.push(model.clone());
+            }
+            *caption_counts.entry(model.clone()).or_insert(0) += 1;
+        }
+    }
+    caption_order.sort();
+
     rsx! {
         p { class: "muted", "{n} images selected — bulk edit" }
+
         div { class: "section-title", "Manual entries (union)" }
-        if order.is_empty() {
+        if manual_order.is_empty() {
             p { class: "muted", "(none)" }
         } else {
             div { class: "tag-list",
-                for tag in order.into_iter() {
+                for tag in manual_order.into_iter() {
                     {
-                        let count = counts[&tag];
+                        let count = manual_counts[&tag];
                         let label = if count < n {
                             format!("{tag} ({count}/{n})")
                         } else {
@@ -715,8 +779,52 @@ fn BulkDetail(
                 }
             }
         }
+
+        div { class: "section-title", "Common tags (auto/booru, ≥2 images)" }
+        if common_tags.is_empty() {
+            p { class: "muted small", "(none)" }
+        } else {
+            div { class: "tag-list",
+                for (tag, count) in common_tags.into_iter() {
+                    {
+                        let label = format!("{tag} ({count}/{n})");
+                        rsx! {
+                            span { class: "chip auto", "{label}" }
+                        }
+                    }
+                }
+            }
+        }
+
+        div { class: "section-title", "Auto captions (by model)" }
+        if caption_order.is_empty() {
+            p { class: "muted small", "(none)" }
+        } else {
+            div { class: "tag-list",
+                for model in caption_order.into_iter() {
+                    {
+                        let count = caption_counts[&model];
+                        let label = format!("{model} ({count}/{n})");
+                        let paths_for = selected_paths.clone();
+                        let model_for = model.clone();
+                        rsx! {
+                            span { class: "chip auto",
+                                "{label}"
+                                span {
+                                    class: "chip-x",
+                                    title: "Remove this model's caption from all selected",
+                                    onclick: move |_| bulk_remove_caption(images, paths_for.clone(), model_for.clone()),
+                                    "×"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         p { class: "muted small",
-            "Auto/booru tags hidden in bulk view; switch to single selection to edit per-tag."
+            "Switch to single selection to suppress individual auto/booru tags."
         }
     }
 }

@@ -230,14 +230,25 @@ impl Sidecar {
         self.captions.remove(model).is_some()
     }
 
-    /// The caption written to training metadata on export. Only the manual
-    /// caption is exported — auto captions are kept for comparison/seeding.
+    /// The caption written to training metadata on export. Prefers the
+    /// manual caption; falls back to the most recently generated auto
+    /// caption when the manual field is empty/unset, so an unreviewed
+    /// dataset still exports something useful instead of dropping the
+    /// caption entirely.
     pub fn export_caption(&self) -> Option<String> {
-        self.manual_caption
+        if let Some(text) = self
+            .manual_caption
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .map(str::to_string)
+        {
+            return Some(text.to_string());
+        }
+        self.captions
+            .values()
+            .max_by_key(|e| e.captioned_at)
+            .map(|e| e.caption.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 
     pub fn set_manual_caption(&mut self, text: &str) {
@@ -348,12 +359,27 @@ mod tests {
     }
 
     #[test]
-    fn export_caption_is_manual_only() {
+    fn export_caption_prefers_manual_then_falls_back_to_latest_auto() {
         let mut sc = Sidecar::default();
-        sc.set_caption("modelA", "auto text");
+        // No captions at all → None.
         assert_eq!(sc.export_caption(), None);
+
+        // Only an auto caption → fall back to it.
+        sc.set_caption("modelA", "auto text");
+        assert_eq!(sc.export_caption().as_deref(), Some("auto text"));
+
+        // A second auto caption with a later timestamp wins the fallback.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        sc.set_caption("modelB", "newer auto text");
+        assert_eq!(sc.export_caption().as_deref(), Some("newer auto text"));
+
+        // Manual caption overrides any auto.
         sc.set_manual_caption("manual text");
         assert_eq!(sc.export_caption().as_deref(), Some("manual text"));
+
+        // Empty/whitespace manual falls back again.
+        sc.set_manual_caption("   ");
+        assert_eq!(sc.export_caption().as_deref(), Some("newer auto text"));
     }
 
     #[test]

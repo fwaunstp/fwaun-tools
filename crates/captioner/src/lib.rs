@@ -57,10 +57,17 @@ impl Captioner {
         }
     }
 
-    pub fn caption_image(&mut self, image_path: &Path) -> Result<String, CaptionerError> {
+    /// Generate a caption for `image_path` using `prompt`. Callers iterate
+    /// over `CaptionerProfile::resolved_prompts()` to drive multiple prompts
+    /// (e.g. detail + brief) against the same loaded model.
+    pub fn caption_image(
+        &mut self,
+        image_path: &Path,
+        prompt: &str,
+    ) -> Result<String, CaptionerError> {
         match self {
-            Self::Onnx(c) => c.caption_image(image_path),
-            Self::OpenAi(c) => c.caption_image(image_path),
+            Self::Onnx(c) => c.caption_image(image_path, prompt),
+            Self::OpenAi(c) => c.caption_image(image_path, prompt),
         }
     }
 }

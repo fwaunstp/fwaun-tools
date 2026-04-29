@@ -93,7 +93,6 @@ pub struct OnnxCaptioner {
     embed: Session,
     decoder: Session,
     tokenizer: Tokenizer,
-    user_prompt: String,
     max_pixels: u32,
     max_new_tokens: usize,
 }
@@ -138,13 +137,16 @@ impl OnnxCaptioner {
             embed,
             decoder,
             tokenizer,
-            user_prompt: profile.prompt.clone(),
             max_pixels: profile.max_pixels,
             max_new_tokens: profile.max_new_tokens,
         })
     }
 
-    pub fn caption_image(&mut self, image_path: &Path) -> Result<String, CaptionerError> {
+    pub fn caption_image(
+        &mut self,
+        image_path: &Path,
+        prompt: &str,
+    ) -> Result<String, CaptionerError> {
         let img = image::open(image_path)?;
 
         // 1. Preprocess image → flattened patches + image_grid_thw.
@@ -193,10 +195,10 @@ impl OnnxCaptioner {
         drop(vision_out);
 
         // 3. Render chat template, tokenize.
-        let prompt = build_chat_prompt(&self.user_prompt);
+        let chat_prompt = build_chat_prompt(prompt);
         let encoding = self
             .tokenizer
-            .encode(prompt, false)
+            .encode(chat_prompt, false)
             .map_err(|e| CaptionerError::Tokenizer(e.to_string()))?;
         let prompt_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
 

@@ -920,6 +920,7 @@ fn run_captioner(
         }
     };
     let (model_name, profile) = cfg.resolve_captioner(None);
+    let prompts = profile.resolved_prompts();
 
     let sel: Vec<PathBuf> = selected.read().iter().cloned().collect();
     if sel.is_empty() {
@@ -950,14 +951,21 @@ fn run_captioner(
             if !sel.contains(&img.path) {
                 continue;
             }
-            match captioner_inst.caption_image(&img.path) {
-                Ok(caption) => {
-                    img.sidecar.set_caption(model_name.clone(), caption);
-                    let _ = img.sidecar.save(&img.path);
+            let mut wrote_any = false;
+            for (pname, ptext) in &prompts {
+                let key = format!("{model_name}.{pname}");
+                match captioner_inst.caption_image(&img.path, ptext) {
+                    Ok(caption) => {
+                        img.sidecar.set_caption(key, caption);
+                        wrote_any = true;
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("{} [{pname}]: {e}", img.path.display())));
+                    }
                 }
-                Err(e) => {
-                    error_msg.set(Some(format!("{}: {e}", img.path.display())));
-                }
+            }
+            if wrote_any {
+                let _ = img.sidecar.save(&img.path);
             }
         }
     }

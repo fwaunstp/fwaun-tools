@@ -33,7 +33,11 @@ impl OpenAiCaptioner {
         })
     }
 
-    pub fn caption_image(&mut self, image_path: &Path) -> Result<String, CaptionerError> {
+    pub fn caption_image(
+        &mut self,
+        image_path: &Path,
+        prompt: &str,
+    ) -> Result<String, CaptionerError> {
         let data_url = encode_image_data_url(
             image_path,
             self.profile.max_edge,
@@ -56,7 +60,7 @@ impl OpenAiCaptioner {
                         image_url: ImageUrl { url: data_url },
                     },
                     ContentPart::Text {
-                        text: self.profile.prompt.clone(),
+                        text: prompt.to_string(),
                     },
                 ],
             }],

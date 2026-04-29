@@ -93,8 +93,16 @@ pub struct OnnxCaptionerProfile {
     /// the repo root, leave this empty / `""`.
     #[serde(default)]
     pub subdir: Option<String>,
-    #[serde(default = "default_caption_prompt")]
-    pub prompt: String,
+    /// Legacy single-prompt form. When `prompts` is empty and this is set,
+    /// it is migrated into `{"default": prompt}` by `resolved_prompts()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Named prompts to run against the same loaded model. Sidecar entries
+    /// are keyed `{profile_name}.{prompt_name}` so detail / brief variants
+    /// of the same model coexist. Empty = fall back to the built-in
+    /// `detail` + `brief` pair.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompts: BTreeMap<String, String>,
     /// Upper bound on (resized_h * resized_w) during smart_resize. Larger
     /// values give richer captions but quadratically more vision tokens.
     #[serde(default = "default_max_pixels")]
@@ -119,8 +127,12 @@ pub struct OpenAiCaptionerProfile {
     /// Bearer token. Empty/None = no `Authorization` header.
     #[serde(default)]
     pub api_key: Option<String>,
-    #[serde(default = "default_caption_prompt")]
-    pub prompt: String,
+    /// Legacy single-prompt form. See `OnnxCaptionerProfile::prompt`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    /// Named prompts. See `OnnxCaptionerProfile::prompts`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prompts: BTreeMap<String, String>,
     #[serde(default = "default_max_new_tokens")]
     pub max_tokens: usize,
     #[serde(default)]
@@ -140,8 +152,35 @@ pub struct OpenAiCaptionerProfile {
     pub timeout_secs: u64,
 }
 
-fn default_caption_prompt() -> String {
-    "Describe this image in detail.".to_string()
+/// Built-in prompt set: a detailed long-form description and a one-sentence
+/// summary. Loaded as the default whenever a profile declares no `prompts`
+/// and no legacy `prompt`.
+pub fn default_prompts() -> BTreeMap<String, String> {
+    let mut m = BTreeMap::new();
+    m.insert("detail".to_string(), "Describe this image in detail.".to_string());
+    m.insert(
+        "brief".to_string(),
+        "Describe this image briefly in one sentence.".to_string(),
+    );
+    m
+}
+
+/// Merge legacy `prompt` and modern `prompts` into the effective prompt set:
+/// non-empty `prompts` wins; otherwise legacy `prompt` becomes
+/// `{"default": prompt}`; otherwise the built-in detail+brief pair.
+fn resolve_prompts(
+    legacy: Option<&str>,
+    prompts: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    if !prompts.is_empty() {
+        return prompts.clone();
+    }
+    if let Some(p) = legacy.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut m = BTreeMap::new();
+        m.insert("default".to_string(), p.to_string());
+        return m;
+    }
+    default_prompts()
 }
 
 fn default_max_pixels() -> u32 {
@@ -240,7 +279,8 @@ impl CaptionerProfile {
             repo: BUILT_IN_CAPTIONER_REPO.to_string(),
             revision: None,
             subdir: Some(BUILT_IN_CAPTIONER_SUBDIR.to_string()),
-            prompt: default_caption_prompt(),
+            prompt: None,
+            prompts: BTreeMap::new(),
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         })
@@ -251,6 +291,15 @@ impl CaptionerProfile {
         match self {
             Self::Onnx(p) => p.repo.clone(),
             Self::Openai(p) => p.endpoint.clone(),
+        }
+    }
+
+    /// Effective prompt set after applying legacy / default fallbacks.
+    /// Always non-empty.
+    pub fn resolved_prompts(&self) -> BTreeMap<String, String> {
+        match self {
+            Self::Onnx(p) => resolve_prompts(p.prompt.as_deref(), &p.prompts),
+            Self::Openai(p) => resolve_prompts(p.prompt.as_deref(), &p.prompts),
         }
     }
 }
@@ -427,7 +476,8 @@ mod tests {
                 endpoint: "http://user".into(),
                 model: None,
                 api_key: None,
-                prompt: default_caption_prompt(),
+                prompt: None,
+                prompts: BTreeMap::new(),
                 max_tokens: 100,
                 temperature: None,
                 max_edge: 1024,
@@ -443,7 +493,8 @@ mod tests {
                 endpoint: "http://project".into(),
                 model: None,
                 api_key: None,
-                prompt: default_caption_prompt(),
+                prompt: None,
+                prompts: BTreeMap::new(),
                 max_tokens: 200,
                 temperature: None,
                 max_edge: 1024,
@@ -461,6 +512,48 @@ mod tests {
             CaptionerProfile::Openai(p) => assert_eq!(p.endpoint, "http://project"),
             _ => panic!("expected openai variant"),
         }
+    }
+
+    #[test]
+    fn resolved_prompts_falls_back_to_defaults_when_unset() {
+        let cfg = CaptionerProfile::built_in();
+        let prompts = cfg.resolved_prompts();
+        assert!(prompts.contains_key("detail"));
+        assert!(prompts.contains_key("brief"));
+    }
+
+    #[test]
+    fn resolved_prompts_migrates_legacy_single_prompt() {
+        let cfg = CaptionerProfile::Onnx(OnnxCaptionerProfile {
+            repo: "r".into(),
+            revision: None,
+            subdir: None,
+            prompt: Some("legacy single".into()),
+            prompts: BTreeMap::new(),
+            max_pixels: default_max_pixels(),
+            max_new_tokens: default_max_new_tokens(),
+        });
+        let prompts = cfg.resolved_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts.get("default").map(String::as_str), Some("legacy single"));
+    }
+
+    #[test]
+    fn resolved_prompts_prefers_explicit_prompts_over_legacy() {
+        let mut explicit = BTreeMap::new();
+        explicit.insert("terse".into(), "one word".into());
+        let cfg = CaptionerProfile::Onnx(OnnxCaptionerProfile {
+            repo: "r".into(),
+            revision: None,
+            subdir: None,
+            prompt: Some("ignored".into()),
+            prompts: explicit,
+            max_pixels: default_max_pixels(),
+            max_new_tokens: default_max_new_tokens(),
+        });
+        let prompts = cfg.resolved_prompts();
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts.get("terse").map(String::as_str), Some("one word"));
     }
 
     #[test]

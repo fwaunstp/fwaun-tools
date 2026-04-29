@@ -148,10 +148,12 @@ fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let (resolved_name, profile) = cfg.resolve_captioner(model_name.as_deref());
+    let prompts = profile.resolved_prompts();
 
     eprintln!(
-        "loading captioner `{resolved_name}` from {} …",
-        profile.source_label()
+        "loading captioner `{resolved_name}` from {} (prompts: {}) …",
+        profile.source_label(),
+        prompts.keys().cloned().collect::<Vec<_>>().join(", "),
     );
     let mut captioner = Captioner::from_profile(&profile)?;
     eprintln!("captioner ready");
@@ -160,16 +162,33 @@ fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<
     let mut skipped = 0usize;
     for image in iter_images(&dir) {
         let mut sc = Sidecar::load_or_default(&image)?;
-        if !force && sc.is_captioned() {
+        let pending: Vec<(String, String, String)> = prompts
+            .iter()
+            .filter_map(|(pname, ptext)| {
+                let key = format!("{resolved_name}.{pname}");
+                if !force && sc.captions.contains_key(&key) {
+                    None
+                } else {
+                    Some((key, pname.clone(), ptext.clone()))
+                }
+            })
+            .collect();
+        if pending.is_empty() {
             skipped += 1;
             continue;
         }
-        let caption = captioner.caption_image(&image)?;
-        let preview: String = caption.chars().take(60).collect();
-        sc.set_caption(resolved_name.clone(), caption);
-        sc.save(&image)?;
-        captioned += 1;
-        println!("captioned {} — \"{preview}…\"", image.display());
+        let mut wrote_any = false;
+        for (key, pname, ptext) in pending {
+            let caption = captioner.caption_image(&image, &ptext)?;
+            let preview: String = caption.chars().take(60).collect();
+            sc.set_caption(key, caption);
+            wrote_any = true;
+            println!("captioned {} [{pname}] — \"{preview}…\"", image.display());
+        }
+        if wrote_any {
+            sc.save(&image)?;
+            captioned += 1;
+        }
     }
     println!("done: {captioned} captioned, {skipped} skipped (use --force to recaption)");
     Ok(())

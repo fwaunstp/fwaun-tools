@@ -4,7 +4,7 @@ use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
 use anima_tagger_core::config::ProjectConfig;
 use anima_tagger_core::export;
-use anima_tagger_core::sidecar::{CaptionerInfo, Sidecar, TaggerInfo};
+use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
 use anyhow::{Context, Result};
@@ -166,11 +166,7 @@ fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<
         }
         let caption = captioner.caption_image(&image)?;
         let preview: String = caption.chars().take(60).collect();
-        sc.caption = Some(caption);
-        sc.captioner = Some(CaptionerInfo {
-            model: resolved_name.clone(),
-            captioned_at: Utc::now(),
-        });
+        sc.set_caption(resolved_name.clone(), caption);
         sc.save(&image)?;
         captioned += 1;
         println!("captioned {} — \"{preview}…\"", image.display());
@@ -281,7 +277,7 @@ fn cmd_metadata(
                 serde_json::Value::String(tags.join(", ")),
             );
         }
-        if let Some(cap) = sidecar.merged_caption() {
+        if let Some(cap) = sidecar.export_caption() {
             entry.insert("caption".to_string(), serde_json::Value::String(cap));
         }
         if entry.is_empty() {

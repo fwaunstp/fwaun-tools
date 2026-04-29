@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
 use anima_tagger_core::config::ProjectConfig;
-use anima_tagger_core::sidecar::{CaptionerInfo, Sidecar, TaggerInfo};
+use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
 use base64::Engine;
@@ -450,13 +450,54 @@ fn SingleDetail(
             }
         }
 
-        div { class: "section-title", "Caption" }
-        ManualCaptionEditor { path: path.clone(), images, initial: item.sidecar.manual_caption.clone().unwrap_or_default() }
-        if let Some(c) = item.sidecar.caption.as_ref() {
-            p { class: "muted small", "Auto caption (read-only):" }
-            p { class: "caption", "{c}" }
+        div { class: "section-title", "Caption (manual — exported)" }
+        {
+            let manual_text = item.sidecar.manual_caption.clone().unwrap_or_default();
+            let editor_key = format!("{}::{}", path.display(), manual_text);
+            rsx! {
+                ManualCaptionEditor {
+                    key: "{editor_key}",
+                    path: path.clone(),
+                    images,
+                    initial: manual_text,
+                }
+            }
+        }
+
+        div { class: "section-title", "Auto captions" }
+        if item.sidecar.captions.is_empty() {
+            p { class: "muted small", "(none — run captioner)" }
         } else {
-            p { class: "muted small", "(no auto caption — run captioner)" }
+            for (model, entry) in item.sidecar.captions.iter() {
+                {
+                    let model_name = model.clone();
+                    let model_for_remove = model.clone();
+                    let text = entry.caption.clone();
+                    let text_for_copy = text.clone();
+                    let path_for_copy = path.clone();
+                    let path_for_remove = path.clone();
+                    rsx! {
+                        div { class: "auto-caption",
+                            div { class: "auto-caption-head",
+                                span { class: "model-name", "{model_name}" }
+                                button {
+                                    class: "tiny",
+                                    title: "Copy this caption into the manual caption field",
+                                    onclick: move |_| copy_caption_to_manual(images, path_for_copy.clone(), text_for_copy.clone()),
+                                    "→ manual"
+                                }
+                                button {
+                                    class: "tiny secondary",
+                                    title: "Remove this auto caption",
+                                    onclick: move |_| remove_caption_at(images, path_for_remove.clone(), model_for_remove.clone()),
+                                    "×"
+                                }
+                            }
+                            p { class: "caption", "{text}" }
+                        }
+                    }
+                }
+            }
         }
         if let Some(b) = item.sidecar.booru.as_ref() {
             div { class: "section-title", "Booru" }
@@ -492,6 +533,23 @@ fn save_manual_caption(mut images: Signal<Vec<ImageItem>>, path: PathBuf, text: 
     let mut imgs = images.write();
     if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
         img.sidecar.set_manual_caption(&text);
+        let _ = img.sidecar.save(&img.path);
+    }
+}
+
+fn copy_caption_to_manual(mut images: Signal<Vec<ImageItem>>, path: PathBuf, text: String) {
+    let mut imgs = images.write();
+    if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
+        img.sidecar.set_manual_caption(&text);
+        let _ = img.sidecar.save(&img.path);
+    }
+}
+
+fn remove_caption_at(mut images: Signal<Vec<ImageItem>>, path: PathBuf, model: String) {
+    let mut imgs = images.write();
+    if let Some(img) = imgs.iter_mut().find(|i| i.path == path)
+        && img.sidecar.remove_caption(&model)
+    {
         let _ = img.sidecar.save(&img.path);
     }
 }
@@ -712,18 +770,13 @@ fn run_captioner(
         let mut c = captioner_state.write();
         let captioner_inst = c.as_mut().unwrap();
         let mut imgs = images.write();
-        let now = Utc::now();
         for img in imgs.iter_mut() {
             if !sel.contains(&img.path) {
                 continue;
             }
             match captioner_inst.caption_image(&img.path) {
                 Ok(caption) => {
-                    img.sidecar.caption = Some(caption);
-                    img.sidecar.captioner = Some(CaptionerInfo {
-                        model: model_name.clone(),
-                        captioned_at: now,
-                    });
+                    img.sidecar.set_caption(model_name.clone(), caption);
                     let _ = img.sidecar.save(&img.path);
                 }
                 Err(e) => {
@@ -919,6 +972,32 @@ body {
     min-height: 60px;
 }
 .manual-caption:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
+.auto-caption {
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+}
+.auto-caption-head {
+    display: flex; align-items: center; gap: 6px;
+    margin-bottom: 4px;
+}
+.model-name {
+    flex: 1;
+    color: #aaa;
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+button.tiny {
+    background: #2d4a6e; color: #cfe3ff; border: none;
+    padding: 2px 6px; border-radius: 3px;
+    font-size: 11px; cursor: pointer;
+}
+button.tiny:hover { background: #3a5a85; }
+button.tiny.secondary { background: #3a3a3a; color: #ccc; }
+button.tiny.secondary:hover { background: #4a4a4a; }
 code {
     background: #2a2a2a; padding: 1px 4px; border-radius: 3px;
     font-family: ui-monospace, monospace; font-size: 11px;

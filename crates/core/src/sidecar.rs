@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -24,6 +24,7 @@ pub const SIDECAR_EXTENSION: &str = "ron";
 pub const NEGATIVE_PREFIX: char = '-';
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SidecarOnDisk")]
 pub struct Sidecar {
     /// Manual entries. `foo` = positive (always exported); `-foo` = suppression
     /// marker (removes matching auto/booru tag from export). Negative entries
@@ -34,19 +35,19 @@ pub struct Sidecar {
     pub auto_tags: Vec<AutoTag>,
     #[serde(default)]
     pub booru_tags: Vec<BooruTag>,
-    /// Auto-generated caption from the captioner (Florence-2 etc). Read-only
-    /// from the GUI's perspective — overwritten on each captioner run.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caption: Option<String>,
-    /// User-curated caption fragment, prepended to the auto caption on export.
-    /// Use for image-specific facts the captioner can't know (character
-    /// names, scene context) — survives captioner re-runs.
+    /// Captions from automatic captioners, keyed by the resolved profile name
+    /// (e.g. `qwen3-vl-4b`). Each captioner run overwrites only its own entry,
+    /// so users can compare outputs across models — important for NSFW where
+    /// some models refuse. Export uses `manual_caption` only; the GUI exposes
+    /// a "copy" action to seed `manual_caption` from any of these.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub captions: BTreeMap<String, CaptionEntry>,
+    /// Free-text caption written verbatim on export. Seed it via the GUI's
+    /// copy-from-auto button, or type it by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_caption: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tagger: Option<TaggerInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub captioner: Option<CaptionerInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub booru: Option<BooruInfo>,
 }
@@ -65,15 +66,15 @@ pub struct BooruTag {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TaggerInfo {
-    pub model: String,
-    pub tagged_at: DateTime<Utc>,
+pub struct CaptionEntry {
+    pub caption: String,
+    pub captioned_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CaptionerInfo {
+pub struct TaggerInfo {
     pub model: String,
-    pub captioned_at: DateTime<Utc>,
+    pub tagged_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,6 +85,61 @@ pub struct BooruInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_url: Option<String>,
     pub fetched_at: DateTime<Utc>,
+}
+
+/// On-disk schema. Holds the legacy single-caption fields so older sidecars
+/// keep loading; `From<SidecarOnDisk>` folds them into `captions`.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SidecarOnDisk {
+    #[serde(default)]
+    manual_tags: Vec<String>,
+    #[serde(default)]
+    auto_tags: Vec<AutoTag>,
+    #[serde(default)]
+    booru_tags: Vec<BooruTag>,
+    #[serde(default)]
+    captions: BTreeMap<String, CaptionEntry>,
+    #[serde(default)]
+    caption: Option<String>,
+    #[serde(default)]
+    captioner: Option<LegacyCaptionerInfo>,
+    #[serde(default)]
+    manual_caption: Option<String>,
+    #[serde(default)]
+    tagger: Option<TaggerInfo>,
+    #[serde(default)]
+    booru: Option<BooruInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyCaptionerInfo {
+    model: String,
+    captioned_at: DateTime<Utc>,
+}
+
+impl From<SidecarOnDisk> for Sidecar {
+    fn from(d: SidecarOnDisk) -> Self {
+        let mut captions = d.captions;
+        if let Some(text) = d.caption.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            let (model, captioned_at) = match d.captioner {
+                Some(info) => (info.model, info.captioned_at),
+                None => ("legacy".to_string(), Utc::now()),
+            };
+            captions.entry(model).or_insert(CaptionEntry {
+                caption: text,
+                captioned_at,
+            });
+        }
+        Self {
+            manual_tags: d.manual_tags,
+            auto_tags: d.auto_tags,
+            booru_tags: d.booru_tags,
+            captions,
+            manual_caption: d.manual_caption,
+            tagger: d.tagger,
+            booru: d.booru,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -157,28 +213,31 @@ impl Sidecar {
     }
 
     pub fn is_captioned(&self) -> bool {
-        self.captioner.is_some()
+        !self.captions.is_empty()
     }
 
-    /// Combine `manual_caption` (prepended) with the auto `caption`. Empty
-    /// strings are treated as None. Returns None only if both are empty.
-    pub fn merged_caption(&self) -> Option<String> {
-        let manual = self
-            .manual_caption
+    pub fn set_caption(&mut self, model: impl Into<String>, text: impl Into<String>) {
+        self.captions.insert(
+            model.into(),
+            CaptionEntry {
+                caption: text.into(),
+                captioned_at: Utc::now(),
+            },
+        );
+    }
+
+    pub fn remove_caption(&mut self, model: &str) -> bool {
+        self.captions.remove(model).is_some()
+    }
+
+    /// The caption written to training metadata on export. Only the manual
+    /// caption is exported — auto captions are kept for comparison/seeding.
+    pub fn export_caption(&self) -> Option<String> {
+        self.manual_caption
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let auto = self
-            .caption
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        match (manual, auto) {
-            (Some(m), Some(a)) => Some(format!("{m} {a}")),
-            (Some(m), None) => Some(m.to_string()),
-            (None, Some(a)) => Some(a.to_string()),
-            (None, None) => None,
-        }
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     }
 
     pub fn set_manual_caption(&mut self, text: &str) {
@@ -266,5 +325,44 @@ impl Sidecar {
         let before = self.manual_tags.len();
         self.manual_tags.retain(|x| x != &neg);
         before != self.manual_tags.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_caption_migrates_into_captions_map() {
+        let ron_text = r#"(
+            manual_tags: [],
+            auto_tags: [],
+            booru_tags: [],
+            caption: Some("a girl"),
+            captioner: Some((model: "qwen3-vl-4b", captioned_at: "2025-01-01T00:00:00Z")),
+        )"#;
+        let sc: Sidecar = ron::de::from_str(ron_text).unwrap();
+        assert_eq!(sc.captions.len(), 1);
+        let entry = sc.captions.get("qwen3-vl-4b").unwrap();
+        assert_eq!(entry.caption, "a girl");
+    }
+
+    #[test]
+    fn export_caption_is_manual_only() {
+        let mut sc = Sidecar::default();
+        sc.set_caption("modelA", "auto text");
+        assert_eq!(sc.export_caption(), None);
+        sc.set_manual_caption("manual text");
+        assert_eq!(sc.export_caption().as_deref(), Some("manual text"));
+    }
+
+    #[test]
+    fn set_caption_overwrites_same_model_only() {
+        let mut sc = Sidecar::default();
+        sc.set_caption("a", "first");
+        sc.set_caption("b", "second");
+        sc.set_caption("a", "first-v2");
+        assert_eq!(sc.captions.get("a").unwrap().caption, "first-v2");
+        assert_eq!(sc.captions.get("b").unwrap().caption, "second");
     }
 }

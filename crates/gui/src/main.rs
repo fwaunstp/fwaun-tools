@@ -983,7 +983,11 @@ body {
     overflow: hidden; cursor: pointer;
     background: #2a2a2a; position: relative; user-select: none;
 }
-.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; }
+.thumb img {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    object-fit: contain; display: block; pointer-events: none;
+}
 .thumb.selected { border-color: #4a9eff; }
 .thumb-status {
     position: absolute; top: 4px; right: 4px;

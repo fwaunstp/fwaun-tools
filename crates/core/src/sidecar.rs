@@ -42,8 +42,11 @@ pub struct Sidecar {
     /// a "copy" action to seed `manual_caption` from any of these.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub captions: BTreeMap<String, CaptionEntry>,
-    /// Free-text caption written verbatim on export. Seed it via the GUI's
-    /// copy-from-auto button, or type it by hand.
+    /// Hand-edited final caption. When set, fully overrides any auto
+    /// captions on export. Seed it via the GUI's copy-from-auto button,
+    /// or type it by hand. For per-image reference info that should
+    /// influence generation (character names, positions, …), use
+    /// `caption_hint` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_caption: Option<String>,
     /// Reference info handed to the captioner as a system turn at generation
@@ -269,21 +272,26 @@ impl Sidecar {
 
     /// Caption text written on export.
     ///
-    /// - No active auto captions (none stored, or all marked `skip`) →
-    ///   `manual_caption` is returned verbatim (or `None` if also empty).
-    /// - One or more active auto captions → each is flattened to a single
-    ///   line and prefixed with `manual_caption` (when non-empty); the
-    ///   results are joined with `\n` so sd-scripts' multi-caption
-    ///   shuffler can pick a variation per step.
+    /// `manual_caption`, when set, fully overrides any auto captions —
+    /// it's a hand-edited final version. Otherwise each active (non-skip)
+    /// auto caption is flattened to a single line and the lines are
+    /// joined with `\n` so sd-scripts' multi-caption shuffler can pick
+    /// a variation per step.
     ///
     /// Embedded newlines in any auto caption are collapsed to spaces so
     /// the `\n` separator can never split a single caption mid-sentence.
+    /// Per-image reference info (character names, positions, etc.) is
+    /// carried by `caption_hint` and consumed at caption-generation time;
+    /// it never appears in the exported text.
     pub fn export_caption(&self) -> Option<String> {
         let manual = self
             .manual_caption
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        if let Some(text) = manual {
+            return Some(text.to_string());
+        }
 
         let active: Vec<String> = self
             .captions
@@ -294,14 +302,10 @@ impl Sidecar {
             .collect();
 
         if active.is_empty() {
-            return manual.map(str::to_string);
+            None
+        } else {
+            Some(active.join("\n"))
         }
-
-        let lines: Vec<String> = match manual {
-            Some(prefix) => active.iter().map(|c| format!("{prefix} {c}")).collect(),
-            None => active,
-        };
-        Some(lines.join("\n"))
     }
 
     pub fn set_manual_caption(&mut self, text: &str) {
@@ -446,14 +450,14 @@ mod tests {
     }
 
     #[test]
-    fn export_caption_manual_prefixes_every_auto_line() {
+    fn export_caption_manual_overrides_auto() {
         let mut sc = Sidecar::default();
-        sc.set_manual_caption("char_a, scene_x");
+        sc.set_manual_caption("hand-edited final caption");
         sc.set_caption("a", "a girl smiling");
         sc.set_caption("b", "young woman, smile");
         assert_eq!(
             sc.export_caption().as_deref(),
-            Some("char_a, scene_x a girl smiling\nchar_a, scene_x young woman, smile")
+            Some("hand-edited final caption")
         );
     }
 

@@ -589,7 +589,7 @@ fn ManualCaptionEditor(
     rsx! {
         textarea {
             class: "manual-caption",
-            placeholder: "Manual caption (e.g. \"Left girl is Alice. Right girl is Bob.\") — prepended to auto caption on export. Click outside to save.",
+            placeholder: "Manual caption — exported verbatim, overrides any auto captions. Leave empty to export the auto captions instead. Click outside to save.",
             value: "{buf}",
             rows: "3",
             oninput: move |evt| buf.set(evt.value()),

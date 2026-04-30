@@ -41,6 +41,25 @@ exclude_categories = []
 [export.plain.category_prefixes]
 
 # ---------------------------------------------------------------------------
+# Captioner prompt library — define each prompt once here and reference
+# it by name from any captioner profile's `prompts = [...]`. The built-in
+# `default` is always available; redefining it here overrides the
+# built-in. Per-image specifics (character names + positions) belong in
+# `caption_hint` on the sidecar, not in these prompts.
+# ---------------------------------------------------------------------------
+
+[captioner_prompts]
+# Override the built-in default if you want a different baseline.
+# default = "Describe this image briefly."
+
+# Character-focused prompt: useful for character LoRAs where you want
+# the model to weave per-character details into the description.
+# Combine with `caption_hint` ("Left girl is Alice; right boy is Bob.")
+# to lock in names — the captioner sees both at generation time and
+# stitches them into one cohesive caption rather than a manual prefix.
+character = "Describe this image with attention to each person — their appearance (hair, clothing, expression), pose, and where they sit in the frame. 3-5 sentences, under 200 words."
+
+# ---------------------------------------------------------------------------
 # Tagger profiles — HuggingFace-hosted WD14-family models. Models are
 # downloaded into the shared hf-hub cache on first use.
 # ---------------------------------------------------------------------------
@@ -67,7 +86,14 @@ storage_threshold = 0.10
 # truncated at training time anyway. The default `max_new_tokens` /
 # `max_tokens` of 512 below targets that ceiling. Larger VLMs (Gemma-3
 # 27B/31B, etc.) will happily emit 1k+ tokens unless you also constrain
-# the prompt — see the length-capped `detail` prompt below.
+# the prompt — see the length-capped prompts in `[captioner_prompts]`.
+#
+# `prompts = ["..."]` is a list of names looked up in
+# `[captioner_prompts]`. Each named prompt produces its own caption
+# entry under the same loaded model, keyed `{profile}.{name}` in the
+# sidecar — so adding a prompt is essentially free (one extra inference
+# per image, no extra model load). Omit the field to default to
+# `["default"]`.
 # ---------------------------------------------------------------------------
 
 [captioner.qwen3-vl-4b]
@@ -82,14 +108,7 @@ subdir = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu"
 # slower decode.
 max_pixels = 589824
 max_new_tokens = 512
-
-# Named prompts run against the same loaded model. Sidecar entries are
-# keyed `{profile_name}.{prompt_name}`, so adding a prompt here gives you
-# a parallel caption variant without re-loading the model. Built-in
-# default is a single `default` prompt; override it (or add more named
-# prompts) to focus the captioner on what your LoRA needs.
-[captioner.qwen3-vl-4b.prompts]
-default = "Describe this image in detail in 3-5 sentences (under 200 words)."
+prompts = ["default"]
 
 [captioner.local-llamacpp]
 kind = "openai"
@@ -109,6 +128,6 @@ jpeg_quality = 90
 # Per-request timeout. CPU-bound local servers can need several minutes
 # for a single caption.
 timeout_secs = 600
-
-[captioner.local-llamacpp.prompts]
-default = "Describe this image in detail in 3-5 sentences (under 200 words)."
+# Run two prompts per image: one general description and one focused on
+# characters. Both share the same loaded model.
+prompts = ["default", "character"]

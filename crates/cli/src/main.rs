@@ -148,12 +148,15 @@ fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let (resolved_name, profile) = cfg.resolve_captioner(model_name.as_deref());
-    let prompts = profile.resolved_prompts();
+    let library = cfg.prompt_library();
+    let prompts = profile
+        .resolved_prompts(&library)
+        .with_context(|| format!("resolving prompts for captioner `{resolved_name}`"))?;
 
     eprintln!(
         "loading captioner `{resolved_name}` from {} (prompts: {}) …",
         profile.source_label(),
-        prompts.keys().cloned().collect::<Vec<_>>().join(", "),
+        prompts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
     );
     let mut captioner = Captioner::from_profile(&profile)?;
     eprintln!("captioner ready");

@@ -1043,7 +1043,14 @@ fn run_captioner(
         }
     };
     let (model_name, profile) = cfg.resolve_captioner(None);
-    let prompts = profile.resolved_prompts();
+    let library = cfg.prompt_library();
+    let prompts = match profile.resolved_prompts(&library) {
+        Ok(p) => p,
+        Err(e) => {
+            error_msg.set(Some(e.to_string()));
+            return;
+        }
+    };
 
     let sel: Vec<PathBuf> = selected.read().iter().cloned().collect();
     if sel.is_empty() {

@@ -41,6 +41,12 @@ pub struct ProjectConfig {
     pub tagger: BTreeMap<String, TaggerProfile>,
     #[serde(default)]
     pub captioner: BTreeMap<String, CaptionerProfile>,
+    /// Shared prompt library — define each prompt once here and reference
+    /// it by name from any captioner profile's `prompts = [...]`. The
+    /// built-in `default` is always available; redefining `default` here
+    /// overrides it.
+    #[serde(default)]
+    pub captioner_prompts: BTreeMap<String, String>,
 }
 
 /// HuggingFace-hosted WD14-family tagger profile. Models are downloaded into
@@ -93,16 +99,13 @@ pub struct OnnxCaptionerProfile {
     /// the repo root, leave this empty / `""`.
     #[serde(default)]
     pub subdir: Option<String>,
-    /// Legacy single-prompt form. When `prompts` is empty and this is set,
-    /// it is migrated into `{"default": prompt}` by `resolved_prompts()`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    /// Named prompts to run against the same loaded model. Sidecar entries
-    /// are keyed `{profile_name}.{prompt_name}` so detail / brief variants
-    /// of the same model coexist. Empty = fall back to the built-in
-    /// `detail` + `brief` pair.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub prompts: BTreeMap<String, String>,
+    /// Names of prompts to run against the same loaded model. Looked up
+    /// in `[captioner_prompts]` (or the built-in library). Sidecar
+    /// entries are keyed `{profile_name}.{prompt_name}` so multiple
+    /// prompts coexist without re-loading the model. Defaults to
+    /// `["default"]`.
+    #[serde(default = "default_profile_prompts")]
+    pub prompts: Vec<String>,
     /// Upper bound on (resized_h * resized_w) during smart_resize. Larger
     /// values give richer captions but quadratically more vision tokens.
     #[serde(default = "default_max_pixels")]
@@ -127,12 +130,9 @@ pub struct OpenAiCaptionerProfile {
     /// Bearer token. Empty/None = no `Authorization` header.
     #[serde(default)]
     pub api_key: Option<String>,
-    /// Legacy single-prompt form. See `OnnxCaptionerProfile::prompt`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    /// Named prompts. See `OnnxCaptionerProfile::prompts`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub prompts: BTreeMap<String, String>,
+    /// Names of prompts to run. See `OnnxCaptionerProfile::prompts`.
+    #[serde(default = "default_profile_prompts")]
+    pub prompts: Vec<String>,
     #[serde(default = "default_max_new_tokens")]
     pub max_tokens: usize,
     #[serde(default)]
@@ -152,37 +152,24 @@ pub struct OpenAiCaptionerProfile {
     pub timeout_secs: u64,
 }
 
-/// Built-in prompt: a single descriptive prompt sized to fit comfortably
-/// inside ANIMA's 512-token training ceiling. Loaded whenever a profile
-/// declares no `prompts` and no legacy `prompt`. Override per-profile to
-/// shape captions for the LoRA at hand (e.g. focus on characters, scene,
-/// or a specific subject).
-pub fn default_prompts() -> BTreeMap<String, String> {
-    let mut m = BTreeMap::new();
-    m.insert(
+/// The built-in `default` prompt text. Sized to fit comfortably inside
+/// ANIMA's 512-token training ceiling. Users can override `default` (or
+/// add more named prompts) via `[captioner_prompts]` in their config.
+pub const BUILT_IN_DEFAULT_PROMPT: &str =
+    "Describe this image in detail in 3-5 sentences (under 200 words).";
+
+/// Built-in prompt library: a single `default` entry. Merged with the
+/// user's `[captioner_prompts]` table at resolution time, with user
+/// entries taking precedence on key collision.
+pub fn default_prompt_library() -> BTreeMap<String, String> {
+    BTreeMap::from([(
         "default".to_string(),
-        "Describe this image in detail in 3-5 sentences (under 200 words)."
-            .to_string(),
-    );
-    m
+        BUILT_IN_DEFAULT_PROMPT.to_string(),
+    )])
 }
 
-/// Merge legacy `prompt` and modern `prompts` into the effective prompt set:
-/// non-empty `prompts` wins; otherwise legacy `prompt` becomes
-/// `{"default": prompt}`; otherwise the built-in detail+brief pair.
-fn resolve_prompts(
-    legacy: Option<&str>,
-    prompts: &BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    if !prompts.is_empty() {
-        return prompts.clone();
-    }
-    if let Some(p) = legacy.map(str::trim).filter(|s| !s.is_empty()) {
-        let mut m = BTreeMap::new();
-        m.insert("default".to_string(), p.to_string());
-        return m;
-    }
-    default_prompts()
+fn default_profile_prompts() -> Vec<String> {
+    vec!["default".to_string()]
 }
 
 fn default_max_pixels() -> u32 {
@@ -285,8 +272,7 @@ impl CaptionerProfile {
             repo: BUILT_IN_CAPTIONER_REPO.to_string(),
             revision: None,
             subdir: Some(BUILT_IN_CAPTIONER_SUBDIR.to_string()),
-            prompt: None,
-            prompts: BTreeMap::new(),
+            prompts: default_profile_prompts(),
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         })
@@ -300,13 +286,37 @@ impl CaptionerProfile {
         }
     }
 
-    /// Effective prompt set after applying legacy / default fallbacks.
-    /// Always non-empty.
-    pub fn resolved_prompts(&self) -> BTreeMap<String, String> {
+    fn prompt_names(&self) -> &[String] {
         match self {
-            Self::Onnx(p) => resolve_prompts(p.prompt.as_deref(), &p.prompts),
-            Self::Openai(p) => resolve_prompts(p.prompt.as_deref(), &p.prompts),
+            Self::Onnx(p) => &p.prompts,
+            Self::Openai(p) => &p.prompts,
         }
+    }
+
+    /// Resolve this profile's prompt names against `library`, returning
+    /// (name, text) pairs in the order the profile listed them.
+    /// Duplicates are collapsed. An empty `prompts` list resolves to
+    /// `["default"]` (so a profile that omits the field still captions).
+    pub fn resolved_prompts(
+        &self,
+        library: &BTreeMap<String, String>,
+    ) -> Result<Vec<(String, String)>, ConfigError> {
+        let names = self.prompt_names();
+        let fallback = default_profile_prompts();
+        let names: &[String] = if names.is_empty() { &fallback } else { names };
+
+        let mut out: Vec<(String, String)> = Vec::with_capacity(names.len());
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for name in names {
+            if !seen.insert(name.as_str()) {
+                continue;
+            }
+            let text = library
+                .get(name)
+                .ok_or_else(|| ConfigError::UnknownPrompt(name.clone()))?;
+            out.push((name.clone(), text.clone()));
+        }
+        Ok(out)
     }
 }
 
@@ -322,6 +332,7 @@ impl Default for ProjectConfig {
             export,
             tagger: BTreeMap::new(),
             captioner: BTreeMap::new(),
+            captioner_prompts: BTreeMap::new(),
         }
     }
 }
@@ -340,6 +351,8 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("unknown prompt name `{0}` — define it in [captioner_prompts] or pick an existing one")]
+    UnknownPrompt(String),
 }
 
 impl ProjectConfig {
@@ -437,6 +450,20 @@ impl ProjectConfig {
         for (k, v) in other.captioner {
             self.captioner.insert(k, v);
         }
+        for (k, v) in other.captioner_prompts {
+            self.captioner_prompts.insert(k, v);
+        }
+    }
+
+    /// Effective prompt library: built-in defaults overlaid with the
+    /// user's `[captioner_prompts]` (user entries win). Pass to
+    /// `CaptionerProfile::resolved_prompts` when invoking captions.
+    pub fn prompt_library(&self) -> BTreeMap<String, String> {
+        let mut lib = default_prompt_library();
+        for (k, v) in &self.captioner_prompts {
+            lib.insert(k.clone(), v.clone());
+        }
+        lib
     }
 
     pub fn resolve_profile(&self, name: Option<&str>) -> ExportProfile {
@@ -555,8 +582,7 @@ mod tests {
                 endpoint: "http://user".into(),
                 model: None,
                 api_key: None,
-                prompt: None,
-                prompts: BTreeMap::new(),
+                prompts: default_profile_prompts(),
                 max_tokens: 100,
                 temperature: None,
                 max_edge: 1024,
@@ -572,8 +598,7 @@ mod tests {
                 endpoint: "http://project".into(),
                 model: None,
                 api_key: None,
-                prompt: None,
-                prompts: BTreeMap::new(),
+                prompts: default_profile_prompts(),
                 max_tokens: 200,
                 temperature: None,
                 max_edge: 1024,
@@ -594,45 +619,63 @@ mod tests {
     }
 
     #[test]
-    fn resolved_prompts_falls_back_to_defaults_when_unset() {
+    fn resolved_prompts_falls_back_to_default_when_unset() {
         let cfg = CaptionerProfile::built_in();
-        let prompts = cfg.resolved_prompts();
+        let library = ProjectConfig::default().prompt_library();
+        let prompts = cfg.resolved_prompts(&library).unwrap();
         assert_eq!(prompts.len(), 1);
-        assert!(prompts.contains_key("default"));
+        assert_eq!(prompts[0].0, "default");
+        assert_eq!(prompts[0].1, BUILT_IN_DEFAULT_PROMPT);
     }
 
     #[test]
-    fn resolved_prompts_migrates_legacy_single_prompt() {
+    fn resolved_prompts_returns_names_in_listed_order() {
         let cfg = CaptionerProfile::Onnx(OnnxCaptionerProfile {
             repo: "r".into(),
             revision: None,
             subdir: None,
-            prompt: Some("legacy single".into()),
-            prompts: BTreeMap::new(),
+            prompts: vec!["character".into(), "default".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         });
-        let prompts = cfg.resolved_prompts();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts.get("default").map(String::as_str), Some("legacy single"));
+        let mut config = ProjectConfig::default();
+        config
+            .captioner_prompts
+            .insert("character".into(), "Describe characters.".into());
+        let library = config.prompt_library();
+        let prompts = cfg.resolved_prompts(&library).unwrap();
+        assert_eq!(
+            prompts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["character", "default"]
+        );
     }
 
     #[test]
-    fn resolved_prompts_prefers_explicit_prompts_over_legacy() {
-        let mut explicit = BTreeMap::new();
-        explicit.insert("terse".into(), "one word".into());
+    fn resolved_prompts_unknown_name_errors() {
         let cfg = CaptionerProfile::Onnx(OnnxCaptionerProfile {
             repo: "r".into(),
             revision: None,
             subdir: None,
-            prompt: Some("ignored".into()),
-            prompts: explicit,
+            prompts: vec!["nonexistent".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         });
-        let prompts = cfg.resolved_prompts();
-        assert_eq!(prompts.len(), 1);
-        assert_eq!(prompts.get("terse").map(String::as_str), Some("one word"));
+        let library = ProjectConfig::default().prompt_library();
+        let err = cfg.resolved_prompts(&library).unwrap_err();
+        match err {
+            ConfigError::UnknownPrompt(name) => assert_eq!(name, "nonexistent"),
+            other => panic!("expected UnknownPrompt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn captioner_prompts_user_override_wins_over_built_in_default() {
+        let mut config = ProjectConfig::default();
+        config
+            .captioner_prompts
+            .insert("default".into(), "Describe briefly.".into());
+        let library = config.prompt_library();
+        assert_eq!(library.get("default").map(String::as_str), Some("Describe briefly."));
     }
 
     #[test]
@@ -670,7 +713,12 @@ mod tests {
             .expect("examples/anima-tagger.toml must parse as toml::Value");
         let raw_table = raw.as_table().expect("example must be a top-level table");
 
-        for k in ["default_profile", "default_tagger", "default_captioner"] {
+        for k in [
+            "default_profile",
+            "default_tagger",
+            "default_captioner",
+            "captioner_prompts",
+        ] {
             assert!(
                 raw_table.contains_key(k),
                 "example missing top-level key `{k}`"
@@ -757,8 +805,7 @@ mod tests {
             repo: "r".into(),
             revision: Some("main".into()),
             subdir: Some("d".into()),
-            prompt: None,
-            prompts: BTreeMap::from([("detail".into(), "x".into())]),
+            prompts: vec!["default".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
         });
@@ -766,8 +813,7 @@ mod tests {
             endpoint: "http://x".into(),
             model: Some("m".into()),
             api_key: Some("k".into()),
-            prompt: None,
-            prompts: BTreeMap::from([("detail".into(), "x".into())]),
+            prompts: vec!["default".into()],
             max_tokens: default_max_new_tokens(),
             temperature: Some(0.7),
             max_edge: default_openai_max_edge(),

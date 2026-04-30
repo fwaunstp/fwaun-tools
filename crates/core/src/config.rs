@@ -157,7 +157,16 @@ pub struct OpenAiCaptionerProfile {
 /// and no legacy `prompt`.
 pub fn default_prompts() -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
-    m.insert("detail".to_string(), "Describe this image in detail.".to_string());
+    // Length cap chosen to fit comfortably inside ANIMA's 512-token training
+    // ceiling (qwen3_max_token_length / t5_max_token_length defaults in
+    // kohya-ss anima_train_network) once tokenized. Without an explicit
+    // limit, larger VLMs (Gemma-3 27B/31B etc.) happily produce 1k+ tokens
+    // and overflow.
+    m.insert(
+        "detail".to_string(),
+        "Describe this image in detail in 3-5 sentences (under 200 words)."
+            .to_string(),
+    );
     m.insert(
         "brief".to_string(),
         "Describe this image briefly in one sentence.".to_string(),
@@ -191,7 +200,11 @@ fn default_max_pixels() -> u32 {
 }
 
 fn default_max_new_tokens() -> usize {
-    1024
+    // Matches ANIMA's training-time qwen3 / t5 max_token_length default
+    // (512). Going higher wastes decode time on tokens the base model
+    // wouldn't have seen during training. Bump per-profile if you're
+    // captioning for a different downstream model.
+    512
 }
 
 fn default_openai_max_edge() -> u32 {

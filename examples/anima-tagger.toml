@@ -60,6 +60,14 @@ storage_threshold = 0.10
 # pipeline, or `kind = "openai"` to call any OpenAI-compatible
 # chat-completions endpoint (llama.cpp, koboldcpp, Ollama, LM Studio,
 # vLLM, ...).
+#
+# Token budget note: the ANIMA base model is trained with
+# qwen3_max_token_length = t5_max_token_length = 512 (kohya-ss
+# anima_train_network defaults), so captions longer than ~512 tokens are
+# truncated at training time anyway. The default `max_new_tokens` /
+# `max_tokens` of 512 below targets that ceiling. Larger VLMs (Gemma-3
+# 27B/31B, etc.) will happily emit 1k+ tokens unless you also constrain
+# the prompt — see the length-capped `detail` prompt below.
 # ---------------------------------------------------------------------------
 
 [captioner.qwen3-vl-4b]
@@ -73,13 +81,13 @@ subdir = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu"
 # Smart-resize area cap (~768x768). Larger = richer captions, quadratically
 # slower decode.
 max_pixels = 589824
-max_new_tokens = 1024
+max_new_tokens = 512
 
 # Named prompts run against the same loaded model. Sidecar entries are
 # keyed `{profile_name}.{prompt_name}` so detail / brief variants of the
 # same model coexist.
 [captioner.qwen3-vl-4b.prompts]
-detail = "Describe this image in detail."
+detail = "Describe this image in detail in 3-5 sentences (under 200 words)."
 brief = "Describe this image briefly in one sentence."
 
 [captioner.local-llamacpp]
@@ -91,7 +99,7 @@ endpoint = "http://localhost:8080/v1"
 model = "local"
 # Bearer token. Empty string / omit for unauthenticated local servers.
 api_key = ""
-max_tokens = 1024
+max_tokens = 512
 temperature = 0.7
 # Resize so the longest edge is at most this many pixels before sending.
 # 0 = send the file bytes verbatim.
@@ -102,5 +110,5 @@ jpeg_quality = 90
 timeout_secs = 600
 
 [captioner.local-llamacpp.prompts]
-detail = "Describe this image in detail."
+detail = "Describe this image in detail in 3-5 sentences (under 200 words)."
 brief = "Describe this image briefly in one sentence."

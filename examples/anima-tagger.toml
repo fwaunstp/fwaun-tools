@@ -80,13 +80,22 @@ storage_threshold = 0.10
 # chat-completions endpoint (llama.cpp, koboldcpp, Ollama, LM Studio,
 # vLLM, ...).
 #
-# Token budget note: the ANIMA base model is trained with
-# qwen3_max_token_length = t5_max_token_length = 512 (kohya-ss
-# anima_train_network defaults), so captions longer than ~512 tokens are
-# truncated at training time anyway. The default `max_new_tokens` /
-# `max_tokens` of 512 below targets that ceiling. Larger VLMs (Gemma-3
-# 27B/31B, etc.) will happily emit 1k+ tokens unless you also constrain
-# the prompt — see the length-capped prompts in `[captioner_prompts]`.
+# Token budget note: ANIMA is trained with qwen3_max_token_length =
+# t5_max_token_length = 512 (kohya-ss anima_train_network defaults), so
+# captions longer than ~512 tokens get truncated at training time.
+#
+# IMPORTANT: each captioner's `max_new_tokens` / `max_tokens` is measured
+# in *that captioner model's own tokenizer*, NOT ANIMA's. The numbers
+# don't compare directly:
+#   * Qwen3-VL (ONNX) shares Qwen3 vocab with ANIMA, so 512 here ≈ 512
+#     ANIMA tokens. Don't go over.
+#   * Gemma-3 / other OpenAI backends use different vocabs that need
+#     1.5-2.3x more tokens to encode the same English prose. So 512 of
+#     Gemma's tokens often comes out to ~250 ANIMA tokens — the cap
+#     becomes overly conservative and produces mid-sentence cutoffs.
+#     Bump `max_tokens` to 800-1024 for those backends; the prompt's
+#     length cap (`under 200 words`) still keeps prose bounded, and you
+#     can verify against ANIMA's real budget with `anima-tagger tokens`.
 #
 # `prompts = ["..."]` is a list of names looked up in
 # `[captioner_prompts]`. Each named prompt produces its own caption
@@ -119,6 +128,9 @@ endpoint = "http://localhost:8080/v1"
 model = "local"
 # Bearer token. Empty string / omit for unauthenticated local servers.
 api_key = ""
+# Counted in this server's tokenizer, not ANIMA's. Bump to 800-1024
+# for Gemma-style models if you see mid-sentence truncation; verify
+# with `anima-tagger tokens` after generation.
 max_tokens = 512
 temperature = 0.7
 # Resize so the longest edge is at most this many pixels before sending.

@@ -293,6 +293,15 @@ impl CaptionerProfile {
         }
     }
 
+    /// Replace this profile's `prompts` field. Used by the CLI to apply
+    /// a `--prompts` override at runtime without editing the config file.
+    pub fn set_prompt_names(&mut self, names: Vec<String>) {
+        match self {
+            Self::Onnx(p) => p.prompts = names,
+            Self::Openai(p) => p.prompts = names,
+        }
+    }
+
     /// Resolve this profile's prompt names against `library`, returning
     /// (name, text) pairs in the order the profile listed them.
     /// Duplicates are collapsed. An empty `prompts` list resolves to

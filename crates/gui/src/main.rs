@@ -725,6 +725,52 @@ fn bulk_remove_caption(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>, 
     }
 }
 
+/// Copy `model`'s auto caption into `manual_caption` for every selected
+/// image whose manual is currently empty. Mirrors the CLI's
+/// `--promote-to-manual=if-empty`: never overwrites a hand-edited
+/// manual. Use "Clear manual" first if you want to redo it.
+fn bulk_promote_to_manual(
+    mut images: Signal<Vec<ImageItem>>,
+    paths: Vec<PathBuf>,
+    model: String,
+) {
+    let mut imgs = images.write();
+    for img in imgs.iter_mut() {
+        if !paths.contains(&img.path) {
+            continue;
+        }
+        let manual_empty = img
+            .sidecar
+            .manual_caption
+            .as_deref()
+            .map(str::trim)
+            .map(|s| s.is_empty())
+            .unwrap_or(true);
+        if !manual_empty {
+            continue;
+        }
+        let Some(entry) = img.sidecar.captions.get(&model) else {
+            continue;
+        };
+        let text = entry.caption.clone();
+        img.sidecar.set_manual_caption(&text);
+        let _ = img.sidecar.save(&img.path);
+    }
+}
+
+fn bulk_clear_manual_caption(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>) {
+    let mut imgs = images.write();
+    for img in imgs.iter_mut() {
+        if !paths.contains(&img.path) {
+            continue;
+        }
+        if img.sidecar.manual_caption.is_some() {
+            img.sidecar.set_manual_caption("");
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+}
+
 #[component]
 fn BulkCaptionHintEditor(
     paths: Vec<PathBuf>,
@@ -933,6 +979,16 @@ fn BulkDetail(
             }
         }
 
+        div { class: "section-title", "Manual caption (bulk)" }
+        div { class: "tag-list",
+            button {
+                class: "tiny secondary",
+                title: "Clear manual_caption on all selected images so a follow-up promote can repopulate it.",
+                onclick: move |_| bulk_clear_manual_caption(images, selected_paths.clone()),
+                "Clear manual"
+            }
+        }
+
         div { class: "section-title", "Auto captions (by model)" }
         if caption_order.is_empty() {
             p { class: "muted small", "(none)" }
@@ -942,15 +998,23 @@ fn BulkDetail(
                     {
                         let count = caption_counts[&model];
                         let label = format!("{model} ({count}/{n})");
-                        let paths_for = selected_paths.clone();
-                        let model_for = model.clone();
+                        let paths_remove = selected_paths.clone();
+                        let paths_promote = selected_paths.clone();
+                        let model_remove = model.clone();
+                        let model_promote = model.clone();
                         rsx! {
                             span { class: "chip auto",
                                 "{label}"
                                 span {
                                     class: "chip-x",
+                                    title: "Copy this caption into manual_caption on every selected image whose manual is empty.",
+                                    onclick: move |_| bulk_promote_to_manual(images, paths_promote.clone(), model_promote.clone()),
+                                    "→ manual"
+                                }
+                                span {
+                                    class: "chip-x",
                                     title: "Remove this model's caption from all selected",
-                                    onclick: move |_| bulk_remove_caption(images, paths_for.clone(), model_for.clone()),
+                                    onclick: move |_| bulk_remove_caption(images, paths_remove.clone(), model_remove.clone()),
                                     "×"
                                 }
                             }

@@ -9,7 +9,20 @@ use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
 use anyhow::{Context, Result};
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+/// Whether to copy the generated reference caption into `manual_caption`
+/// after captioning. Default depends on the resolved prompt count: a
+/// single prompt promotes if-empty (the typical case where the auto
+/// caption *is* the canonical one); multiple prompts default to `never`
+/// so a comparison run doesn't randomly pick one to promote. Force
+/// overwrite is intentionally not exposed; clear `manual_caption` first
+/// (in the GUI bulk panel) and re-run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum PromoteMode {
+    Never,
+    IfEmpty,
+}
 
 #[derive(Parser)]
 #[command(
@@ -45,6 +58,16 @@ enum Command {
         /// Re-caption images that already have a caption record.
         #[arg(long)]
         force: bool,
+        /// Comma-separated prompt names overriding the profile's
+        /// `prompts` field for this run. Names must exist in
+        /// `[captioner_prompts]` (or be the built-in `default`).
+        #[arg(long, value_delimiter = ',')]
+        prompts: Option<Vec<String>>,
+        /// Copy the resolved single prompt's caption into the manual
+        /// slot after generation. Requires exactly one resolved prompt.
+        /// Default: `if-empty` when 1 prompt is active, `never` otherwise.
+        #[arg(long, value_enum)]
+        promote_to_manual: Option<PromoteMode>,
     },
     /// Fetch tags from a booru API by image MD5 hash.
     Booru {
@@ -89,7 +112,13 @@ fn main() -> Result<()> {
             force,
             threshold,
         } => cmd_tag(dir, model, force, threshold),
-        Command::Caption { dir, model, force } => cmd_caption(dir, model, force),
+        Command::Caption {
+            dir,
+            model,
+            force,
+            prompts,
+            promote_to_manual,
+        } => cmd_caption(dir, model, force, prompts, promote_to_manual),
         Command::Booru { dir, source, force } => cmd_booru(dir, source, force),
         Command::Export {
             dir,
@@ -144,25 +173,51 @@ fn cmd_tag(
     Ok(())
 }
 
-fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<()> {
+fn cmd_caption(
+    dir: PathBuf,
+    model_name: Option<String>,
+    force: bool,
+    prompts_override: Option<Vec<String>>,
+    promote_arg: Option<PromoteMode>,
+) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
-    let (resolved_name, profile) = cfg.resolve_captioner(model_name.as_deref());
+    let (resolved_name, mut profile) = cfg.resolve_captioner(model_name.as_deref());
+    if let Some(names) = prompts_override {
+        profile.set_prompt_names(names);
+    }
     let library = cfg.prompt_library();
     let prompts = profile
         .resolved_prompts(&library)
         .with_context(|| format!("resolving prompts for captioner `{resolved_name}`"))?;
 
+    let promote_mode = promote_arg.unwrap_or(if prompts.len() == 1 {
+        PromoteMode::IfEmpty
+    } else {
+        PromoteMode::Never
+    });
+    if promote_mode != PromoteMode::Never && prompts.len() != 1 {
+        anyhow::bail!(
+            "--promote-to-manual requires exactly one resolved prompt; got {} \
+             (use --prompts=<name> to narrow)",
+            prompts.len()
+        );
+    }
+    let promote_key = (promote_mode != PromoteMode::Never)
+        .then(|| format!("{resolved_name}.{}", prompts[0].0));
+
     eprintln!(
-        "loading captioner `{resolved_name}` from {} (prompts: {}) …",
+        "loading captioner `{resolved_name}` from {} (prompts: {}, promote: {:?}) …",
         profile.source_label(),
         prompts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+        promote_mode,
     );
     let mut captioner = Captioner::from_profile(&profile)?;
     eprintln!("captioner ready");
 
     let mut captioned = 0usize;
     let mut skipped = 0usize;
+    let mut promoted = 0usize;
     for image in iter_images(&dir) {
         let mut sc = Sidecar::load_or_default(&image)?;
         let pending: Vec<(String, String, String)> = prompts
@@ -176,25 +231,54 @@ fn cmd_caption(dir: PathBuf, model_name: Option<String>, force: bool) -> Result<
                 }
             })
             .collect();
+        let mut dirty = false;
+        let hint = sc.caption_hint.clone();
         if pending.is_empty() {
             skipped += 1;
-            continue;
-        }
-        let mut wrote_any = false;
-        let hint = sc.caption_hint.clone();
-        for (key, pname, ptext) in pending {
-            let caption = captioner.caption_image(&image, &ptext, hint.as_deref())?;
-            let preview: String = caption.chars().take(60).collect();
-            sc.set_caption(key, caption);
-            wrote_any = true;
-            println!("captioned {} [{pname}] — \"{preview}…\"", image.display());
-        }
-        if wrote_any {
-            sc.save(&image)?;
+        } else {
+            for (key, pname, ptext) in pending {
+                let caption = captioner.caption_image(&image, &ptext, hint.as_deref())?;
+                let preview: String = caption.chars().take(60).collect();
+                sc.set_caption(key, caption);
+                dirty = true;
+                println!("captioned {} [{pname}] — \"{preview}…\"", image.display());
+            }
             captioned += 1;
         }
+
+        // Promote step runs independently of generation, so a follow-up
+        // run (`--prompts=default --promote-to-manual=if-empty`) can
+        // copy an existing reference to manual without regenerating.
+        if let Some(key) = promote_key.as_deref()
+            && let Some(entry) = sc.captions.get(key)
+        {
+            let manual_empty = sc
+                .manual_caption
+                .as_deref()
+                .map(str::trim)
+                .map(|s| s.is_empty())
+                .unwrap_or(true);
+            let copy = match promote_mode {
+                PromoteMode::IfEmpty => manual_empty,
+                PromoteMode::Never => false,
+            };
+            if copy {
+                let text = entry.caption.clone();
+                sc.set_manual_caption(&text);
+                dirty = true;
+                promoted += 1;
+                println!("promoted {} → manual ({key})", image.display());
+            }
+        }
+
+        if dirty {
+            sc.save(&image)?;
+        }
     }
-    println!("done: {captioned} captioned, {skipped} skipped (use --force to recaption)");
+    println!(
+        "done: {captioned} captioned, {skipped} skipped, {promoted} promoted to manual \
+         (use --force to recaption)",
+    );
     Ok(())
 }
 

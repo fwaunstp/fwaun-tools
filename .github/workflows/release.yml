@@ -31,13 +31,19 @@ jobs:
             gui_glob: "*.app"
             cli_archive: tar.gz
           - name: linux-x64
-            runner: ubuntu-22.04
+            # ubuntu-24.04 (glibc 2.39) is required because pyke's
+            # prebuilt onnxruntime references __isoc23_strtol /
+            # __isoc23_strtoull / __isoc23_strtoll, which only exist
+            # in glibc >= 2.38. AppImage cannot bundle libc, so the
+            # resulting binary inherits a glibc 2.39+ floor at runtime
+            # too. README.md flags this for users on older distros.
+            runner: ubuntu-24.04
             os: linux
             gui_pkg: appimage
             gui_glob: "*.AppImage"
             cli_archive: tar.gz
           - name: linux-arm64
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
             os: linux
             gui_pkg: appimage
             gui_glob: "*.AppImage"
@@ -156,7 +162,7 @@ jobs:
   release:
     name: publish github release
     needs: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 

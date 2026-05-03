@@ -60,6 +60,14 @@ The macOS bundle is **not notarized**. The installer clears the
 `com.apple.quarantine` attribute, but if Gatekeeper still blocks it,
 right-click the app in Finder → **Open** to confirm once.
 
+### Linux glibc requirement
+
+The Linux release binaries link against the glibc shipped on
+**Ubuntu 24.04 (glibc 2.39)**. They will not run on Ubuntu 22.04, Debian
+12, or earlier — the prebuilt ONNX Runtime that the tagger / captioner
+depend on references `__isoc23_*` symbols introduced in glibc 2.38.
+Build from source on older distros, or upgrade.
+
 ### Windows support caveat
 
 The maintainer develops on macOS and Linux. Windows builds are produced

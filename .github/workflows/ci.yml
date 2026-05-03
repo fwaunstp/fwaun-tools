@@ -16,7 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        # ubuntu-24.04 because pyke's prebuilt onnxruntime requires
+        # glibc >= 2.38 (__isoc23_strtol et al). See release.yml.
+        os: [ubuntu-24.04, macos-14]
     steps:
       - uses: actions/checkout@v4
 

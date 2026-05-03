@@ -1,10 +1,11 @@
 use std::collections::HashSet;
+use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::ProjectConfig;
+use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig};
 use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
@@ -82,6 +83,10 @@ fn App() -> Element {
     let tagger_state: Signal<Option<Tagger>> = use_signal(|| None);
     let captioner_state: Signal<Option<Captioner>> = use_signal(|| None);
 
+    let config_open = use_signal(|| false);
+    let config_text = use_signal(String::new);
+    let config_error = use_signal(|| None::<String>);
+
     let tag_query = tag_filter.read().trim().to_lowercase();
     let visible: Vec<ImageItem> = images
         .read()
@@ -97,11 +102,18 @@ fn App() -> Element {
             Toolbar {
                 folder, images, selected, filter, tag_filter, loading,
                 error_msg, tagger_state, captioner_state,
+                config_open, config_text, config_error,
             }
             ErrorBanner { error_msg }
             div { class: "workspace",
                 Grid { items: visible, selected }
                 DetailPanel { images, selected, tag_input }
+            }
+            if *config_open.read() {
+                ConfigEditor {
+                    folder, config_open, config_text, config_error,
+                    tagger_state, captioner_state, error_msg,
+                }
             }
         }
     }
@@ -163,6 +175,9 @@ fn Toolbar(
     error_msg: Signal<Option<String>>,
     tagger_state: Signal<Option<Tagger>>,
     captioner_state: Signal<Option<Captioner>>,
+    mut config_open: Signal<bool>,
+    mut config_text: Signal<String>,
+    mut config_error: Signal<Option<String>>,
 ) -> Element {
     let on_open = move |_| {
         let Some(picked) = rfd::FileDialog::new().pick_folder() else {
@@ -198,6 +213,23 @@ fn Toolbar(
 
     let clear_selection = move |_| selected.set(HashSet::new());
 
+    let on_open_config = move |_| {
+        let text = match folder.read().as_ref() {
+            Some(p) => {
+                let target = p.join(CONFIG_FILE);
+                if target.exists() {
+                    fs::read_to_string(&target).unwrap_or_default()
+                } else {
+                    CONFIG_TEMPLATE.to_string()
+                }
+            }
+            None => CONFIG_TEMPLATE.to_string(),
+        };
+        config_text.set(text);
+        config_error.set(None);
+        config_open.set(true);
+    };
+
     let folder_label = match folder.read().as_ref() {
         Some(p) => p
             .file_name()
@@ -214,6 +246,12 @@ fn Toolbar(
     rsx! {
         div { class: "toolbar",
             button { onclick: on_open, "Open folder…" }
+            button {
+                class: "secondary",
+                title: "Edit anima-tagger.toml for the current dataset folder",
+                onclick: on_open_config,
+                "Config…"
+            }
             span { class: "folder-name", "{folder_label}" }
             select {
                 value: "{filter.read().label()}",
@@ -1250,6 +1288,100 @@ fn make_thumbnail(path: &Path, max_size: u32) -> anyhow::Result<String> {
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
+const CONFIG_TEMPLATE: &str = include_str!("../../../examples/anima-tagger.toml");
+
+#[component]
+fn ConfigEditor(
+    folder: Signal<Option<PathBuf>>,
+    mut config_open: Signal<bool>,
+    mut config_text: Signal<String>,
+    mut config_error: Signal<Option<String>>,
+    mut tagger_state: Signal<Option<Tagger>>,
+    mut captioner_state: Signal<Option<Captioner>>,
+    mut error_msg: Signal<Option<String>>,
+) -> Element {
+    let folder_path = folder.read().clone();
+    let target_path = folder_path.as_ref().map(|p| p.join(CONFIG_FILE));
+    let target_label = target_path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(no folder)".to_string());
+    let target_for_save = target_path.clone();
+
+    let on_validate = move |_| {
+        let text = config_text.read().clone();
+        match toml::from_str::<ProjectConfig>(&text) {
+            Ok(_) => config_error.set(None),
+            Err(e) => config_error.set(Some(e.to_string())),
+        }
+    };
+
+    let on_save = move |_| {
+        let text = config_text.read().clone();
+        if let Err(e) = toml::from_str::<ProjectConfig>(&text) {
+            config_error.set(Some(e.to_string()));
+            return;
+        }
+        let Some(target) = target_for_save.clone() else {
+            error_msg.set(Some("Open a folder first.".into()));
+            return;
+        };
+        if let Err(e) = fs::write(&target, text.as_bytes()) {
+            config_error.set(Some(format!("write {}: {e}", target.display())));
+            return;
+        }
+        // Cached models may have been built against the old profile —
+        // drop them so the next Run-tagger / Run-captioner picks up the
+        // new config.
+        tagger_state.set(None);
+        captioner_state.set(None);
+        config_error.set(None);
+        config_open.set(false);
+    };
+
+    let mut close_editor = move || {
+        config_open.set(false);
+        config_error.set(None);
+    };
+
+    rsx! {
+        div { class: "modal-overlay",
+            onclick: move |_| close_editor(),
+            div {
+                class: "modal config-modal",
+                onclick: move |evt| evt.stop_propagation(),
+                div { class: "modal-head",
+                    span { "anima-tagger.toml" }
+                    button {
+                        class: "tiny secondary",
+                        onclick: move |_| close_editor(),
+                        "×"
+                    }
+                }
+                p { class: "muted small", "{target_label}" }
+                textarea {
+                    class: "config-editor",
+                    value: "{config_text}",
+                    spellcheck: "false",
+                    oninput: move |evt| config_text.set(evt.value()),
+                }
+                if let Some(err) = config_error.read().as_ref() {
+                    pre { class: "config-error", "{err}" }
+                }
+                div { class: "modal-actions",
+                    button { class: "tiny secondary", onclick: on_validate, "Validate" }
+                    button { class: "tiny", onclick: on_save, "Save & reload" }
+                    button {
+                        class: "tiny secondary",
+                        onclick: move |_| close_editor(),
+                        "Cancel"
+                    }
+                }
+            }
+        }
+    }
+}
+
 const APP_CSS: &str = r#"
 * { box-sizing: border-box; }
 html, body, #main { margin: 0; height: 100%; }
@@ -1412,5 +1544,53 @@ button.tiny.secondary:hover { background: #4a4a4a; }
 code {
     background: #2a2a2a; padding: 1px 4px; border-radius: 3px;
     font-family: ui-monospace, monospace; font-size: 11px;
+}
+.modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 100;
+}
+.modal {
+    background: #252526; color: #e6e6e6;
+    border: 1px solid #3a3a3a; border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    padding: 14px 16px;
+    display: flex; flex-direction: column;
+    min-width: 520px; max-width: 90vw;
+}
+.modal-head {
+    display: flex; align-items: center; justify-content: space-between;
+    font-weight: 600; font-size: 13px;
+    margin-bottom: 4px;
+}
+.modal-head button { font-size: 13px; }
+.modal-actions {
+    display: flex; gap: 6px; justify-content: flex-end;
+    margin-top: 10px;
+}
+.config-modal { width: 720px; max-height: 80vh; }
+.config-editor {
+    flex: 1;
+    min-height: 360px;
+    width: 100%;
+    margin-top: 8px;
+    background: #1e1e1e; color: #d6d6d6;
+    border: 1px solid #3a3a3a; border-radius: 4px;
+    padding: 8px 10px;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    resize: vertical;
+}
+.config-editor:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
+.config-error {
+    margin-top: 8px;
+    background: #3a1f1f; color: #ffd0d0;
+    border: 1px solid #5a2d2d; border-radius: 4px;
+    padding: 6px 8px;
+    font-family: ui-monospace, monospace; font-size: 11px;
+    white-space: pre-wrap;
+    max-height: 140px; overflow-y: auto;
 }
 "#;

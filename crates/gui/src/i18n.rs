@@ -116,9 +116,6 @@ impl T {
             Lang::Ja => format!("{count} 件 ・ {sel_count} 件選択中"),
         }
     }
-    pub fn lang_select_title(self) -> &'static str {
-        self.pair("Language", "言語")
-    }
 
     // Grid / status flags
     pub fn no_images(self) -> &'static str {

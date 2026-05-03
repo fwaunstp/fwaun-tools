@@ -404,6 +404,40 @@ on a small sample and inspecting the resulting `.ron` sidecars.
 
 ---
 
+## Publishing to crates.io
+
+All six crates are published. The dependency graph forces a specific
+publish order — each lower tier must hit crates.io and the index must
+update before the next tier can resolve:
+
+1. `anima-tagger-core`
+2. `anima-tagger-tagger`, `anima-tagger-booru`, `anima-tagger-captioner`
+3. `anima-tagger-cli`, `anima-tagger-gui`
+
+```bash
+cargo publish -p anima-tagger-core
+# wait ~30s for the index to update, then:
+cargo publish -p anima-tagger-tagger
+cargo publish -p anima-tagger-booru
+cargo publish -p anima-tagger-captioner
+cargo publish -p anima-tagger-cli
+cargo publish -p anima-tagger-gui
+```
+
+Bumping any version: edit `[workspace.package].version` once — the
+inter-crate `version = "X.Y.Z"` pins live in `[workspace.dependencies]`
+at the workspace root and need to be bumped there too, or
+`cargo publish` for the downstream crates will fail to resolve.
+
+The annotated config example used by both `core` (snapshot test) and
+`gui` (Config… modal default text) lives at
+[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example).
+Re-exported as `anima_tagger_core::config::CONFIG_EXAMPLE`. Keep it
+inside the core crate dir — `include_str!` paths must stay within the
+package on crates.io.
+
+---
+
 ## Background reading
 
 When picking the captioner back up:

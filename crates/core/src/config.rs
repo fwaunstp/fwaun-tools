@@ -6,6 +6,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const CONFIG_FILE: &str = "anima-tagger.toml";
+
+/// Annotated TOML template covering every supported profile field.
+/// Shipped alongside the crate so consumers (e.g. the GUI's "Config…"
+/// modal) can show users a starting point without having to maintain
+/// a separate copy.
+pub const CONFIG_EXAMPLE: &str = include_str!("../anima-tagger.toml.example");
 /// Per-user config file relative to `$XDG_CONFIG_HOME` (defaulting to
 /// `~/.config`). Provides shared defaults for `[captioner.*]` /
 /// `[tagger.*]` / `[export.*]` profiles so each dataset directory
@@ -704,7 +710,7 @@ mod tests {
     }
 
     /// Guard: when a field is added to any of the profile structs, the
-    /// shipped example (`examples/anima-tagger.toml`) has to grow alongside
+    /// shipped example (`crates/core/anima-tagger.toml.example`) has to grow alongside
     /// it. The test serializes a fully-populated synthetic instance of each
     /// profile, then asserts that at least one profile of the matching kind
     /// in the example covers every produced key.
@@ -715,11 +721,11 @@ mod tests {
     fn example_config_documents_every_supported_field() {
         use std::collections::BTreeSet;
 
-        let example_str = include_str!("../../../examples/anima-tagger.toml");
+        let example_str = CONFIG_EXAMPLE;
         let cfg: ProjectConfig = toml::from_str(example_str)
-            .expect("examples/anima-tagger.toml must parse as ProjectConfig");
+            .expect("anima-tagger.toml.example must parse as ProjectConfig");
         let raw: toml::Value = toml::from_str(example_str)
-            .expect("examples/anima-tagger.toml must parse as toml::Value");
+            .expect("anima-tagger.toml.example must parse as toml::Value");
         let raw_table = raw.as_table().expect("example must be a top-level table");
 
         for k in [
@@ -839,7 +845,7 @@ mod tests {
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
         {
             panic!(
-                "no [export.*] profile in examples/anima-tagger.toml covers every \
+                "no [export.*] profile in crates/core/anima-tagger.toml.example covers every \
                  ExportProfile field; closest match is missing {missing:?}"
             );
         }
@@ -847,7 +853,7 @@ mod tests {
             missing_from_best_match(raw_table.get("tagger"), &expected_tagger, |_| true)
         {
             panic!(
-                "no [tagger.*] profile in examples/anima-tagger.toml covers every \
+                "no [tagger.*] profile in crates/core/anima-tagger.toml.example covers every \
                  TaggerProfile field; closest match is missing {missing:?}"
             );
         }
@@ -858,7 +864,7 @@ mod tests {
         ) {
             panic!(
                 "no [captioner.*] profile with `kind = \"onnx\"` in \
-                 examples/anima-tagger.toml covers every OnnxCaptionerProfile field; \
+                 crates/core/anima-tagger.toml.example covers every OnnxCaptionerProfile field; \
                  closest match is missing {missing:?}"
             );
         }
@@ -869,7 +875,7 @@ mod tests {
         ) {
             panic!(
                 "no [captioner.*] profile with `kind = \"openai\"` in \
-                 examples/anima-tagger.toml covers every OpenAiCaptionerProfile field; \
+                 crates/core/anima-tagger.toml.example covers every OpenAiCaptionerProfile field; \
                  closest match is missing {missing:?}"
             );
         }

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig};
+use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig};
 use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
@@ -1337,7 +1337,8 @@ fn make_thumbnail(path: &Path, max_size: u32) -> anyhow::Result<String> {
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }
 
-const CONFIG_TEMPLATE: &str = include_str!("../../../examples/anima-tagger.toml");
+/// Shorthand alias for the template re-exported by the core crate.
+const CONFIG_TEMPLATE: &str = CONFIG_EXAMPLE;
 
 #[component]
 fn ConfigEditor(

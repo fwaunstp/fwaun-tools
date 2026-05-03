@@ -107,7 +107,7 @@ cargo build --release -p anima-tagger-gui
 `anima-tagger.toml` はデータセットのディレクトリに置きます。
 書かなくても動きます（デフォルトが使われます）。
 注釈付きのフルスキーマは
-[`examples/anima-tagger.toml`](examples/anima-tagger.toml) を参照してください。
+[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example) を参照してください。
 主な項目は以下のとおりです。
 
 ```toml
@@ -148,7 +148,7 @@ anima-tagger tokens <dir>
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** （英語のみ） — 内部アーキテクチャ、
   クレート構成、ONNX セッションの形状、ort バージョン関連の注意点など。
   コードに手を入れる前に一読することを推奨します。
-- **[examples/anima-tagger.toml](examples/anima-tagger.toml)** —
+- **[crates/core/anima-tagger.toml.example](crates/core/anima-tagger.toml.example)** —
   注釈付きの設定ファイル例。
 
 ## ライセンス

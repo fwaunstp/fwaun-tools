@@ -108,7 +108,7 @@ cargo build --release -p anima-tagger-gui
 
 `anima-tagger.toml` lives in the dataset directory. Everything is
 optional — without it, defaults kick in. See
-[`examples/anima-tagger.toml`](examples/anima-tagger.toml) for the
+[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example) for the
 annotated full schema. Highlights:
 
 ```toml
@@ -149,7 +149,7 @@ anima-tagger tokens <dir>
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — architecture, crate layout,
   ONNX session shapes, ort version notes. Read this before
   contributing.
-- **[examples/anima-tagger.toml](examples/anima-tagger.toml)** —
+- **[crates/core/anima-tagger.toml.example](crates/core/anima-tagger.toml.example)** —
   annotated configuration example.
 
 ## License

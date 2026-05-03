@@ -1,8 +1,16 @@
 [package]
 name = "anima-tagger-captioner"
+description = "Qwen3-VL ONNX image captioner used by anima-tagger, with an OpenAI-compatible HTTP backend as an alternative."
+categories = ["computer-vision"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
 
 [dependencies]
 anima-tagger-core = { workspace = true }

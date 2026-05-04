@@ -685,39 +685,31 @@ impl AnimaTaggerApp {
             let mut to_toggle_suppression: Vec<String> = Vec::new();
             ui.horizontal_wrapped(|ui| {
                 for tag in &manual_positives {
-                    chip(ui, tag, ChipKind::Manual, false, |clicked_x| {
-                        if clicked_x {
-                            to_remove_manual.push(tag.clone());
-                        }
-                    });
+                    if chip(ui, tag, ChipKind::Manual, false) {
+                        to_remove_manual.push(tag.clone());
+                    }
                 }
                 for at in &item.sidecar.auto_tags {
                     let suppressed = item.sidecar.is_suppressed(&at.tag);
-                    chip(
+                    if chip(
                         ui,
                         &format!("{} ({:.2})", at.tag, at.score),
                         ChipKind::Auto,
                         suppressed,
-                        |clicked_x| {
-                            if clicked_x {
-                                to_toggle_suppression.push(at.tag.clone());
-                            }
-                        },
-                    );
+                    ) {
+                        to_toggle_suppression.push(at.tag.clone());
+                    }
                 }
                 for bt in &item.sidecar.booru_tags {
                     let suppressed = item.sidecar.is_suppressed(&bt.tag);
-                    chip(
+                    if chip(
                         ui,
                         &format!("{} [B]", bt.tag),
                         ChipKind::Booru,
                         suppressed,
-                        |clicked_x| {
-                            if clicked_x {
-                                to_toggle_suppression.push(bt.tag.clone());
-                            }
-                        },
-                    );
+                    ) {
+                        to_toggle_suppression.push(bt.tag.clone());
+                    }
                 }
             });
             for tag in to_remove_manual {
@@ -919,11 +911,9 @@ impl AnimaTaggerApp {
                     } else {
                         ChipKind::Manual
                     };
-                    chip(ui, &label, kind, false, |clicked_x| {
-                        if clicked_x {
-                            to_remove.push(tag.clone());
-                        }
-                    });
+                    if chip(ui, &label, kind, false) {
+                        to_remove.push(tag.clone());
+                    }
                 }
             });
             for tag in to_remove {
@@ -941,13 +931,9 @@ impl AnimaTaggerApp {
         } else {
             ui.horizontal_wrapped(|ui| {
                 for (tag, count) in &common {
-                    chip(
-                        ui,
-                        &format!("{tag} ({count}/{n})"),
-                        ChipKind::Auto,
-                        false,
-                        |_| {},
-                    );
+                    // Common-tag readout — read-only summary, not
+                    // actionable.
+                    let _ = chip(ui, &format!("{tag} ({count}/{n})"), ChipKind::Auto, false);
                 }
             });
         }
@@ -1600,24 +1586,29 @@ impl ChipKind {
     }
 }
 
-fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool, mut on_x: impl FnMut(bool)) {
-    let mut text = egui::RichText::new(label).color(kind.fg()).size(12.0);
+/// Render a tag chip. Returns `true` when the user clicked it
+/// (interpretation is up to the caller — usually "remove" or "toggle
+/// suppression").
+///
+/// Implemented as a single `egui::Button` instead of a Frame + inner
+/// horizontal layout because nested layouts inside `horizontal_wrapped`
+/// suppress wrap-on-overflow — egui's wrap engine measures each child
+/// after placement, and a Frame's inner sublayout can over-allocate
+/// width and push subsequent chips off-screen.
+fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool) -> bool {
+    let mut text = egui::RichText::new(format!("{label}  ×"))
+        .color(kind.fg())
+        .size(12.0);
     if suppressed {
         text = text.strikethrough();
     }
-    let frame = egui::Frame::group(ui.style())
-        .fill(kind.fill())
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::symmetric(7, 3))
-        .stroke(egui::Stroke::NONE);
-    frame.show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(text);
-            let x = ui
-                .add(egui::Label::new(egui::RichText::new("×").color(kind.fg()).strong()).sense(egui::Sense::click()));
-            on_x(x.clicked());
-        });
-    });
+    ui.add(
+        egui::Button::new(text)
+            .fill(kind.fill())
+            .corner_radius(egui::CornerRadius::same(8))
+            .stroke(egui::Stroke::NONE),
+    )
+    .clicked()
 }
 
 fn section_title(ui: &mut egui::Ui, text: &str) {

@@ -292,6 +292,12 @@ impl eframe::App for AnimaTaggerApp {
             .resizable(true)
             .default_width(380.0)
             .min_width(300.0)
+            // Without a max_width, a multiline TextEdit with
+            // desired_width(f32::INFINITY) inside the panel feeds an
+            // infinite content width back into the panel's auto-size
+            // logic and the panel keeps growing on every frame, eating
+            // the thumbnail grid. Cap it to a sensible maximum.
+            .max_width(600.0)
             .show(ctx, |ui| {
                 self.ui_detail(ui);
             });
@@ -725,13 +731,14 @@ impl AnimaTaggerApp {
         ui.add_space(6.0);
         section_title(ui, t.section_caption_hint());
         let path_owned = path.to_path_buf();
+        let avail = ui.available_width();
         let buf = self
             .caption_hint_buf
             .entry(path_owned.clone())
             .or_default();
         let r = ui.add(
             egui::TextEdit::multiline(buf)
-                .desired_width(f32::INFINITY)
+                .desired_width(avail)
                 .desired_rows(3)
                 .hint_text(t.caption_hint_placeholder()),
         );
@@ -742,13 +749,14 @@ impl AnimaTaggerApp {
 
         ui.add_space(6.0);
         section_title(ui, t.section_manual_caption());
+        let avail = ui.available_width();
         let buf = self
             .manual_caption_buf
             .entry(path_owned.clone())
             .or_default();
         let r = ui.add(
             egui::TextEdit::multiline(buf)
-                .desired_width(f32::INFINITY)
+                .desired_width(avail)
                 .desired_rows(3)
                 .hint_text(t.manual_caption_placeholder()),
         );
@@ -864,9 +872,10 @@ impl AnimaTaggerApp {
                 egui::RichText::new(t.bulk_hints_differ()).small().weak(),
             ));
         }
+        let avail = ui.available_width();
         ui.add(
             egui::TextEdit::multiline(&mut self.bulk_hint_buf)
-                .desired_width(f32::INFINITY)
+                .desired_width(avail)
                 .desired_rows(3)
                 .hint_text(t.bulk_hint_placeholder()),
         );

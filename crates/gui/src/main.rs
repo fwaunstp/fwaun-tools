@@ -21,7 +21,14 @@ use egui::{ColorImage, Key, TextureHandle};
 use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
 
 /// Bundled CJK font so Japanese labels render out of the box without a
-/// system font fallback. Subset OTF, ~4.5 MB.
+/// system font fallback. Subset OTF, ~4.5 MB. If a third script
+/// (Korean / Chinese / etc.) is ever requested, switch this to a
+/// probe-path lookup against the OS font dirs (macOS:
+/// `/System/Library/Fonts/Supplemental/HiraginoSans-W3.ttc`, Windows:
+/// `C:\Windows\Fonts\YuGothM.ttc` / `meiryo.ttc`, Linux:
+/// `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` with
+/// `FontData.index = 1` for the JP face). For Japanese-only the bundle
+/// cost is acceptable.
 const JP_FONT: &[u8] = include_bytes!("../assets/NotoSansJP-Regular.otf");
 const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 const THUMB_SIZE: u32 = 256;

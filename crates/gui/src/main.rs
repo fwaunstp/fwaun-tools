@@ -5,14 +5,16 @@ mod i18n;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, channel};
+use std::thread;
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
 use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig};
-use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
+use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use eframe::egui;
 use egui::{ColorImage, Key, TextureHandle};
 
@@ -119,6 +121,55 @@ impl Filter {
     ];
 }
 
+// ───────── Worker types ─────────
+//
+// Long-running ops (tagger / captioner / booru) run on a background
+// thread so the GUI keeps repainting and the user sees a progress
+// modal. Communication is mpsc: the worker streams `Progress` updates
+// and per-image `*Result` messages, ending with a single `Done` that
+// hands the (possibly newly-loaded) model back to the main thread.
+
+#[derive(Clone, Copy, PartialEq)]
+enum WorkerOp {
+    Tagger,
+    Captioner,
+    Booru,
+}
+
+#[derive(Clone)]
+struct Progress {
+    op: WorkerOp,
+    current: usize,
+    total: usize,
+}
+
+enum DoneKind {
+    Tagger(Option<Tagger>),
+    Captioner(Option<Captioner>),
+    Booru,
+}
+
+enum WorkerMsg {
+    Progress(Progress),
+    TaggerResult {
+        path: PathBuf,
+        tags: Vec<AutoTag>,
+        model: String,
+        ts: DateTime<Utc>,
+    },
+    CaptionerResult {
+        path: PathBuf,
+        entries: Vec<(String, String)>,
+    },
+    BooruResult {
+        path: PathBuf,
+        tags: Vec<BooruTag>,
+        info: BooruInfo,
+    },
+    Error(String),
+    Done(DoneKind),
+}
+
 struct AnimaTaggerApp {
     folder: Option<PathBuf>,
     images: Vec<ImageItem>,
@@ -153,6 +204,12 @@ struct AnimaTaggerApp {
 
     // GPU texture handles for thumbnails.
     thumbnails: HashMap<PathBuf, TextureHandle>,
+
+    // Background-worker progress feed. `worker_rx.is_some()` is the
+    // single source of truth for "an op is in flight"; once Done lands
+    // it goes back to None and the action buttons re-enable.
+    progress: Option<Progress>,
+    worker_rx: Option<Receiver<WorkerMsg>>,
 }
 
 impl AnimaTaggerApp {
@@ -178,6 +235,8 @@ impl AnimaTaggerApp {
             bulk_hint_buf: String::new(),
             bulk_signature: 0,
             thumbnails: HashMap::new(),
+            progress: None,
+            worker_rx: None,
         }
     }
 
@@ -210,6 +269,7 @@ impl AnimaTaggerApp {
 
 impl eframe::App for AnimaTaggerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_worker();
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.ui_toolbar(ui, ctx));
         if let Some(err) = self.error_msg.clone() {
             egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
@@ -233,6 +293,9 @@ impl eframe::App for AnimaTaggerApp {
         });
         if self.config_open {
             self.ui_config_modal(ctx);
+        }
+        if self.progress.is_some() {
+            self.ui_progress_overlay(ctx);
         }
     }
 }
@@ -330,19 +393,19 @@ impl AnimaTaggerApp {
                 .add_enabled(can_run, egui::Button::new(t.run_tagger()))
                 .clicked()
             {
-                self.run_tagger();
+                self.run_tagger(ctx);
             }
             if ui
                 .add_enabled(can_run, egui::Button::new(t.run_captioner()))
                 .clicked()
             {
-                self.run_captioner();
+                self.run_captioner(ctx);
             }
             if ui
                 .add_enabled(can_run, egui::Button::new(t.fetch_booru()))
                 .clicked()
             {
-                self.run_booru();
+                self.run_booru(ctx);
             }
 
             ui.separator();
@@ -1015,10 +1078,17 @@ impl AnimaTaggerApp {
     }
 }
 
-// ───────── Long-running operations (synchronous for now) ─────────
+// ───────── Long-running operations (background thread) ─────────
+//
+// Each run_* spawns a worker thread, ships any pre-loaded model into
+// it, and stores the receiver. The UI keeps repainting via
+// ctx.request_repaint() calls inside the worker, and `update()` polls
+// the channel each frame (`poll_worker`). When the worker emits Done,
+// the (possibly-new) model handle comes back through the channel and
+// gets re-cached.
 
 impl AnimaTaggerApp {
-    fn run_tagger(&mut self) {
+    fn run_tagger(&mut self, ctx: &egui::Context) {
         let t = self.t();
         let Some(folder) = self.folder.clone() else {
             self.error_msg = Some(t.err_open_folder_first());
@@ -1036,45 +1106,68 @@ impl AnimaTaggerApp {
         if sel.is_empty() {
             return;
         }
+        let total = sel.len();
+        let mut tagger = self.tagger.take();
+        let storage_threshold = profile.storage_threshold;
+        let profile_for_load = profile.clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            if tagger.is_none() {
+                match Tagger::from_profile(&profile_for_load) {
+                    Ok(t) => tagger = Some(t),
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("tagger load: {e}")));
+                        let _ = tx.send(WorkerMsg::Done(DoneKind::Tagger(None)));
+                        ctx_clone.request_repaint();
+                        return;
+                    }
+                }
+            }
+            let tagger_inst = tagger.as_mut().expect("loaded above");
+            let now = Utc::now();
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Tagger,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                match tagger_inst.tag_image(path, storage_threshold) {
+                    Ok(tags) => {
+                        let _ = tx.send(WorkerMsg::TaggerResult {
+                            path: path.clone(),
+                            tags,
+                            model: model_name.clone(),
+                            ts: now,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("{}: {e}", path.display())));
+                    }
+                }
+                ctx_clone.request_repaint();
+            }
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Tagger,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Tagger(tagger)));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
         self.loading = true;
-
-        if self.tagger.is_none() {
-            match Tagger::from_profile(&profile) {
-                Ok(loaded) => self.tagger = Some(loaded),
-                Err(e) => {
-                    self.error_msg = Some(format!("tagger load: {e}"));
-                    self.loading = false;
-                    return;
-                }
-            }
-        }
-
-        let now = Utc::now();
-        let tagger = self.tagger.as_mut().expect("tagger initialized above");
-        let mut last_err: Option<String> = None;
-        for img in self.images.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
-            }
-            match tagger.tag_image(&img.path, profile.storage_threshold) {
-                Ok(tags) => {
-                    img.sidecar.auto_tags = tags;
-                    img.sidecar.tagger = Some(TaggerInfo {
-                        model: model_name.clone(),
-                        tagged_at: now,
-                    });
-                    let _ = img.sidecar.save(&img.path);
-                }
-                Err(e) => last_err = Some(format!("{}: {e}", img.path.display())),
-            }
-        }
-        if let Some(e) = last_err {
-            self.error_msg = Some(e);
-        }
-        self.loading = false;
+        self.progress = Some(Progress {
+            op: WorkerOp::Tagger,
+            current: 0,
+            total,
+        });
     }
 
-    fn run_captioner(&mut self) {
+    fn run_captioner(&mut self, ctx: &egui::Context) {
         let t = self.t();
         let Some(folder) = self.folder.clone() else {
             self.error_msg = Some(t.err_open_folder_first());
@@ -1100,75 +1193,244 @@ impl AnimaTaggerApp {
         if sel.is_empty() {
             return;
         }
-        self.loading = true;
+        let total = sel.len();
+        let hints: HashMap<PathBuf, Option<String>> = self
+            .images
+            .iter()
+            .filter(|i| sel.contains(&i.path))
+            .map(|i| (i.path.clone(), i.sidecar.caption_hint.clone()))
+            .collect();
 
-        if self.captioner.is_none() {
-            match Captioner::from_profile(&profile) {
-                Ok(loaded) => self.captioner = Some(loaded),
-                Err(e) => {
-                    self.error_msg = Some(format!("captioner load: {e}"));
-                    self.loading = false;
-                    return;
-                }
-            }
-        }
+        let mut captioner = self.captioner.take();
+        let profile_for_load = profile.clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
 
-        let captioner = self.captioner.as_mut().expect("captioner initialized above");
-        let mut last_err: Option<String> = None;
-        for img in self.images.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
-            }
-            let mut wrote_any = false;
-            let hint = img.sidecar.caption_hint.clone();
-            for (pname, ptext) in &prompts {
-                let key = format!("{model_name}.{pname}");
-                match captioner.caption_image(&img.path, ptext, hint.as_deref()) {
-                    Ok(caption) => {
-                        img.sidecar.set_caption(key, caption);
-                        wrote_any = true;
-                    }
+        thread::spawn(move || {
+            if captioner.is_none() {
+                match Captioner::from_profile(&profile_for_load) {
+                    Ok(c) => captioner = Some(c),
                     Err(e) => {
-                        last_err = Some(format!("{} [{pname}]: {e}", img.path.display()));
+                        let _ = tx.send(WorkerMsg::Error(format!("captioner load: {e}")));
+                        let _ = tx.send(WorkerMsg::Done(DoneKind::Captioner(None)));
+                        ctx_clone.request_repaint();
+                        return;
                     }
                 }
             }
-            if wrote_any {
-                let _ = img.sidecar.save(&img.path);
+            let captioner_inst = captioner.as_mut().expect("loaded above");
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Captioner,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                let hint = hints.get(path).cloned().flatten();
+                let mut entries: Vec<(String, String)> = Vec::new();
+                for (pname, ptext) in &prompts {
+                    let key = format!("{model_name}.{pname}");
+                    match captioner_inst.caption_image(path, ptext, hint.as_deref()) {
+                        Ok(caption) => entries.push((key, caption)),
+                        Err(e) => {
+                            let _ = tx.send(WorkerMsg::Error(format!(
+                                "{} [{pname}]: {e}",
+                                path.display()
+                            )));
+                        }
+                    }
+                }
+                if !entries.is_empty() {
+                    let _ = tx.send(WorkerMsg::CaptionerResult {
+                        path: path.clone(),
+                        entries,
+                    });
+                }
+                ctx_clone.request_repaint();
             }
-        }
-        if let Some(e) = last_err {
-            self.error_msg = Some(e);
-        }
-        self.loading = false;
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Captioner,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Captioner(captioner)));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::Captioner,
+            current: 0,
+            total,
+        });
     }
 
-    fn run_booru(&mut self) {
+    fn run_booru(&mut self, ctx: &egui::Context) {
         let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
         if sel.is_empty() {
             return;
         }
-        self.loading = true;
-        let client = BooruClient::danbooru();
-        let mut last_err: Option<String> = None;
-        for img in self.images.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
+        let total = sel.len();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            let client = BooruClient::danbooru();
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Booru,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                match client.fetch_for_image(path) {
+                    Ok((tags, info)) => {
+                        let _ = tx.send(WorkerMsg::BooruResult {
+                            path: path.clone(),
+                            tags,
+                            info,
+                        });
+                    }
+                    Err(BooruError::NotFound(_)) => {}
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("{}: {e}", path.display())));
+                    }
+                }
+                ctx_clone.request_repaint();
             }
-            match client.fetch_for_image(&img.path) {
-                Ok((tags, info)) => {
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Booru,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Booru));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::Booru,
+            current: 0,
+            total,
+        });
+    }
+
+    fn poll_worker(&mut self) {
+        if self.worker_rx.is_none() {
+            return;
+        }
+        // Drain everything currently buffered. We can't hold a borrow
+        // of self.worker_rx across the apply_worker_msg call (which
+        // mutably borrows self), so each iteration grabs the receiver
+        // briefly to try_recv, drops the borrow, then dispatches.
+        loop {
+            let recv = match self.worker_rx.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => break,
+            };
+            match recv {
+                Ok(msg) => self.apply_worker_msg(msg),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Worker dropped without sending Done — clean up
+                    // anyway so the UI doesn't get stuck on the
+                    // progress overlay.
+                    self.worker_rx = None;
+                    self.progress = None;
+                    self.loading = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn apply_worker_msg(&mut self, msg: WorkerMsg) {
+        match msg {
+            WorkerMsg::Progress(p) => self.progress = Some(p),
+            WorkerMsg::TaggerResult {
+                path,
+                tags,
+                model,
+                ts,
+            } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+                    img.sidecar.auto_tags = tags;
+                    img.sidecar.tagger = Some(TaggerInfo {
+                        model,
+                        tagged_at: ts,
+                    });
+                    let _ = img.sidecar.save(&img.path);
+                }
+            }
+            WorkerMsg::CaptionerResult { path, entries } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+                    for (key, caption) in entries {
+                        img.sidecar.set_caption(key, caption);
+                    }
+                    let _ = img.sidecar.save(&img.path);
+                }
+            }
+            WorkerMsg::BooruResult { path, tags, info } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
                     img.sidecar.booru_tags = tags;
                     img.sidecar.booru = Some(info);
                     let _ = img.sidecar.save(&img.path);
                 }
-                Err(BooruError::NotFound(_)) => {}
-                Err(e) => last_err = Some(format!("{}: {e}", img.path.display())),
+            }
+            WorkerMsg::Error(e) => {
+                self.error_msg = Some(e);
+            }
+            WorkerMsg::Done(kind) => {
+                match kind {
+                    DoneKind::Tagger(t) => self.tagger = t,
+                    DoneKind::Captioner(c) => self.captioner = c,
+                    DoneKind::Booru => {}
+                }
+                self.progress = None;
+                self.loading = false;
+                self.worker_rx = None;
             }
         }
-        if let Some(e) = last_err {
-            self.error_msg = Some(e);
-        }
-        self.loading = false;
+    }
+
+    fn ui_progress_overlay(&self, ctx: &egui::Context) {
+        let Some(p) = self.progress.clone() else {
+            return;
+        };
+        let t = self.t();
+        let label = match p.op {
+            WorkerOp::Tagger => t.op_tagging(),
+            WorkerOp::Captioner => t.op_captioning(),
+            WorkerOp::Booru => t.op_fetching_booru(),
+        };
+        let frac = if p.total == 0 {
+            0.0
+        } else {
+            (p.current as f32) / (p.total as f32)
+        };
+        egui::Window::new("anima-tagger-progress")
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    ui.heading(label);
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .desired_width(260.0)
+                            .show_percentage(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(t.progress_count(p.current, p.total));
+                    ui.add_space(4.0);
+                });
+            });
     }
 }
 

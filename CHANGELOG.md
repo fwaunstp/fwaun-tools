@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Progress overlay for tagger / captioner / booru runs.** Long-
+  running ops now happen on a background thread with an mpsc channel
+  feeding per-image progress back to the UI; the GUI keeps repainting
+  and shows a centered modal with the operation label, a progress bar,
+  and an `N / total images` counter. Sidecar I/O still happens on the
+  main thread (each per-image worker result is applied as it arrives),
+  so model state stays consistent and there is no race against the
+  user clicking around.
+
 ### Changed
 
 - **GUI rewritten from dioxus-desktop to egui / eframe.** The release

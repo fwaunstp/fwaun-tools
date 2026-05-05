@@ -1,8 +1,16 @@
 [package]
 name = "anima-tagger-core"
+description = "Data model, project config, and sidecar I/O for anima-tagger — a tag/caption editor for local Stable Diffusion LoRA datasets."
+categories = ["data-structures", "filesystem"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
 
 [dependencies]
 serde = { workspace = true }

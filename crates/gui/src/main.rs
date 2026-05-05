@@ -1,40 +1,85 @@
+#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+
 mod i18n;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, channel};
+use std::thread;
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig};
-use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
+use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig};
+use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
-use base64::Engine;
-use chrono::Utc;
-use dioxus::desktop::{Config, WindowBuilder};
-use dioxus::prelude::*;
-use dioxus::LaunchBuilder;
-use image::ImageFormat;
+use chrono::{DateTime, Utc};
+use eframe::egui;
+use egui::{ColorImage, Key, TextureHandle};
 
 use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
 
+/// Bundled CJK font so Japanese labels render out of the box without a
+/// system font fallback. Subset OTF, ~4.5 MB. If a third script
+/// (Korean / Chinese / etc.) is ever requested, switch this to a
+/// probe-path lookup against the OS font dirs (macOS:
+/// `/System/Library/Fonts/Supplemental/HiraginoSans-W3.ttc`, Windows:
+/// `C:\Windows\Fonts\YuGothM.ttc` / `meiryo.ttc`, Linux:
+/// `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` with
+/// `FontData.index = 1` for the JP face). For Japanese-only the bundle
+/// cost is acceptable.
+const JP_FONT: &[u8] = include_bytes!("../assets/NotoSansJP-Regular.otf");
+const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 const THUMB_SIZE: u32 = 256;
+const THUMB_DRAW_PX: f32 = 160.0;
 
-fn main() {
-    let window = WindowBuilder::new()
+fn main() -> eframe::Result<()> {
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title("anima-tagger")
-        .with_always_on_top(false);
-    LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window))
-        .launch(App);
+        .with_inner_size([1200.0, 800.0]);
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON_PNG) {
+        viewport = viewport.with_icon(icon);
+    }
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+    eframe::run_native(
+        "anima-tagger",
+        options,
+        Box::new(|cc| {
+            install_fonts(&cc.egui_ctx);
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            Ok(Box::new(AnimaTaggerApp::new()))
+        }),
+    )
 }
 
-#[derive(Clone, PartialEq)]
+fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("noto-jp".into(), egui::FontData::from_static(JP_FONT).into());
+    // Append, not prepend — keep latin glyph fidelity for the default
+    // proportional font, fall through to Noto JP for codepoints the
+    // primary face doesn't cover.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("noto-jp".into());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("noto-jp".into());
+    ctx.set_fonts(fonts);
+}
+
+#[derive(Clone)]
 struct ImageItem {
     path: PathBuf,
-    thumbnail: String,
     sidecar: Sidecar,
 }
 
@@ -50,31 +95,6 @@ enum Filter {
 }
 
 impl Filter {
-    /// Stable string key — used as the `<option value="...">` so we can
-    /// map back to the enum regardless of which language the option
-    /// label is currently rendered in.
-    fn key(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Untagged => "untagged",
-            Self::AutoTagged => "auto-tagged",
-            Self::NoManual => "no-manual",
-            Self::NoCaption => "no-caption",
-            Self::NoHint => "no-hint",
-            Self::NoBooru => "no-booru",
-        }
-    }
-    fn from_key(s: &str) -> Self {
-        match s {
-            "untagged" => Self::Untagged,
-            "auto-tagged" => Self::AutoTagged,
-            "no-manual" => Self::NoManual,
-            "no-caption" => Self::NoCaption,
-            "no-hint" => Self::NoHint,
-            "no-booru" => Self::NoBooru,
-            _ => Self::All,
-        }
-    }
     fn matches(self, item: &ImageItem) -> bool {
         match self {
             Self::All => true,
@@ -86,67 +106,1538 @@ impl Filter {
             Self::NoBooru => !item.sidecar.has_booru(),
         }
     }
+    fn label(self, t: T) -> &'static str {
+        match self {
+            Self::All => t.filter_all(),
+            Self::Untagged => t.filter_untagged(),
+            Self::AutoTagged => t.filter_auto_tagged(),
+            Self::NoManual => t.filter_no_manual(),
+            Self::NoCaption => t.filter_no_caption(),
+            Self::NoHint => t.filter_no_hint(),
+            Self::NoBooru => t.filter_no_booru(),
+        }
+    }
+    const ALL: [Filter; 7] = [
+        Self::All,
+        Self::Untagged,
+        Self::AutoTagged,
+        Self::NoManual,
+        Self::NoCaption,
+        Self::NoHint,
+        Self::NoBooru,
+    ];
 }
 
-#[component]
-fn App() -> Element {
-    let folder = use_signal(|| None::<PathBuf>);
-    let images = use_signal(Vec::<ImageItem>::new);
-    let selected = use_signal(HashSet::<PathBuf>::new);
-    let filter = use_signal(|| Filter::All);
-    let tag_filter = use_signal(String::new);
-    let loading = use_signal(|| false);
-    let tag_input = use_signal(String::new);
-    let error_msg = use_signal(|| None::<String>);
-    let tagger_state: Signal<Option<Tagger>> = use_signal(|| None);
-    let captioner_state: Signal<Option<Captioner>> = use_signal(|| None);
+// ───────── Worker types ─────────
+//
+// Long-running ops (tagger / captioner / booru) run on a background
+// thread so the GUI keeps repainting and the user sees a progress
+// modal. Communication is mpsc: the worker streams `Progress` updates
+// and per-image `*Result` messages, ending with a single `Done` that
+// hands the (possibly newly-loaded) model back to the main thread.
 
-    let config_open = use_signal(|| false);
-    let config_text = use_signal(String::new);
-    let config_error = use_signal(|| None::<String>);
+#[derive(Clone, Copy, PartialEq)]
+enum WorkerOp {
+    Tagger,
+    Captioner,
+    Booru,
+}
 
-    // Localization. Provided as context so every component can read it
-    // without prop-drilling through every layer. Toolbar mutates the
-    // context signal when the user picks a different language.
-    let lang_signal = use_context_provider(|| Signal::new(load_pref_or_detect()));
-    let _ = lang_signal;
+#[derive(Clone)]
+struct Progress {
+    op: WorkerOp,
+    current: usize,
+    total: usize,
+}
 
-    let tag_query = tag_filter.read().trim().to_lowercase();
-    let visible: Vec<ImageItem> = images
-        .read()
-        .iter()
-        .filter(|i| filter.read().matches(i))
-        .filter(|i| tag_query.is_empty() || matches_tag_query(i, &tag_query))
-        .cloned()
-        .collect();
+enum DoneKind {
+    Tagger(Option<Tagger>),
+    Captioner(Option<Captioner>),
+    Booru,
+}
 
-    rsx! {
-        style { {APP_CSS} }
-        div { class: "app",
-            Toolbar {
-                folder, images, selected, filter, tag_filter, loading,
-                error_msg, tagger_state, captioner_state,
-                config_open, config_text, config_error,
+enum WorkerMsg {
+    Progress(Progress),
+    TaggerResult {
+        path: PathBuf,
+        tags: Vec<AutoTag>,
+        model: String,
+        ts: DateTime<Utc>,
+    },
+    CaptionerResult {
+        path: PathBuf,
+        entries: Vec<(String, String)>,
+    },
+    BooruResult {
+        path: PathBuf,
+        tags: Vec<BooruTag>,
+        info: BooruInfo,
+    },
+    Error(String),
+    Done(DoneKind),
+}
+
+struct AnimaTaggerApp {
+    folder: Option<PathBuf>,
+    images: Vec<ImageItem>,
+    selected: HashSet<PathBuf>,
+    filter: Filter,
+    tag_filter: String,
+    tag_input: String,
+    loading: bool,
+    error_msg: Option<String>,
+    tagger: Option<Tagger>,
+    captioner: Option<Captioner>,
+
+    // Modal: config editor
+    config_open: bool,
+    config_text: String,
+    config_error: Option<String>,
+
+    // Localization
+    lang: Lang,
+
+    // Per-image text-edit buffers, persisted across frames so the user's
+    // typing isn't clobbered every redraw. Re-initialized from the
+    // sidecar when the selected image changes.
+    manual_caption_buf: HashMap<PathBuf, String>,
+    caption_hint_buf: HashMap<PathBuf, String>,
+    last_single: Option<PathBuf>,
+
+    // Bulk edit state — re-initialized when the selection signature
+    // changes.
+    bulk_hint_buf: String,
+    bulk_signature: u64,
+
+    // GPU texture handles for thumbnails.
+    thumbnails: HashMap<PathBuf, TextureHandle>,
+
+    // Background-worker progress feed. `worker_rx.is_some()` is the
+    // single source of truth for "an op is in flight"; once Done lands
+    // it goes back to None and the action buttons re-enable.
+    progress: Option<Progress>,
+    worker_rx: Option<Receiver<WorkerMsg>>,
+}
+
+impl AnimaTaggerApp {
+    fn new() -> Self {
+        Self {
+            folder: None,
+            images: Vec::new(),
+            selected: HashSet::new(),
+            filter: Filter::All,
+            tag_filter: String::new(),
+            tag_input: String::new(),
+            loading: false,
+            error_msg: None,
+            tagger: None,
+            captioner: None,
+            config_open: false,
+            config_text: String::new(),
+            config_error: None,
+            lang: load_pref_or_detect(),
+            manual_caption_buf: HashMap::new(),
+            caption_hint_buf: HashMap::new(),
+            last_single: None,
+            bulk_hint_buf: String::new(),
+            bulk_signature: 0,
+            thumbnails: HashMap::new(),
+            progress: None,
+            worker_rx: None,
+        }
+    }
+
+    fn t(&self) -> T {
+        T::new(self.lang)
+    }
+
+    fn load_folder(&mut self, ctx: &egui::Context, dir: &Path) {
+        self.folder = Some(dir.to_path_buf());
+        self.images.clear();
+        self.thumbnails.clear();
+        self.selected.clear();
+        self.tagger = None;
+        self.captioner = None;
+        self.manual_caption_buf.clear();
+        self.caption_hint_buf.clear();
+        self.last_single = None;
+        self.bulk_hint_buf.clear();
+        self.bulk_signature = 0;
+
+        for path in iter_images(dir) {
+            let sidecar = Sidecar::load_or_default(&path).unwrap_or_default();
+            if let Some(tex) = make_thumbnail_texture(&path, THUMB_SIZE, ctx) {
+                self.thumbnails.insert(path.clone(), tex);
             }
-            ErrorBanner { error_msg }
-            div { class: "workspace",
-                Grid { items: visible, selected }
-                DetailPanel { images, selected, tag_input }
-            }
-            if *config_open.read() {
-                ConfigEditor {
-                    folder, config_open, config_text, config_error,
-                    tagger_state, captioner_state, error_msg,
+            self.images.push(ImageItem { path, sidecar });
+        }
+    }
+}
+
+impl eframe::App for AnimaTaggerApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_worker();
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.ui_toolbar(ui, ctx));
+        if let Some(err) = self.error_msg.clone() {
+            egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.colored_label(egui::Color32::from_rgb(255, 180, 180), format!("⚠ {err}"));
+                    if ui.small_button("×").clicked() {
+                        self.error_msg = None;
+                    }
+                });
+            });
+        }
+        egui::SidePanel::right("detail")
+            .resizable(true)
+            .default_width(380.0)
+            .min_width(300.0)
+            // Without a max_width, a multiline TextEdit with
+            // desired_width(f32::INFINITY) inside the panel feeds an
+            // infinite content width back into the panel's auto-size
+            // logic and the panel keeps growing on every frame, eating
+            // the thumbnail grid. Cap it to a sensible maximum.
+            .max_width(600.0)
+            .show(ctx, |ui| {
+                // Reserve the add-input row at the bottom first so the
+                // ScrollArea inside ui_detail doesn't claim every
+                // pixel of vertical space and hide it.
+                egui::TopBottomPanel::bottom("add_input_panel")
+                    .resizable(false)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(4.0);
+                        self.ui_add_input(ui);
+                        ui.add_space(4.0);
+                    });
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    self.ui_detail(ui);
+                });
+            });
+        egui::CentralPanel::default().show(ctx, |ui| {
+            self.ui_grid(ui);
+        });
+        if self.config_open {
+            self.ui_config_modal(ctx);
+        }
+        if self.progress.is_some() {
+            self.ui_progress_overlay(ctx);
+        }
+    }
+}
+
+// ───────── Toolbar ─────────
+
+impl AnimaTaggerApp {
+    fn ui_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let t = self.t();
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(t.open_folder()).clicked() {
+                if let Some(picked) = rfd::FileDialog::new().pick_folder() {
+                    self.load_folder(ctx, &picked);
                 }
+            }
+            let cfg_btn = ui
+                .button(t.config_button())
+                .on_hover_text(t.config_button_title());
+            if cfg_btn.clicked() {
+                let text = match self.folder.as_ref() {
+                    Some(p) => {
+                        let target = p.join(CONFIG_FILE);
+                        if target.exists() {
+                            fs::read_to_string(&target).unwrap_or_default()
+                        } else {
+                            CONFIG_EXAMPLE.to_string()
+                        }
+                    }
+                    None => CONFIG_EXAMPLE.to_string(),
+                };
+                self.config_text = text;
+                self.config_error = None;
+                self.config_open = true;
+            }
+
+            // Folder name
+            let folder_label = match self.folder.as_ref() {
+                Some(p) => p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| p.display().to_string()),
+                None => t.no_folder().to_string(),
+            };
+            ui.label(folder_label);
+
+            ui.separator();
+
+            // Filter dropdown
+            egui::ComboBox::from_id_salt("filter_combo")
+                .selected_text(self.filter.label(t))
+                .show_ui(ui, |ui| {
+                    for f in Filter::ALL {
+                        ui.selectable_value(&mut self.filter, f, f.label(t));
+                    }
+                });
+
+            // Tag filter input
+            ui.add(
+                egui::TextEdit::singleline(&mut self.tag_filter)
+                    .hint_text(t.tag_filter_placeholder())
+                    .desired_width(160.0),
+            );
+
+            let folder_set = self.folder.is_some();
+            let has_sel = !self.selected.is_empty();
+
+            if ui
+                .add_enabled(folder_set, egui::Button::new(t.select_visible()))
+                .clicked()
+            {
+                let visible: HashSet<PathBuf> = self
+                    .images
+                    .iter()
+                    .filter(|i| self.filter.matches(i))
+                    .filter(|i| {
+                        self.tag_filter.trim().is_empty()
+                            || matches_tag_query(i, &self.tag_filter.trim().to_lowercase())
+                    })
+                    .map(|i| i.path.clone())
+                    .collect();
+                self.selected = visible;
+            }
+            if ui
+                .add_enabled(has_sel, egui::Button::new(t.clear_selection()))
+                .clicked()
+            {
+                self.selected.clear();
+            }
+
+            ui.separator();
+
+            let can_run = has_sel && !self.loading;
+            if ui
+                .add_enabled(can_run, egui::Button::new(t.run_tagger()))
+                .clicked()
+            {
+                self.run_tagger(ctx);
+            }
+            if ui
+                .add_enabled(can_run, egui::Button::new(t.run_captioner()))
+                .clicked()
+            {
+                self.run_captioner(ctx);
+            }
+            if ui
+                .add_enabled(can_run, egui::Button::new(t.fetch_booru()))
+                .clicked()
+            {
+                self.run_booru(ctx);
+            }
+
+            ui.separator();
+
+            // Language selector
+            let lang_label = match self.lang {
+                Lang::En => "English",
+                Lang::Ja => "日本語",
+            };
+            egui::ComboBox::from_id_salt("lang_combo")
+                .selected_text(lang_label)
+                .width(96.0)
+                .show_ui(ui, |ui| {
+                    let mut new_lang = self.lang;
+                    ui.selectable_value(&mut new_lang, Lang::En, "English");
+                    ui.selectable_value(&mut new_lang, Lang::Ja, "日本語");
+                    if new_lang != self.lang {
+                        self.lang = new_lang;
+                        save_pref(new_lang);
+                    }
+                });
+
+            if self.loading {
+                ui.label(t.working());
+            }
+            ui.label(
+                t.images_selected_summary(self.images.len(), self.selected.len()),
+            );
+        });
+    }
+}
+
+// ───────── Grid ─────────
+
+impl AnimaTaggerApp {
+    fn ui_grid(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        let visible: Vec<PathBuf> = self
+            .images
+            .iter()
+            .filter(|i| self.filter.matches(i))
+            .filter(|i| {
+                self.tag_filter.trim().is_empty()
+                    || matches_tag_query(i, &self.tag_filter.trim().to_lowercase())
+            })
+            .map(|i| i.path.clone())
+            .collect();
+
+        if visible.is_empty() {
+            ui.centered_and_justified(|ui| ui.label(t.no_images()));
+            return;
+        }
+
+        let modifiers = ui.input(|i| i.modifiers);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                let cell = THUMB_DRAW_PX + 12.0;
+                let cols = ((ui.available_width() / cell).floor() as usize).max(1);
+                egui::Grid::new("thumb_grid")
+                    .spacing([6.0, 6.0])
+                    .show(ui, |ui| {
+                        for (i, path) in visible.iter().enumerate() {
+                            self.ui_thumb(ui, path, modifiers);
+                            if (i + 1) % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+            });
+    }
+
+    fn ui_thumb(&mut self, ui: &mut egui::Ui, path: &Path, mods: egui::Modifiers) {
+        let texture = match self.thumbnails.get(path) {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let item = match self.images.iter().find(|i| i.path == path) {
+            Some(it) => it,
+            None => return,
+        };
+        let is_selected = self.selected.contains(path);
+
+        let frame = egui::Frame::group(ui.style())
+            .inner_margin(2.0)
+            .stroke(if is_selected {
+                egui::Stroke::new(2.0, ui.visuals().selection.bg_fill)
+            } else {
+                egui::Stroke::new(2.0, egui::Color32::TRANSPARENT)
+            });
+
+        let response = frame
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let img = egui::Image::new(&texture)
+                        .fit_to_exact_size(egui::vec2(THUMB_DRAW_PX, THUMB_DRAW_PX));
+                    ui.add(img);
+                    ui.label(
+                        egui::RichText::new(status_flags(&item.sidecar))
+                            .size(10.0)
+                            .monospace(),
+                    )
+                    .on_hover_text(self.t().thumb_status_title());
+                });
+            })
+            .response
+            .interact(egui::Sense::click());
+
+        if response.clicked() {
+            let multi = mods.command || mods.shift || mods.ctrl;
+            if multi {
+                if is_selected {
+                    self.selected.remove(path);
+                } else {
+                    self.selected.insert(path.to_path_buf());
+                }
+            } else {
+                self.selected.clear();
+                self.selected.insert(path.to_path_buf());
             }
         }
     }
 }
 
-/// Substring match (case-insensitive) against any of an image's manual /
-/// auto / booru tag stems. Used by the toolbar tag-filter so users can
-/// narrow to e.g. all images with `1girl` and bulk-edit them — say,
-/// suppress `-1girl` and add a manual replacement like `woman`.
+fn status_flags(s: &Sidecar) -> String {
+    let t = if s.is_auto_tagged() { 'T' } else { ' ' };
+    let c = if s.is_captioned() { 'C' } else { ' ' };
+    let b = if s.has_booru() { 'B' } else { ' ' };
+    let m = if !s.manual_tags.is_empty() { 'M' } else { ' ' };
+    let h = if s.caption_hint.is_some() { 'H' } else { ' ' };
+    format!("{t}{c}{b}{m}{h}")
+}
+
+// ───────── Detail panel ─────────
+
+impl AnimaTaggerApp {
+    fn ui_detail(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        let n = sel.len();
+
+        if n == 0 {
+            self.last_single = None;
+            ui.label(t.select_to_edit());
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.tip_suppress()).small().weak());
+            return;
+        }
+
+        if n == 1 {
+            let path = sel[0].clone();
+            self.refresh_single_buffers_if_needed(&path);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    self.ui_single_detail(ui, &path);
+                });
+        } else {
+            self.last_single = None;
+            let signature = bulk_signature(&sel);
+            if self.bulk_signature != signature {
+                self.bulk_signature = signature;
+                self.bulk_hint_buf = canonical_bulk_hint(&self.images, &sel);
+            }
+            egui::ScrollArea::vertical()
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    self.ui_bulk_detail(ui, &sel);
+                });
+        }
+    }
+
+    fn refresh_single_buffers_if_needed(&mut self, path: &Path) {
+        if self.last_single.as_deref() != Some(path) {
+            self.last_single = Some(path.to_path_buf());
+            if let Some(item) = self.images.iter().find(|i| i.path == path) {
+                self.manual_caption_buf.insert(
+                    path.to_path_buf(),
+                    item.sidecar.manual_caption.clone().unwrap_or_default(),
+                );
+                self.caption_hint_buf.insert(
+                    path.to_path_buf(),
+                    item.sidecar.caption_hint.clone().unwrap_or_default(),
+                );
+            }
+        }
+    }
+
+    fn ui_add_input(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        ui.horizontal(|ui| {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.tag_input)
+                    .hint_text(t.add_input_placeholder())
+                    .desired_width(ui.available_width() - 60.0),
+            );
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let click = ui.button(t.add_button()).clicked();
+            if enter || click {
+                let v = std::mem::take(&mut self.tag_input);
+                let trimmed = v.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.add_manual_tag_to_selected(&trimmed);
+                }
+                if enter {
+                    r.request_focus();
+                }
+            }
+        });
+    }
+
+    fn add_manual_tag_to_selected(&mut self, tag: &str) {
+        let sel = self.selected.clone();
+        for img in self.images.iter_mut() {
+            if !sel.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.add_manual_tag(tag.to_string()) {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+}
+
+// ───────── Single-image detail ─────────
+
+impl AnimaTaggerApp {
+    fn ui_single_detail(&mut self, ui: &mut egui::Ui, path: &Path) {
+        let t = self.t();
+        let item = match self.images.iter().find(|i| i.path == path) {
+            Some(it) => it.clone(),
+            None => return,
+        };
+
+        let filename = item
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        ui.label(egui::RichText::new(filename).monospace().weak());
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_tags());
+        let manual_positives: Vec<String> = item
+            .sidecar
+            .manual_positive_tags()
+            .map(|s| s.to_string())
+            .collect();
+        if manual_positives.is_empty()
+            && item.sidecar.auto_tags.is_empty()
+            && item.sidecar.booru_tags.is_empty()
+        {
+            ui.weak(t.empty_tags());
+        } else {
+            let mut to_remove_manual: Vec<String> = Vec::new();
+            let mut to_toggle_suppression: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for tag in &manual_positives {
+                    if chip(ui, tag, ChipKind::Manual, false) {
+                        to_remove_manual.push(tag.clone());
+                    }
+                }
+                for at in &item.sidecar.auto_tags {
+                    let suppressed = item.sidecar.is_suppressed(&at.tag);
+                    if chip(
+                        ui,
+                        &format!("{} ({:.2})", at.tag, at.score),
+                        ChipKind::Auto,
+                        suppressed,
+                    ) {
+                        to_toggle_suppression.push(at.tag.clone());
+                    }
+                }
+                for bt in &item.sidecar.booru_tags {
+                    let suppressed = item.sidecar.is_suppressed(&bt.tag);
+                    if chip(
+                        ui,
+                        &format!("{} [B]", bt.tag),
+                        ChipKind::Booru,
+                        suppressed,
+                    ) {
+                        to_toggle_suppression.push(bt.tag.clone());
+                    }
+                }
+            });
+            for tag in to_remove_manual {
+                self.remove_manual_at(path, &tag);
+            }
+            for tag in to_toggle_suppression {
+                self.toggle_suppression_at(path, &tag);
+            }
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_caption_hint());
+        let path_owned = path.to_path_buf();
+        let avail = ui.available_width();
+        let buf = self
+            .caption_hint_buf
+            .entry(path_owned.clone())
+            .or_default();
+        let r = ui.add(
+            egui::TextEdit::multiline(buf)
+                .desired_width(avail)
+                .desired_rows(3)
+                .hint_text(t.caption_hint_placeholder()),
+        );
+        if r.lost_focus() {
+            let new_text = buf.clone();
+            self.save_caption_hint(path, &new_text);
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_manual_caption());
+        let avail = ui.available_width();
+        let buf = self
+            .manual_caption_buf
+            .entry(path_owned.clone())
+            .or_default();
+        let r = ui.add(
+            egui::TextEdit::multiline(buf)
+                .desired_width(avail)
+                .desired_rows(3)
+                .hint_text(t.manual_caption_placeholder()),
+        );
+        if r.lost_focus() {
+            let new_text = buf.clone();
+            self.save_manual_caption(path, &new_text);
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_auto_captions());
+        if item.sidecar.captions.is_empty() {
+            ui.weak(t.empty_auto_captions());
+        } else {
+            let mut to_promote: Vec<(String, String)> = Vec::new();
+            let mut to_toggle_skip: Vec<String> = Vec::new();
+            let mut to_remove_caption: Vec<String> = Vec::new();
+            for (model, entry) in item.sidecar.captions.iter() {
+                let frame = egui::Frame::group(ui.style())
+                    .inner_margin(egui::Margin::same(6))
+                    .stroke(if entry.skip {
+                        egui::Stroke::new(1.0, egui::Color32::DARK_GRAY)
+                    } else {
+                        egui::Stroke::new(1.0, egui::Color32::from_gray(60))
+                    });
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(model).monospace().small().weak());
+                        if ui
+                            .small_button(t.promote_to_manual())
+                            .on_hover_text(t.promote_to_manual_title())
+                            .clicked()
+                        {
+                            to_promote.push((model.clone(), entry.caption.clone()));
+                        }
+                        let skip_label = if entry.skip { t.unskip() } else { t.skip() };
+                        let skip_title = if entry.skip {
+                            t.unskip_title()
+                        } else {
+                            t.skip_title()
+                        };
+                        if ui
+                            .small_button(skip_label)
+                            .on_hover_text(skip_title)
+                            .clicked()
+                        {
+                            to_toggle_skip.push(model.clone());
+                        }
+                        if ui
+                            .small_button("×")
+                            .on_hover_text(t.remove_caption_title())
+                            .clicked()
+                        {
+                            to_remove_caption.push(model.clone());
+                        }
+                    });
+                    let caption_text = if entry.skip {
+                        egui::RichText::new(&entry.caption).strikethrough().weak()
+                    } else {
+                        egui::RichText::new(&entry.caption)
+                    };
+                    ui.label(caption_text);
+                });
+            }
+            for (model, text) in to_promote {
+                self.copy_caption_to_manual(path, &text);
+                let _ = model;
+            }
+            for model in to_toggle_skip {
+                self.toggle_caption_skip_at(path, &model);
+            }
+            for model in to_remove_caption {
+                self.remove_caption_at(path, &model);
+            }
+        }
+
+        if let Some(b) = item.sidecar.booru.as_ref() {
+            ui.add_space(6.0);
+            section_title(ui, t.section_booru());
+            let label = if let Some(id) = b.post_id {
+                format!("{}: #{id}", b.source)
+            } else {
+                b.source.clone()
+            };
+            ui.weak(label);
+        }
+    }
+}
+
+// ───────── Bulk detail ─────────
+
+impl AnimaTaggerApp {
+    fn ui_bulk_detail(&mut self, ui: &mut egui::Ui, sel: &[PathBuf]) {
+        let t = self.t();
+        let n = sel.len();
+        let selected_items: Vec<ImageItem> = self
+            .images
+            .iter()
+            .filter(|i| sel.contains(&i.path))
+            .cloned()
+            .collect();
+
+        ui.weak(t.n_selected_bulk(n));
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_bulk_caption_hint());
+        let hint_values: Vec<&str> = selected_items
+            .iter()
+            .map(|i| i.sidecar.caption_hint.as_deref().unwrap_or(""))
+            .collect();
+        let hints_uniform = hint_values.iter().all(|v| *v == hint_values[0]);
+        if !hints_uniform {
+            ui.add(egui::Label::new(
+                egui::RichText::new(t.bulk_hints_differ()).small().weak(),
+            ));
+        }
+        let avail = ui.available_width();
+        ui.add(
+            egui::TextEdit::multiline(&mut self.bulk_hint_buf)
+                .desired_width(avail)
+                .desired_rows(3)
+                .hint_text(t.bulk_hint_placeholder()),
+        );
+        ui.horizontal(|ui| {
+            if ui.button(t.bulk_hint_apply()).clicked() {
+                let text = self.bulk_hint_buf.clone();
+                self.bulk_set_caption_hint(sel, &text);
+            }
+            if ui.button(t.bulk_hint_clear()).clicked() {
+                self.bulk_hint_buf.clear();
+                self.bulk_set_caption_hint(sel, "");
+            }
+        });
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_manual_entries());
+        let mut manual_order: Vec<String> = Vec::new();
+        let mut manual_counts: HashMap<String, usize> = HashMap::new();
+        for item in &selected_items {
+            for tag in &item.sidecar.manual_tags {
+                if !manual_counts.contains_key(tag) {
+                    manual_order.push(tag.clone());
+                }
+                *manual_counts.entry(tag.clone()).or_insert(0) += 1;
+            }
+        }
+        if manual_order.is_empty() {
+            ui.weak(t.empty_simple());
+        } else {
+            let mut to_remove: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for tag in &manual_order {
+                    let count = manual_counts[tag];
+                    let label = if count < n {
+                        format!("{tag} ({count}/{n})")
+                    } else {
+                        tag.clone()
+                    };
+                    let kind = if tag.starts_with('-') {
+                        ChipKind::Negative
+                    } else {
+                        ChipKind::Manual
+                    };
+                    if chip(ui, &label, kind, false) {
+                        to_remove.push(tag.clone());
+                    }
+                }
+            });
+            for tag in to_remove {
+                self.bulk_remove_manual(sel, &tag);
+            }
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_common_tags());
+        let common = compute_common_tags(&selected_items);
+        if common.is_empty() {
+            ui.add(egui::Label::new(
+                egui::RichText::new(t.empty_simple()).small().weak(),
+            ));
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for (tag, count) in &common {
+                    // Common-tag readout — read-only summary, not
+                    // actionable.
+                    let _ = chip(ui, &format!("{tag} ({count}/{n})"), ChipKind::Auto, false);
+                }
+            });
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_bulk_manual_caption());
+        if ui
+            .button(t.bulk_clear_manual())
+            .on_hover_text(t.bulk_clear_manual_title())
+            .clicked()
+        {
+            self.bulk_clear_manual_caption(sel);
+        }
+
+        ui.add_space(6.0);
+        section_title(ui, t.section_bulk_auto_captions());
+        let mut caption_models: Vec<String> = Vec::new();
+        let mut caption_counts: HashMap<String, usize> = HashMap::new();
+        for item in &selected_items {
+            for model in item.sidecar.captions.keys() {
+                if !caption_counts.contains_key(model) {
+                    caption_models.push(model.clone());
+                }
+                *caption_counts.entry(model.clone()).or_insert(0) += 1;
+            }
+        }
+        caption_models.sort();
+        if caption_models.is_empty() {
+            ui.add(egui::Label::new(
+                egui::RichText::new(t.empty_simple()).small().weak(),
+            ));
+        } else {
+            let mut to_promote: Vec<String> = Vec::new();
+            let mut to_remove: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for model in &caption_models {
+                    let count = caption_counts[model];
+                    let label = format!("{model} ({count}/{n})");
+                    ui.group(|ui| {
+                        ui.label(label);
+                        if ui
+                            .small_button(t.promote_to_manual())
+                            .on_hover_text(t.bulk_promote_title())
+                            .clicked()
+                        {
+                            to_promote.push(model.clone());
+                        }
+                        if ui
+                            .small_button("×")
+                            .on_hover_text(t.bulk_remove_caption_title())
+                            .clicked()
+                        {
+                            to_remove.push(model.clone());
+                        }
+                    });
+                }
+            });
+            for model in to_promote {
+                self.bulk_promote_to_manual(sel, &model);
+            }
+            for model in to_remove {
+                self.bulk_remove_caption(sel, &model);
+            }
+        }
+
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(
+            egui::RichText::new(t.switch_to_single_hint()).small().weak(),
+        ));
+    }
+}
+
+// ───────── Config modal ─────────
+
+impl AnimaTaggerApp {
+    fn ui_config_modal(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let target_label = match self.folder.as_ref() {
+            Some(p) => p.join(CONFIG_FILE).display().to_string(),
+            None => t.no_folder().to_string(),
+        };
+        let mut open = true;
+        egui::Window::new("anima-tagger.toml")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_size([720.0, 520.0])
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(target_label).monospace().weak());
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.config_text)
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(20),
+                        );
+                    });
+                if let Some(err) = self.config_error.clone() {
+                    ui.colored_label(egui::Color32::from_rgb(255, 180, 180), err);
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t.config_validate()).clicked() {
+                        match toml::from_str::<ProjectConfig>(&self.config_text) {
+                            Ok(_) => self.config_error = None,
+                            Err(e) => self.config_error = Some(e.to_string()),
+                        }
+                    }
+                    if ui.button(t.config_save()).clicked() {
+                        if let Err(e) = toml::from_str::<ProjectConfig>(&self.config_text) {
+                            self.config_error = Some(e.to_string());
+                            return;
+                        }
+                        let Some(folder) = self.folder.clone() else {
+                            self.error_msg = Some(t.err_open_folder_first());
+                            return;
+                        };
+                        let target = folder.join(CONFIG_FILE);
+                        if let Err(e) = fs::write(&target, self.config_text.as_bytes()) {
+                            self.config_error =
+                                Some(format!("write {}: {e}", target.display()));
+                            return;
+                        }
+                        // Drop cached models so the next run resolves
+                        // against the new profile.
+                        self.tagger = None;
+                        self.captioner = None;
+                        self.config_error = None;
+                        self.config_open = false;
+                    }
+                    if ui.button(t.config_cancel()).clicked() {
+                        self.config_error = None;
+                        self.config_open = false;
+                    }
+                });
+            });
+        if !open {
+            self.config_open = false;
+            self.config_error = None;
+        }
+    }
+}
+
+// ───────── Long-running operations (background thread) ─────────
+//
+// Each run_* spawns a worker thread, ships any pre-loaded model into
+// it, and stores the receiver. The UI keeps repainting via
+// ctx.request_repaint() calls inside the worker, and `update()` polls
+// the channel each frame (`poll_worker`). When the worker emits Done,
+// the (possibly-new) model handle comes back through the channel and
+// gets re-cached.
+
+impl AnimaTaggerApp {
+    fn run_tagger(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let Some(folder) = self.folder.clone() else {
+            self.error_msg = Some(t.err_open_folder_first());
+            return;
+        };
+        let cfg = match ProjectConfig::load_or_default(&folder) {
+            Ok(c) => c,
+            Err(e) => {
+                self.error_msg = Some(e.to_string());
+                return;
+            }
+        };
+        let (model_name, profile) = cfg.resolve_tagger(None);
+        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel.is_empty() {
+            return;
+        }
+        let total = sel.len();
+        let mut tagger = self.tagger.take();
+        let storage_threshold = profile.storage_threshold;
+        let profile_for_load = profile.clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            if tagger.is_none() {
+                match Tagger::from_profile(&profile_for_load) {
+                    Ok(t) => tagger = Some(t),
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("tagger load: {e}")));
+                        let _ = tx.send(WorkerMsg::Done(DoneKind::Tagger(None)));
+                        ctx_clone.request_repaint();
+                        return;
+                    }
+                }
+            }
+            let tagger_inst = tagger.as_mut().expect("loaded above");
+            let now = Utc::now();
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Tagger,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                match tagger_inst.tag_image(path, storage_threshold) {
+                    Ok(tags) => {
+                        let _ = tx.send(WorkerMsg::TaggerResult {
+                            path: path.clone(),
+                            tags,
+                            model: model_name.clone(),
+                            ts: now,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("{}: {e}", path.display())));
+                    }
+                }
+                ctx_clone.request_repaint();
+            }
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Tagger,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Tagger(tagger)));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::Tagger,
+            current: 0,
+            total,
+        });
+    }
+
+    fn run_captioner(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let Some(folder) = self.folder.clone() else {
+            self.error_msg = Some(t.err_open_folder_first());
+            return;
+        };
+        let cfg = match ProjectConfig::load_or_default(&folder) {
+            Ok(c) => c,
+            Err(e) => {
+                self.error_msg = Some(e.to_string());
+                return;
+            }
+        };
+        let (model_name, profile) = cfg.resolve_captioner(None);
+        let library = cfg.prompt_library();
+        let prompts = match profile.resolved_prompts(&library) {
+            Ok(p) => p,
+            Err(e) => {
+                self.error_msg = Some(e.to_string());
+                return;
+            }
+        };
+        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel.is_empty() {
+            return;
+        }
+        let total = sel.len();
+        let hints: HashMap<PathBuf, Option<String>> = self
+            .images
+            .iter()
+            .filter(|i| sel.contains(&i.path))
+            .map(|i| (i.path.clone(), i.sidecar.caption_hint.clone()))
+            .collect();
+
+        let mut captioner = self.captioner.take();
+        let profile_for_load = profile.clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            if captioner.is_none() {
+                match Captioner::from_profile(&profile_for_load) {
+                    Ok(c) => captioner = Some(c),
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("captioner load: {e}")));
+                        let _ = tx.send(WorkerMsg::Done(DoneKind::Captioner(None)));
+                        ctx_clone.request_repaint();
+                        return;
+                    }
+                }
+            }
+            let captioner_inst = captioner.as_mut().expect("loaded above");
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Captioner,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                let hint = hints.get(path).cloned().flatten();
+                let mut entries: Vec<(String, String)> = Vec::new();
+                for (pname, ptext) in &prompts {
+                    let key = format!("{model_name}.{pname}");
+                    match captioner_inst.caption_image(path, ptext, hint.as_deref()) {
+                        Ok(caption) => entries.push((key, caption)),
+                        Err(e) => {
+                            let _ = tx.send(WorkerMsg::Error(format!(
+                                "{} [{pname}]: {e}",
+                                path.display()
+                            )));
+                        }
+                    }
+                }
+                if !entries.is_empty() {
+                    let _ = tx.send(WorkerMsg::CaptionerResult {
+                        path: path.clone(),
+                        entries,
+                    });
+                }
+                ctx_clone.request_repaint();
+            }
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Captioner,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Captioner(captioner)));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::Captioner,
+            current: 0,
+            total,
+        });
+    }
+
+    fn run_booru(&mut self, ctx: &egui::Context) {
+        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel.is_empty() {
+            return;
+        }
+        let total = sel.len();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            let client = BooruClient::danbooru();
+            for (i, path) in sel.iter().enumerate() {
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::Booru,
+                    current: i,
+                    total,
+                }));
+                ctx_clone.request_repaint();
+                match client.fetch_for_image(path) {
+                    Ok((tags, info)) => {
+                        let _ = tx.send(WorkerMsg::BooruResult {
+                            path: path.clone(),
+                            tags,
+                            info,
+                        });
+                    }
+                    Err(BooruError::NotFound(_)) => {}
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::Error(format!("{}: {e}", path.display())));
+                    }
+                }
+                ctx_clone.request_repaint();
+            }
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::Booru,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::Booru));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::Booru,
+            current: 0,
+            total,
+        });
+    }
+
+    fn poll_worker(&mut self) {
+        if self.worker_rx.is_none() {
+            return;
+        }
+        // Drain everything currently buffered. We can't hold a borrow
+        // of self.worker_rx across the apply_worker_msg call (which
+        // mutably borrows self), so each iteration grabs the receiver
+        // briefly to try_recv, drops the borrow, then dispatches.
+        loop {
+            let recv = match self.worker_rx.as_ref() {
+                Some(rx) => rx.try_recv(),
+                None => break,
+            };
+            match recv {
+                Ok(msg) => self.apply_worker_msg(msg),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Worker dropped without sending Done — clean up
+                    // anyway so the UI doesn't get stuck on the
+                    // progress overlay.
+                    self.worker_rx = None;
+                    self.progress = None;
+                    self.loading = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    fn apply_worker_msg(&mut self, msg: WorkerMsg) {
+        match msg {
+            WorkerMsg::Progress(p) => self.progress = Some(p),
+            WorkerMsg::TaggerResult {
+                path,
+                tags,
+                model,
+                ts,
+            } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+                    img.sidecar.auto_tags = tags;
+                    img.sidecar.tagger = Some(TaggerInfo {
+                        model,
+                        tagged_at: ts,
+                    });
+                    let _ = img.sidecar.save(&img.path);
+                }
+            }
+            WorkerMsg::CaptionerResult { path, entries } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+                    for (key, caption) in entries {
+                        img.sidecar.set_caption(key, caption);
+                    }
+                    let _ = img.sidecar.save(&img.path);
+                }
+            }
+            WorkerMsg::BooruResult { path, tags, info } => {
+                if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+                    img.sidecar.booru_tags = tags;
+                    img.sidecar.booru = Some(info);
+                    let _ = img.sidecar.save(&img.path);
+                }
+            }
+            WorkerMsg::Error(e) => {
+                self.error_msg = Some(e);
+            }
+            WorkerMsg::Done(kind) => {
+                match kind {
+                    DoneKind::Tagger(t) => self.tagger = t,
+                    DoneKind::Captioner(c) => self.captioner = c,
+                    DoneKind::Booru => {}
+                }
+                self.progress = None;
+                self.loading = false;
+                self.worker_rx = None;
+            }
+        }
+    }
+
+    fn ui_progress_overlay(&self, ctx: &egui::Context) {
+        let Some(p) = self.progress.clone() else {
+            return;
+        };
+        let t = self.t();
+        let label = match p.op {
+            WorkerOp::Tagger => t.op_tagging(),
+            WorkerOp::Captioner => t.op_captioning(),
+            WorkerOp::Booru => t.op_fetching_booru(),
+        };
+        let frac = if p.total == 0 {
+            0.0
+        } else {
+            (p.current as f32) / (p.total as f32)
+        };
+        egui::Window::new("anima-tagger-progress")
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .title_bar(false)
+            .show(ctx, |ui| {
+                ui.set_min_width(280.0);
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    ui.heading(label);
+                    ui.add_space(8.0);
+                    ui.add(
+                        egui::ProgressBar::new(frac)
+                            .desired_width(260.0)
+                            .show_percentage(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(t.progress_count(p.current, p.total));
+                    ui.add_space(4.0);
+                });
+            });
+    }
+}
+
+// ───────── Sidecar mutators ─────────
+
+impl AnimaTaggerApp {
+    fn save_manual_caption(&mut self, path: &Path, text: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+            img.sidecar.set_manual_caption(text);
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn save_caption_hint(&mut self, path: &Path, text: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+            img.sidecar.set_caption_hint(text);
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn copy_caption_to_manual(&mut self, path: &Path, text: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+            img.sidecar.set_manual_caption(text);
+            let _ = img.sidecar.save(&img.path);
+            self.manual_caption_buf
+                .insert(path.to_path_buf(), text.to_string());
+        }
+    }
+    fn remove_caption_at(&mut self, path: &Path, model: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path)
+            && img.sidecar.remove_caption(model)
+        {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn toggle_caption_skip_at(&mut self, path: &Path, model: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path)
+            && img.sidecar.toggle_caption_skip(model).is_some()
+        {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn remove_manual_at(&mut self, path: &Path, tag: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path)
+            && img.sidecar.remove_manual_tag(tag)
+        {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn toggle_suppression_at(&mut self, path: &Path, tag: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
+            let changed = if img.sidecar.is_suppressed(tag) {
+                img.sidecar.unsuppress(tag)
+            } else {
+                img.sidecar.suppress(tag)
+            };
+            if changed {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+    fn bulk_remove_manual(&mut self, paths: &[PathBuf], tag: &str) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.remove_manual_tag(tag) {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+    fn bulk_remove_caption(&mut self, paths: &[PathBuf], model: &str) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.remove_caption(model) {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+    fn bulk_promote_to_manual(&mut self, paths: &[PathBuf], model: &str) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            let manual_empty = img
+                .sidecar
+                .manual_caption
+                .as_deref()
+                .map(str::trim)
+                .map(|s| s.is_empty())
+                .unwrap_or(true);
+            if !manual_empty {
+                continue;
+            }
+            let Some(entry) = img.sidecar.captions.get(model) else {
+                continue;
+            };
+            let text = entry.caption.clone();
+            img.sidecar.set_manual_caption(&text);
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+    fn bulk_clear_manual_caption(&mut self, paths: &[PathBuf]) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.manual_caption.is_some() {
+                img.sidecar.set_manual_caption("");
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+    fn bulk_set_caption_hint(&mut self, paths: &[PathBuf], text: &str) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            img.sidecar.set_caption_hint(text);
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+}
+
+// ───────── Helpers ─────────
+
+#[derive(Clone, Copy)]
+enum ChipKind {
+    Manual,
+    Negative,
+    Auto,
+    Booru,
+}
+
+impl ChipKind {
+    fn fill(self) -> egui::Color32 {
+        match self {
+            Self::Manual => egui::Color32::from_rgb(45, 74, 110),
+            Self::Negative => egui::Color32::from_rgb(90, 45, 45),
+            Self::Auto => egui::Color32::from_rgb(58, 58, 58),
+            Self::Booru => egui::Color32::from_rgb(45, 90, 58),
+        }
+    }
+    fn fg(self) -> egui::Color32 {
+        match self {
+            Self::Manual => egui::Color32::from_rgb(207, 227, 255),
+            Self::Negative => egui::Color32::from_rgb(255, 208, 208),
+            Self::Auto => egui::Color32::from_rgb(204, 204, 204),
+            Self::Booru => egui::Color32::from_rgb(207, 229, 208),
+        }
+    }
+}
+
+/// Render a tag chip. Returns `true` when the user clicked it
+/// (interpretation is up to the caller — usually "remove" or "toggle
+/// suppression").
+///
+/// Implemented as a single `egui::Button` instead of a Frame + inner
+/// horizontal layout because nested layouts inside `horizontal_wrapped`
+/// suppress wrap-on-overflow — egui's wrap engine measures each child
+/// after placement, and a Frame's inner sublayout can over-allocate
+/// width and push subsequent chips off-screen.
+fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool) -> bool {
+    let mut text = egui::RichText::new(format!("{label}  ×"))
+        .color(kind.fg())
+        .size(12.0);
+    if suppressed {
+        text = text.strikethrough();
+    }
+    ui.add(
+        egui::Button::new(text)
+            .fill(kind.fill())
+            .corner_radius(egui::CornerRadius::same(8))
+            .stroke(egui::Stroke::NONE),
+    )
+    .clicked()
+}
+
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .small()
+            .weak()
+            .strong(),
+    );
+}
+
+fn make_thumbnail_texture(path: &Path, max_size: u32, ctx: &egui::Context) -> Option<TextureHandle> {
+    let img = image::open(path).ok()?;
+    let thumb = img.thumbnail(max_size, max_size).to_rgba8();
+    let size = [thumb.width() as usize, thumb.height() as usize];
+    let pixels: Vec<u8> = thumb.into_raw();
+    let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+    Some(ctx.load_texture(
+        format!("thumb::{}", path.display()),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    ))
+}
+
 fn matches_tag_query(item: &ImageItem, needle_lower: &str) -> bool {
     if item
         .sidecar
@@ -170,1479 +1661,64 @@ fn matches_tag_query(item: &ImageItem, needle_lower: &str) -> bool {
         .any(|bt| bt.tag.to_lowercase().contains(needle_lower))
 }
 
-#[component]
-fn ErrorBanner(mut error_msg: Signal<Option<String>>) -> Element {
-    let msg = error_msg.read().clone();
-    match msg {
-        None => rsx! {},
-        Some(m) => rsx! {
-            div { class: "error-banner",
-                span { "{m}" }
-                button {
-                    class: "dismiss",
-                    onclick: move |_| error_msg.set(None),
-                    "×"
-                }
-            }
-        },
-    }
-}
-
-#[component]
-fn Toolbar(
-    folder: Signal<Option<PathBuf>>,
-    mut images: Signal<Vec<ImageItem>>,
-    mut selected: Signal<HashSet<PathBuf>>,
-    mut filter: Signal<Filter>,
-    mut tag_filter: Signal<String>,
-    mut loading: Signal<bool>,
-    error_msg: Signal<Option<String>>,
-    tagger_state: Signal<Option<Tagger>>,
-    captioner_state: Signal<Option<Captioner>>,
-    mut config_open: Signal<bool>,
-    mut config_text: Signal<String>,
-    mut config_error: Signal<Option<String>>,
-) -> Element {
-    let on_open = move |_| {
-        let Some(picked) = rfd::FileDialog::new().pick_folder() else {
-            return;
-        };
-        loading.set(true);
-        let loaded = load_folder(&picked);
-        let mut f = folder;
-        f.set(Some(picked));
-        images.set(loaded);
-        selected.set(HashSet::new());
-        // Folder change invalidates lazily-loaded models (different config may
-        // point at different model paths).
-        let mut t = tagger_state;
-        t.set(None);
-        let mut c = captioner_state;
-        c.set(None);
-        loading.set(false);
-    };
-
-    let select_all_visible = move |_| {
-        let imgs = images.read();
-        let cur_filter = *filter.read();
-        let tag_query = tag_filter.read().trim().to_lowercase();
-        let new_sel: HashSet<PathBuf> = imgs
-            .iter()
-            .filter(|i| cur_filter.matches(i))
-            .filter(|i| tag_query.is_empty() || matches_tag_query(i, &tag_query))
-            .map(|i| i.path.clone())
-            .collect();
-        selected.set(new_sel);
-    };
-
-    let clear_selection = move |_| selected.set(HashSet::new());
-
-    let on_open_config = move |_| {
-        let text = match folder.read().as_ref() {
-            Some(p) => {
-                let target = p.join(CONFIG_FILE);
-                if target.exists() {
-                    fs::read_to_string(&target).unwrap_or_default()
-                } else {
-                    CONFIG_TEMPLATE.to_string()
-                }
-            }
-            None => CONFIG_TEMPLATE.to_string(),
-        };
-        config_text.set(text);
-        config_error.set(None);
-        config_open.set(true);
-    };
-
-    let mut lang_signal = use_context::<Signal<Lang>>();
-    let lang = *lang_signal.read();
-    let t = T::new(lang);
-
-    let folder_label = match folder.read().as_ref() {
-        Some(p) => p
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(String::from)
-            .unwrap_or_else(|| p.display().to_string()),
-        None => t.no_folder().to_string(),
-    };
-    let count = images.read().len();
-    let sel_count = selected.read().len();
-    let has_sel = sel_count > 0;
-    let folder_set = folder.read().is_some();
-
-    rsx! {
-        div { class: "toolbar",
-            button { onclick: on_open, "{t.open_folder()}" }
-            button {
-                class: "secondary",
-                title: "{t.config_button_title()}",
-                onclick: on_open_config,
-                "{t.config_button()}"
-            }
-            span { class: "folder-name", "{folder_label}" }
-            select {
-                value: "{filter.read().key()}",
-                onchange: move |evt| filter.set(Filter::from_key(evt.value().as_str())),
-                option { value: "all", "{t.filter_all()}" }
-                option { value: "untagged", "{t.filter_untagged()}" }
-                option { value: "auto-tagged", "{t.filter_auto_tagged()}" }
-                option { value: "no-manual", "{t.filter_no_manual()}" }
-                option { value: "no-caption", "{t.filter_no_caption()}" }
-                option { value: "no-hint", "{t.filter_no_hint()}" }
-                option { value: "no-booru", "{t.filter_no_booru()}" }
-            }
-            input {
-                class: "tag-filter",
-                placeholder: "{t.tag_filter_placeholder()}",
-                value: "{tag_filter}",
-                oninput: move |evt| tag_filter.set(evt.value()),
-            }
-            button {
-                class: "secondary",
-                onclick: select_all_visible,
-                disabled: !folder_set,
-                "{t.select_visible()}"
-            }
-            button {
-                class: "secondary",
-                onclick: clear_selection,
-                disabled: !has_sel,
-                "{t.clear_selection()}"
-            }
-            span { class: "spacer" }
-            button {
-                onclick: move |_| run_tagger(folder, images, selected, tagger_state, error_msg, loading, lang),
-                disabled: !has_sel || *loading.read(),
-                "{t.run_tagger()}"
-            }
-            button {
-                onclick: move |_| run_captioner(folder, images, selected, captioner_state, error_msg, loading, lang),
-                disabled: !has_sel || *loading.read(),
-                "{t.run_captioner()}"
-            }
-            button {
-                onclick: move |_| run_booru(images, selected, error_msg, loading),
-                disabled: !has_sel || *loading.read(),
-                "{t.fetch_booru()}"
-            }
-            select {
-                class: "lang-select",
-                title: "{t.lang_select_title()}",
-                value: "{lang.code()}",
-                onchange: move |evt| {
-                    let new = match evt.value().as_str() {
-                        "ja" => Lang::Ja,
-                        _ => Lang::En,
-                    };
-                    save_pref(new);
-                    lang_signal.set(new);
-                },
-                option { value: "en", "English" }
-                option { value: "ja", "日本語" }
-            }
-            if *loading.read() { span { class: "muted", "{t.working()}" } }
-            span { class: "muted", "{t.images_selected_summary(count, sel_count)}" }
-        }
-    }
-}
-
-#[component]
-fn Grid(items: Vec<ImageItem>, mut selected: Signal<HashSet<PathBuf>>) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    if items.is_empty() {
-        return rsx! { div { class: "grid empty", p { class: "muted", "{t.no_images()}" } } };
-    }
-    rsx! {
-        div { class: "grid",
-            for item in items.iter().cloned() {
-                Thumb { item: item.clone(), selected }
-            }
-        }
-    }
-}
-
-#[component]
-fn Thumb(item: ImageItem, mut selected: Signal<HashSet<PathBuf>>) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let is_selected = selected.read().contains(&item.path);
-    let class = if is_selected { "thumb selected" } else { "thumb" };
-    let auto_flag = if item.sidecar.is_auto_tagged() { "T" } else { " " };
-    let cap_flag = if item.sidecar.is_captioned() { "C" } else { " " };
-    let booru_flag = if item.sidecar.has_booru() { "B" } else { " " };
-    let manual_flag = if !item.sidecar.manual_tags.is_empty() {
-        "M"
-    } else {
-        " "
-    };
-    let hint_flag = if item.sidecar.caption_hint.is_some() {
-        "H"
-    } else {
-        " "
-    };
-    let path_for_click = item.path.clone();
-
-    rsx! {
-        div {
-            class: "{class}",
-            onclick: move |evt| {
-                let mods = evt.modifiers();
-                let mut sel = selected.write();
-                let multi = mods.ctrl() || mods.meta() || mods.shift();
-                if multi {
-                    if sel.contains(&path_for_click) {
-                        sel.remove(&path_for_click);
-                    } else {
-                        sel.insert(path_for_click.clone());
-                    }
-                } else {
-                    sel.clear();
-                    sel.insert(path_for_click.clone());
-                }
-            },
-            img { src: "{item.thumbnail}" }
-            span {
-                class: "thumb-status",
-                title: "{t.thumb_status_title()}",
-                "{auto_flag}{cap_flag}{booru_flag}{manual_flag}{hint_flag}"
-            }
-        }
-    }
-}
-
-#[component]
-fn DetailPanel(
-    mut images: Signal<Vec<ImageItem>>,
-    selected: Signal<HashSet<PathBuf>>,
-    mut tag_input: Signal<String>,
-) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let sel_paths: Vec<PathBuf> = selected.read().iter().cloned().collect();
-    let n = sel_paths.len();
-
-    if n == 0 {
-        return rsx! {
-            aside { class: "detail",
-                p { class: "muted", "{t.select_to_edit()}" }
-                p { class: "muted small", "{t.tip_suppress()}" }
-            }
-        };
-    }
-
-    let imgs_snapshot = images.read().clone();
-
-    let mut do_add = move |raw: String| {
-        let tag = raw.trim().to_string();
-        if tag.is_empty() {
-            return;
-        }
-        let sel = selected.read().clone();
-        let mut imgs = images.write();
-        for img in imgs.iter_mut() {
-            if !sel.contains(&img.path) {
+fn compute_common_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
+    let mut order: Vec<String> = Vec::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut display: HashMap<String, String> = HashMap::new();
+    for item in items {
+        let mut seen: HashSet<String> = HashSet::new();
+        let auto = item.sidecar.auto_tags.iter().map(|at| at.tag.as_str());
+        let booru = item.sidecar.booru_tags.iter().map(|bt| bt.tag.as_str());
+        for tag in auto.chain(booru) {
+            let key = tag.to_lowercase();
+            if key.is_empty() || !seen.insert(key.clone()) {
                 continue;
             }
-            if img.sidecar.add_manual_tag(tag.clone()) {
-                let _ = img.sidecar.save(&img.path);
+            if !counts.contains_key(&key) {
+                order.push(key.clone());
+                display.insert(key.clone(), tag.to_string());
             }
-        }
-    };
-
-    rsx! {
-        aside { class: "detail",
-            if n == 1 {
-                if let Some(item) = imgs_snapshot.iter().find(|i| i.path == sel_paths[0]) {
-                    SingleDetail {
-                        key: "{item.path.display()}",
-                        item: item.clone(),
-                        images, selected, tag_input,
-                    }
-                }
-            } else {
-                BulkDetail {
-                    items: imgs_snapshot.clone(),
-                    selected_paths: sel_paths.clone(),
-                    images, tag_input,
-                }
-            }
-
-            div { class: "input-row",
-                input {
-                    placeholder: "{t.add_input_placeholder()}",
-                    value: "{tag_input}",
-                    oninput: move |evt| tag_input.set(evt.value()),
-                    onkeydown: move |evt: KeyboardEvent| {
-                        if evt.key() == Key::Enter {
-                            let v = tag_input.read().clone();
-                            do_add(v);
-                            tag_input.set(String::new());
-                        }
-                    },
-                }
-                button {
-                    onclick: move |_| {
-                        let v = tag_input.read().clone();
-                        do_add(v);
-                        tag_input.set(String::new());
-                    },
-                    "{t.add_button()}"
-                }
-            }
+            *counts.entry(key).or_insert(0) += 1;
         }
     }
-}
-
-#[component]
-fn SingleDetail(
-    item: ImageItem,
-    images: Signal<Vec<ImageItem>>,
-    selected: Signal<HashSet<PathBuf>>,
-    tag_input: Signal<String>,
-) -> Element {
-    let _ = selected;
-    let _ = tag_input;
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let path = item.path.clone();
-    let filename = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-
-    let manual_positives: Vec<String> = item
-        .sidecar
-        .manual_positive_tags()
-        .map(|s| s.to_string())
-        .collect();
-
-    rsx! {
-        p { class: "filename", "{filename}" }
-
-        div { class: "section-title", "{t.section_tags()}" }
-        if manual_positives.is_empty() && item.sidecar.auto_tags.is_empty() && item.sidecar.booru_tags.is_empty() {
-            p { class: "muted", "{t.empty_tags()}" }
-        } else {
-            div { class: "tag-list",
-                for tag in manual_positives.iter().cloned() {
-                    {
-                        let path_for = path.clone();
-                        let tag_for = tag.clone();
-                        rsx! {
-                            span { class: "chip manual",
-                                "{tag}"
-                                span {
-                                    class: "chip-x",
-                                    onclick: move |_| remove_manual_at(images, path_for.clone(), tag_for.clone()),
-                                    "×"
-                                }
-                            }
-                        }
-                    }
-                }
-                for at in item.sidecar.auto_tags.iter().cloned() {
-                    {
-                        let suppressed = item.sidecar.is_suppressed(&at.tag);
-                        let cls = if suppressed { "chip auto suppressed" } else { "chip auto" };
-                        let path_for = path.clone();
-                        let tag_for = at.tag.clone();
-                        rsx! {
-                            span { class: "{cls}",
-                                "{at.tag}"
-                                span { class: "score", "{at.score:.2}" }
-                                span {
-                                    class: "chip-x",
-                                    onclick: move |_| toggle_suppression_at(images, path_for.clone(), tag_for.clone()),
-                                    "×"
-                                }
-                            }
-                        }
-                    }
-                }
-                for bt in item.sidecar.booru_tags.iter().cloned() {
-                    {
-                        let suppressed = item.sidecar.is_suppressed(&bt.tag);
-                        let cls = if suppressed { "chip booru suppressed" } else { "chip booru" };
-                        let path_for = path.clone();
-                        let tag_for = bt.tag.clone();
-                        rsx! {
-                            span { class: "{cls}",
-                                "{bt.tag}"
-                                span { class: "src", "B" }
-                                span {
-                                    class: "chip-x",
-                                    onclick: move |_| toggle_suppression_at(images, path_for.clone(), tag_for.clone()),
-                                    "×"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_caption_hint()}" }
-        {
-            let hint_text = item.sidecar.caption_hint.clone().unwrap_or_default();
-            let editor_key = format!("hint::{}::{}", path.display(), hint_text);
-            rsx! {
-                CaptionHintEditor {
-                    key: "{editor_key}",
-                    path: path.clone(),
-                    images,
-                    initial: hint_text,
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_manual_caption()}" }
-        {
-            let manual_text = item.sidecar.manual_caption.clone().unwrap_or_default();
-            let editor_key = format!("{}::{}", path.display(), manual_text);
-            rsx! {
-                ManualCaptionEditor {
-                    key: "{editor_key}",
-                    path: path.clone(),
-                    images,
-                    initial: manual_text,
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_auto_captions()}" }
-        if item.sidecar.captions.is_empty() {
-            p { class: "muted small", "{t.empty_auto_captions()}" }
-        } else {
-            for (model, entry) in item.sidecar.captions.iter() {
-                {
-                    let model_name = model.clone();
-                    let model_for_skip = model.clone();
-                    let model_for_remove = model.clone();
-                    let text = entry.caption.clone();
-                    let text_for_copy = text.clone();
-                    let path_for_copy = path.clone();
-                    let path_for_skip = path.clone();
-                    let path_for_remove = path.clone();
-                    let skipped = entry.skip;
-                    let block_class = if skipped { "auto-caption skipped" } else { "auto-caption" };
-                    let skip_label = if skipped { t.unskip() } else { t.skip() };
-                    let skip_title = if skipped { t.unskip_title() } else { t.skip_title() };
-                    rsx! {
-                        div { class: "{block_class}",
-                            div { class: "auto-caption-head",
-                                span { class: "model-name", "{model_name}" }
-                                button {
-                                    class: "tiny",
-                                    title: "{t.promote_to_manual_title()}",
-                                    onclick: move |_| copy_caption_to_manual(images, path_for_copy.clone(), text_for_copy.clone()),
-                                    "{t.promote_to_manual()}"
-                                }
-                                button {
-                                    class: "tiny secondary",
-                                    title: "{skip_title}",
-                                    onclick: move |_| toggle_caption_skip_at(images, path_for_skip.clone(), model_for_skip.clone()),
-                                    "{skip_label}"
-                                }
-                                button {
-                                    class: "tiny secondary",
-                                    title: "{t.remove_caption_title()}",
-                                    onclick: move |_| remove_caption_at(images, path_for_remove.clone(), model_for_remove.clone()),
-                                    "×"
-                                }
-                            }
-                            p { class: "caption", "{text}" }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(b) = item.sidecar.booru.as_ref() {
-            div { class: "section-title", "{t.section_booru()}" }
-            p { class: "muted small",
-                "{b.source}"
-                if let Some(id) = b.post_id { ": #{id}" }
-            }
-        }
-    }
-}
-
-#[component]
-fn ManualCaptionEditor(
-    path: PathBuf,
-    images: Signal<Vec<ImageItem>>,
-    initial: String,
-) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let mut buf = use_signal(|| initial.clone());
-    let path_for_change = path.clone();
-    rsx! {
-        textarea {
-            class: "manual-caption",
-            placeholder: "{t.manual_caption_placeholder()}",
-            value: "{buf}",
-            rows: "3",
-            oninput: move |evt| buf.set(evt.value()),
-            onchange: move |evt| save_manual_caption(images, path_for_change.clone(), evt.value()),
-        }
-    }
-}
-
-fn save_manual_caption(mut images: Signal<Vec<ImageItem>>, path: PathBuf, text: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
-        img.sidecar.set_manual_caption(&text);
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-#[component]
-fn CaptionHintEditor(
-    path: PathBuf,
-    images: Signal<Vec<ImageItem>>,
-    initial: String,
-) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let mut buf = use_signal(|| initial.clone());
-    let path_for_change = path.clone();
-    rsx! {
-        textarea {
-            class: "manual-caption",
-            placeholder: "{t.caption_hint_placeholder()}",
-            value: "{buf}",
-            rows: "3",
-            oninput: move |evt| buf.set(evt.value()),
-            onchange: move |evt| save_caption_hint(images, path_for_change.clone(), evt.value()),
-        }
-    }
-}
-
-fn save_caption_hint(mut images: Signal<Vec<ImageItem>>, path: PathBuf, text: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
-        img.sidecar.set_caption_hint(&text);
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn copy_caption_to_manual(mut images: Signal<Vec<ImageItem>>, path: PathBuf, text: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
-        img.sidecar.set_manual_caption(&text);
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn remove_caption_at(mut images: Signal<Vec<ImageItem>>, path: PathBuf, model: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path)
-        && img.sidecar.remove_caption(&model)
-    {
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn toggle_caption_skip_at(
-    mut images: Signal<Vec<ImageItem>>,
-    path: PathBuf,
-    model: String,
-) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path)
-        && img.sidecar.toggle_caption_skip(&model).is_some()
-    {
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn remove_manual_at(mut images: Signal<Vec<ImageItem>>, path: PathBuf, tag: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path)
-        && img.sidecar.remove_manual_tag(&tag)
-    {
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn toggle_suppression_at(mut images: Signal<Vec<ImageItem>>, path: PathBuf, tag: String) {
-    let mut imgs = images.write();
-    if let Some(img) = imgs.iter_mut().find(|i| i.path == path) {
-        let changed = if img.sidecar.is_suppressed(&tag) {
-            img.sidecar.unsuppress(&tag)
-        } else {
-            img.sidecar.suppress(&tag)
-        };
-        if changed {
-            let _ = img.sidecar.save(&img.path);
-        }
-    }
-}
-
-fn bulk_remove_manual(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>, tag: String) {
-    let mut imgs = images.write();
-    for img in imgs.iter_mut() {
-        if !paths.contains(&img.path) {
-            continue;
-        }
-        if img.sidecar.remove_manual_tag(&tag) {
-            let _ = img.sidecar.save(&img.path);
-        }
-    }
-}
-
-fn bulk_remove_caption(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>, model: String) {
-    let mut imgs = images.write();
-    for img in imgs.iter_mut() {
-        if !paths.contains(&img.path) {
-            continue;
-        }
-        if img.sidecar.remove_caption(&model) {
-            let _ = img.sidecar.save(&img.path);
-        }
-    }
-}
-
-/// Copy `model`'s auto caption into `manual_caption` for every selected
-/// image whose manual is currently empty. Mirrors the CLI's
-/// `--promote-to-manual=if-empty`: never overwrites a hand-edited
-/// manual. Use "Clear manual" first if you want to redo it.
-fn bulk_promote_to_manual(
-    mut images: Signal<Vec<ImageItem>>,
-    paths: Vec<PathBuf>,
-    model: String,
-) {
-    let mut imgs = images.write();
-    for img in imgs.iter_mut() {
-        if !paths.contains(&img.path) {
-            continue;
-        }
-        let manual_empty = img
-            .sidecar
-            .manual_caption
-            .as_deref()
-            .map(str::trim)
-            .map(|s| s.is_empty())
-            .unwrap_or(true);
-        if !manual_empty {
-            continue;
-        }
-        let Some(entry) = img.sidecar.captions.get(&model) else {
-            continue;
-        };
-        let text = entry.caption.clone();
-        img.sidecar.set_manual_caption(&text);
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-fn bulk_clear_manual_caption(mut images: Signal<Vec<ImageItem>>, paths: Vec<PathBuf>) {
-    let mut imgs = images.write();
-    for img in imgs.iter_mut() {
-        if !paths.contains(&img.path) {
-            continue;
-        }
-        if img.sidecar.manual_caption.is_some() {
-            img.sidecar.set_manual_caption("");
-            let _ = img.sidecar.save(&img.path);
-        }
-    }
-}
-
-#[component]
-fn BulkCaptionHintEditor(
-    paths: Vec<PathBuf>,
-    images: Signal<Vec<ImageItem>>,
-    initial: String,
-) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let mut buf = use_signal(|| initial.clone());
-    let paths_for_apply = paths.clone();
-    let paths_for_clear = paths.clone();
-    rsx! {
-        textarea {
-            class: "manual-caption",
-            placeholder: "{t.bulk_hint_placeholder()}",
-            value: "{buf}",
-            rows: "3",
-            oninput: move |evt| buf.set(evt.value()),
-        }
-        div { class: "tag-list",
-            button {
-                class: "tiny",
-                onclick: move |_| {
-                    let text = buf.read().clone();
-                    bulk_set_caption_hint(images, paths_for_apply.clone(), text);
-                },
-                "{t.bulk_hint_apply()}"
-            }
-            button {
-                class: "tiny secondary",
-                onclick: move |_| {
-                    buf.set(String::new());
-                    bulk_set_caption_hint(images, paths_for_clear.clone(), String::new());
-                },
-                "{t.bulk_hint_clear()}"
-            }
-        }
-    }
-}
-
-fn bulk_set_caption_hint(
-    mut images: Signal<Vec<ImageItem>>,
-    paths: Vec<PathBuf>,
-    text: String,
-) {
-    let mut imgs = images.write();
-    for img in imgs.iter_mut() {
-        if !paths.contains(&img.path) {
-            continue;
-        }
-        img.sidecar.set_caption_hint(&text);
-        let _ = img.sidecar.save(&img.path);
-    }
-}
-
-#[component]
-fn BulkDetail(
-    items: Vec<ImageItem>,
-    selected_paths: Vec<PathBuf>,
-    mut images: Signal<Vec<ImageItem>>,
-    tag_input: Signal<String>,
-) -> Element {
-    let _ = tag_input;
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let n = selected_paths.len();
-    let selected_items: Vec<&ImageItem> = items
-        .iter()
-        .filter(|i| selected_paths.contains(&i.path))
-        .collect();
-
-    let mut manual_order: Vec<String> = Vec::new();
-    let mut manual_counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for item in &selected_items {
-        for tag in &item.sidecar.manual_tags {
-            if !manual_counts.contains_key(tag) {
-                manual_order.push(tag.clone());
-            }
-            *manual_counts.entry(tag.clone()).or_insert(0) += 1;
-        }
-    }
-
-    // Auto/booru tags shared across selected images. Keyed by lowercase stem
-    // so a tag emitted by both the tagger and booru with different casing
-    // collapses into one row. `2+ images` threshold drops the long tail of
-    // image-specific tags that would otherwise dominate the list.
-    let mut tag_order: Vec<String> = Vec::new();
-    let mut tag_counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    let mut tag_display: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    for item in &selected_items {
-        let mut seen_in_item: HashSet<String> = HashSet::new();
-        let auto_iter = item.sidecar.auto_tags.iter().map(|at| at.tag.as_str());
-        let booru_iter = item.sidecar.booru_tags.iter().map(|bt| bt.tag.as_str());
-        for tag_str in auto_iter.chain(booru_iter) {
-            let key = tag_str.to_lowercase();
-            if key.is_empty() || !seen_in_item.insert(key.clone()) {
-                continue;
-            }
-            if !tag_counts.contains_key(&key) {
-                tag_order.push(key.clone());
-                tag_display.insert(key.clone(), tag_str.to_string());
-            }
-            *tag_counts.entry(key).or_insert(0) += 1;
-        }
-    }
-    let mut common_tags: Vec<(String, usize)> = tag_order
+    let mut out: Vec<(String, usize)> = order
         .into_iter()
-        .filter_map(|key| {
-            let c = tag_counts[&key];
+        .filter_map(|k| {
+            let c = counts[&k];
             if c >= 2 {
-                Some((tag_display.remove(&key).unwrap_or(key), c))
+                Some((display.remove(&k).unwrap_or(k), c))
             } else {
                 None
             }
         })
         .collect();
-    common_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-    let mut caption_order: Vec<String> = Vec::new();
-    let mut caption_counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for item in &selected_items {
-        for model in item.sidecar.captions.keys() {
-            if !caption_counts.contains_key(model) {
-                caption_order.push(model.clone());
-            }
-            *caption_counts.entry(model.clone()).or_insert(0) += 1;
-        }
-    }
-    caption_order.sort();
-
-    let hint_values: Vec<&str> = selected_items
-        .iter()
-        .map(|i| i.sidecar.caption_hint.as_deref().unwrap_or(""))
-        .collect();
-    let common_hint: String = if hint_values.iter().all(|v| *v == hint_values[0]) {
-        hint_values[0].to_string()
-    } else {
-        String::new()
-    };
-    let hints_uniform = hint_values.iter().all(|v| *v == hint_values[0]);
-    let bulk_hint_key = format!(
-        "bulk-hint::{n}::{:x}",
-        common_hint
-            .bytes()
-            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64))
-    );
-
-    rsx! {
-        p { class: "muted", "{t.n_selected_bulk(n)}" }
-
-        div { class: "section-title", "{t.section_bulk_caption_hint()}" }
-        if !hints_uniform {
-            p { class: "muted small", "{t.bulk_hints_differ()}" }
-        }
-        // dioxus 0.7 only accepts `key` on the first node of an rsx
-        // block, so we wrap the editor in its own block to keep the
-        // remount-on-bulk_hint_key-change behavior.
-        {
-            rsx! {
-                BulkCaptionHintEditor {
-                    key: "{bulk_hint_key}",
-                    paths: selected_paths.clone(),
-                    images,
-                    initial: common_hint,
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_manual_entries()}" }
-        if manual_order.is_empty() {
-            p { class: "muted", "{t.empty_simple()}" }
-        } else {
-            div { class: "tag-list",
-                for tag in manual_order.into_iter() {
-                    {
-                        let count = manual_counts[&tag];
-                        let label = if count < n {
-                            format!("{tag} ({count}/{n})")
-                        } else {
-                            tag.clone()
-                        };
-                        let cls = if tag.starts_with('-') { "chip negative" } else { "chip manual" };
-                        let paths_for = selected_paths.clone();
-                        let tag_for = tag.clone();
-                        rsx! {
-                            span { class: "{cls}",
-                                "{label}"
-                                span {
-                                    class: "chip-x",
-                                    onclick: move |_| bulk_remove_manual(images, paths_for.clone(), tag_for.clone()),
-                                    "×"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_common_tags()}" }
-        if common_tags.is_empty() {
-            p { class: "muted small", "{t.empty_simple()}" }
-        } else {
-            div { class: "tag-list",
-                for (tag, count) in common_tags.into_iter() {
-                    {
-                        let label = format!("{tag} ({count}/{n})");
-                        rsx! {
-                            span { class: "chip auto", "{label}" }
-                        }
-                    }
-                }
-            }
-        }
-
-        div { class: "section-title", "{t.section_bulk_manual_caption()}" }
-        div { class: "tag-list",
-            button {
-                class: "tiny secondary",
-                title: "{t.bulk_clear_manual_title()}",
-                onclick: move |_| bulk_clear_manual_caption(images, selected_paths.clone()),
-                "{t.bulk_clear_manual()}"
-            }
-        }
-
-        div { class: "section-title", "{t.section_bulk_auto_captions()}" }
-        if caption_order.is_empty() {
-            p { class: "muted small", "{t.empty_simple()}" }
-        } else {
-            div { class: "tag-list",
-                for model in caption_order.into_iter() {
-                    {
-                        let count = caption_counts[&model];
-                        let label = format!("{model} ({count}/{n})");
-                        let paths_remove = selected_paths.clone();
-                        let paths_promote = selected_paths.clone();
-                        let model_remove = model.clone();
-                        let model_promote = model.clone();
-                        rsx! {
-                            span { class: "chip auto",
-                                "{label}"
-                                span {
-                                    class: "chip-x",
-                                    title: "{t.bulk_promote_title()}",
-                                    onclick: move |_| bulk_promote_to_manual(images, paths_promote.clone(), model_promote.clone()),
-                                    "{t.promote_to_manual()}"
-                                }
-                                span {
-                                    class: "chip-x",
-                                    title: "{t.bulk_remove_caption_title()}",
-                                    onclick: move |_| bulk_remove_caption(images, paths_remove.clone(), model_remove.clone()),
-                                    "×"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        p { class: "muted small", "{t.switch_to_single_hint()}" }
-    }
-}
-
-// ───────── Long-running operations ─────────
-
-fn run_tagger(
-    folder: Signal<Option<PathBuf>>,
-    mut images: Signal<Vec<ImageItem>>,
-    selected: Signal<HashSet<PathBuf>>,
-    mut tagger_state: Signal<Option<Tagger>>,
-    mut error_msg: Signal<Option<String>>,
-    mut loading: Signal<bool>,
-    lang: Lang,
-) {
-    let tt = T::new(lang);
-    let Some(folder_path) = folder.read().clone() else {
-        error_msg.set(Some(tt.err_open_folder_first()));
-        return;
-    };
-    let cfg = match ProjectConfig::load_or_default(&folder_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error_msg.set(Some(e.to_string()));
-            return;
-        }
-    };
-    let (model_name, profile) = cfg.resolve_tagger(None);
-
-    let sel: Vec<PathBuf> = selected.read().iter().cloned().collect();
-    if sel.is_empty() {
-        return;
-    }
-
-    loading.set(true);
-
-    {
-        let mut t = tagger_state.write();
-        if t.is_none() {
-            match Tagger::from_profile(&profile) {
-                Ok(loaded) => *t = Some(loaded),
-                Err(e) => {
-                    error_msg.set(Some(format!("tagger load: {e}")));
-                    loading.set(false);
-                    return;
-                }
-            }
-        }
-    }
-
-    {
-        let mut t = tagger_state.write();
-        let tagger_inst = t.as_mut().unwrap();
-        let mut imgs = images.write();
-        let now = Utc::now();
-        for img in imgs.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
-            }
-            match tagger_inst.tag_image(&img.path, profile.storage_threshold) {
-                Ok(tags) => {
-                    img.sidecar.auto_tags = tags;
-                    img.sidecar.tagger = Some(TaggerInfo {
-                        model: model_name.clone(),
-                        tagged_at: now,
-                    });
-                    let _ = img.sidecar.save(&img.path);
-                }
-                Err(e) => {
-                    error_msg.set(Some(format!("{}: {e}", img.path.display())));
-                }
-            }
-        }
-    }
-    loading.set(false);
-}
-
-fn run_captioner(
-    folder: Signal<Option<PathBuf>>,
-    mut images: Signal<Vec<ImageItem>>,
-    selected: Signal<HashSet<PathBuf>>,
-    mut captioner_state: Signal<Option<Captioner>>,
-    mut error_msg: Signal<Option<String>>,
-    mut loading: Signal<bool>,
-    lang: Lang,
-) {
-    let tt = T::new(lang);
-    let Some(folder_path) = folder.read().clone() else {
-        error_msg.set(Some(tt.err_open_folder_first()));
-        return;
-    };
-    let cfg = match ProjectConfig::load_or_default(&folder_path) {
-        Ok(c) => c,
-        Err(e) => {
-            error_msg.set(Some(e.to_string()));
-            return;
-        }
-    };
-    let (model_name, profile) = cfg.resolve_captioner(None);
-    let library = cfg.prompt_library();
-    let prompts = match profile.resolved_prompts(&library) {
-        Ok(p) => p,
-        Err(e) => {
-            error_msg.set(Some(e.to_string()));
-            return;
-        }
-    };
-
-    let sel: Vec<PathBuf> = selected.read().iter().cloned().collect();
-    if sel.is_empty() {
-        return;
-    }
-
-    loading.set(true);
-
-    {
-        let mut c = captioner_state.write();
-        if c.is_none() {
-            match Captioner::from_profile(&profile) {
-                Ok(loaded) => *c = Some(loaded),
-                Err(e) => {
-                    error_msg.set(Some(format!("captioner load: {e}")));
-                    loading.set(false);
-                    return;
-                }
-            }
-        }
-    }
-
-    {
-        let mut c = captioner_state.write();
-        let captioner_inst = c.as_mut().unwrap();
-        let mut imgs = images.write();
-        for img in imgs.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
-            }
-            let mut wrote_any = false;
-            let hint = img.sidecar.caption_hint.clone();
-            for (pname, ptext) in &prompts {
-                let key = format!("{model_name}.{pname}");
-                match captioner_inst.caption_image(&img.path, ptext, hint.as_deref()) {
-                    Ok(caption) => {
-                        img.sidecar.set_caption(key, caption);
-                        wrote_any = true;
-                    }
-                    Err(e) => {
-                        error_msg.set(Some(format!("{} [{pname}]: {e}", img.path.display())));
-                    }
-                }
-            }
-            if wrote_any {
-                let _ = img.sidecar.save(&img.path);
-            }
-        }
-    }
-    loading.set(false);
-}
-
-fn run_booru(
-    mut images: Signal<Vec<ImageItem>>,
-    selected: Signal<HashSet<PathBuf>>,
-    mut error_msg: Signal<Option<String>>,
-    mut loading: Signal<bool>,
-) {
-    let sel: Vec<PathBuf> = selected.read().iter().cloned().collect();
-    if sel.is_empty() {
-        return;
-    }
-    loading.set(true);
-
-    let client = BooruClient::danbooru();
-    {
-        let mut imgs = images.write();
-        for img in imgs.iter_mut() {
-            if !sel.contains(&img.path) {
-                continue;
-            }
-            match client.fetch_for_image(&img.path) {
-                Ok((tags, info)) => {
-                    img.sidecar.booru_tags = tags;
-                    img.sidecar.booru = Some(info);
-                    let _ = img.sidecar.save(&img.path);
-                }
-                Err(BooruError::NotFound(_)) => {
-                    // not on booru — silent skip, no error banner
-                }
-                Err(e) => {
-                    error_msg.set(Some(format!("{}: {e}", img.path.display())));
-                }
-            }
-        }
-    }
-    loading.set(false);
-}
-
-// ───────── I/O helpers ─────────
-
-fn load_folder(dir: &Path) -> Vec<ImageItem> {
-    let mut out = Vec::new();
-    for path in iter_images(dir) {
-        let sidecar = Sidecar::load_or_default(&path).unwrap_or_default();
-        let thumbnail = make_thumbnail(&path, THUMB_SIZE).unwrap_or_default();
-        out.push(ImageItem {
-            path,
-            thumbnail,
-            sidecar,
-        });
-    }
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
 }
 
-fn make_thumbnail(path: &Path, max_size: u32) -> anyhow::Result<String> {
-    let img = image::open(path)?;
-    let thumb = img.thumbnail(max_size, max_size).to_rgb8();
-    let mut buf = Vec::new();
-    image::DynamicImage::ImageRgb8(thumb).write_to(&mut Cursor::new(&mut buf), ImageFormat::Jpeg)?;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
-    Ok(format!("data:image/jpeg;base64,{b64}"))
+fn bulk_signature(paths: &[PathBuf]) -> u64 {
+    let mut h: u64 = 0;
+    for p in paths {
+        for b in p.display().to_string().bytes() {
+            h = h.wrapping_mul(31).wrapping_add(b as u64);
+        }
+        h ^= 0x9E37_79B9_7F4A_7C15;
+    }
+    h
 }
 
-const CONFIG_TEMPLATE: &str = include_str!("../../../examples/anima-tagger.toml");
-
-#[component]
-fn ConfigEditor(
-    folder: Signal<Option<PathBuf>>,
-    mut config_open: Signal<bool>,
-    mut config_text: Signal<String>,
-    mut config_error: Signal<Option<String>>,
-    mut tagger_state: Signal<Option<Tagger>>,
-    mut captioner_state: Signal<Option<Captioner>>,
-    mut error_msg: Signal<Option<String>>,
-) -> Element {
-    let lang = *use_context::<Signal<Lang>>().read();
-    let t = T::new(lang);
-    let folder_path = folder.read().clone();
-    let target_path = folder_path.as_ref().map(|p| p.join(CONFIG_FILE));
-    let target_label = target_path
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| t.no_folder().to_string());
-    let target_for_save = target_path.clone();
-
-    let on_validate = move |_| {
-        let text = config_text.read().clone();
-        match toml::from_str::<ProjectConfig>(&text) {
-            Ok(_) => config_error.set(None),
-            Err(e) => config_error.set(Some(e.to_string())),
-        }
-    };
-
-    let on_save = move |_| {
-        let text = config_text.read().clone();
-        if let Err(e) = toml::from_str::<ProjectConfig>(&text) {
-            config_error.set(Some(e.to_string()));
-            return;
-        }
-        let Some(target) = target_for_save.clone() else {
-            error_msg.set(Some(t.err_open_folder_first()));
-            return;
-        };
-        if let Err(e) = fs::write(&target, text.as_bytes()) {
-            config_error.set(Some(format!("write {}: {e}", target.display())));
-            return;
-        }
-        // Cached models may have been built against the old profile —
-        // drop them so the next Run-tagger / Run-captioner picks up the
-        // new config.
-        tagger_state.set(None);
-        captioner_state.set(None);
-        config_error.set(None);
-        config_open.set(false);
-    };
-
-    let mut close_editor = move || {
-        config_open.set(false);
-        config_error.set(None);
-    };
-
-    rsx! {
-        div { class: "modal-overlay",
-            onclick: move |_| close_editor(),
-            div {
-                class: "modal config-modal",
-                onclick: move |evt| evt.stop_propagation(),
-                div { class: "modal-head",
-                    span { "anima-tagger.toml" }
-                    button {
-                        class: "tiny secondary",
-                        onclick: move |_| close_editor(),
-                        "×"
-                    }
-                }
-                p { class: "muted small", "{target_label}" }
-                textarea {
-                    class: "config-editor",
-                    value: "{config_text}",
-                    spellcheck: "false",
-                    oninput: move |evt| config_text.set(evt.value()),
-                }
-                if let Some(err) = config_error.read().as_ref() {
-                    pre { class: "config-error", "{err}" }
-                }
-                div { class: "modal-actions",
-                    button { class: "tiny secondary", onclick: on_validate, "{t.config_validate()}" }
-                    button { class: "tiny", onclick: on_save, "{t.config_save()}" }
-                    button {
-                        class: "tiny secondary",
-                        onclick: move |_| close_editor(),
-                        "{t.config_cancel()}"
-                    }
-                }
-            }
-        }
+fn canonical_bulk_hint(images: &[ImageItem], sel: &[PathBuf]) -> String {
+    let values: Vec<&str> = sel
+        .iter()
+        .filter_map(|p| images.iter().find(|i| &i.path == p))
+        .map(|i| i.sidecar.caption_hint.as_deref().unwrap_or(""))
+        .collect();
+    if values.is_empty() {
+        return String::new();
+    }
+    if values.iter().all(|v| *v == values[0]) {
+        values[0].to_string()
+    } else {
+        String::new()
     }
 }
-
-const APP_CSS: &str = r#"
-* { box-sizing: border-box; }
-html, body, #main { margin: 0; height: 100%; }
-body {
-    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-    background: #1e1e1e;
-    color: #e6e6e6;
-    font-size: 13px;
-}
-.app { display: flex; flex-direction: column; height: 100vh; }
-.toolbar {
-    padding: 8px 12px;
-    border-bottom: 1px solid #333;
-    background: #252526;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex-wrap: wrap;
-}
-.toolbar .spacer { flex: 1; }
-.toolbar .folder-name {
-    color: #ccc; font-size: 12px;
-    max-width: 240px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.toolbar button, .input-row button {
-    background: #4a9eff; color: white; border: none;
-    padding: 5px 12px; border-radius: 4px;
-    cursor: pointer; font-size: 12px;
-}
-.toolbar button:hover:not(:disabled), .input-row button:hover { background: #5fa8ff; }
-.toolbar button:disabled { background: #333; color: #666; cursor: not-allowed; }
-.toolbar button.secondary { background: #3a3a3a; color: #e6e6e6; }
-.toolbar button.secondary:hover:not(:disabled) { background: #4a4a4a; }
-.toolbar select, .input-row input, .toolbar input.tag-filter {
-    background: #2a2a2a; border: 1px solid #444; color: #e6e6e6;
-    padding: 4px 8px; border-radius: 4px; font-size: 12px;
-}
-.toolbar input.tag-filter { width: 160px; }
-.toolbar input.tag-filter:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
-.toolbar select.lang-select { min-width: 96px; }
-.error-banner {
-    background: #5a1f1f; color: #ffd0d0;
-    padding: 6px 12px; border-bottom: 1px solid #732;
-    display: flex; align-items: center; justify-content: space-between;
-    font-size: 12px;
-}
-.error-banner .dismiss {
-    background: transparent; color: #ffd0d0; border: none;
-    cursor: pointer; font-size: 16px; padding: 0 6px;
-}
-.workspace { display: flex; flex: 1; overflow: hidden; }
-.grid {
-    flex: 1; overflow-y: auto; padding: 12px;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 8px;
-    align-content: start;
-}
-.grid.empty { display: flex; align-items: center; justify-content: center; }
-.thumb {
-    aspect-ratio: 1;
-    border: 2px solid transparent; border-radius: 4px;
-    overflow: hidden; cursor: pointer;
-    background: #2a2a2a; position: relative; user-select: none;
-}
-.thumb img {
-    position: absolute; inset: 0;
-    width: 100%; height: 100%;
-    object-fit: contain; display: block; pointer-events: none;
-}
-.thumb.selected { border-color: #4a9eff; }
-.thumb-status {
-    position: absolute; top: 4px; right: 4px;
-    font-size: 10px;
-    background: rgba(0,0,0,0.65); color: #fff;
-    padding: 2px 5px; border-radius: 2px;
-    font-family: ui-monospace, monospace; white-space: pre;
-}
-.detail {
-    width: 340px;
-    border-left: 1px solid #333;
-    overflow-y: auto;
-    padding: 12px;
-    background: #252526;
-    display: flex; flex-direction: column;
-}
-.filename { font-family: ui-monospace, monospace; font-size: 11px; color: #aaa; margin: 0 0 4px; }
-.section-title {
-    font-size: 11px; text-transform: uppercase; color: #999;
-    margin-top: 12px; margin-bottom: 4px; letter-spacing: 0.04em;
-}
-.tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
-.chip {
-    padding: 3px 7px; border-radius: 12px;
-    font-size: 12px;
-    display: inline-flex; align-items: center; gap: 3px;
-    line-height: 1.4;
-}
-.chip.manual { background: #2d4a6e; color: #cfe3ff; }
-.chip.negative { background: #5a2d2d; color: #ffd0d0; }
-.chip.auto { background: #3a3a3a; color: #ccc; }
-.chip.booru { background: #2d5a3a; color: #cfe5d0; }
-.chip.suppressed {
-    text-decoration: line-through;
-    opacity: 0.55;
-}
-.chip-x { cursor: pointer; opacity: 0.55; padding: 0 2px; font-weight: bold; }
-.chip-x:hover { opacity: 1; }
-.score { color: #888; font-size: 10px; margin-left: 2px; }
-.src { color: #888; font-size: 10px; margin-left: 2px; }
-.input-row { display: flex; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid #333; }
-.input-row input { flex: 1; }
-.muted { color: #999; font-size: 12px; margin: 0; }
-.muted.small { font-size: 11px; }
-.caption { color: #ddd; font-size: 12px; line-height: 1.4; margin: 4px 0; }
-.manual-caption {
-    width: 100%;
-    background: #1e2a3a;
-    border: 1px solid #2d4a6e;
-    color: #cfe3ff;
-    padding: 6px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-family: inherit;
-    resize: vertical;
-    min-height: 60px;
-}
-.manual-caption:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
-.auto-caption {
-    background: #2a2a2a;
-    border: 1px solid #3a3a3a;
-    border-radius: 4px;
-    padding: 6px 8px;
-    margin-bottom: 6px;
-}
-.auto-caption.skipped {
-    opacity: 0.55;
-    border-style: dashed;
-}
-.auto-caption.skipped .caption { text-decoration: line-through; }
-.auto-caption-head {
-    display: flex; align-items: center; gap: 6px;
-    margin-bottom: 4px;
-}
-.model-name {
-    flex: 1;
-    color: #aaa;
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-button.tiny {
-    background: #2d4a6e; color: #cfe3ff; border: none;
-    padding: 2px 6px; border-radius: 3px;
-    font-size: 11px; cursor: pointer;
-}
-button.tiny:hover { background: #3a5a85; }
-button.tiny.secondary { background: #3a3a3a; color: #ccc; }
-button.tiny.secondary:hover { background: #4a4a4a; }
-code {
-    background: #2a2a2a; padding: 1px 4px; border-radius: 3px;
-    font-family: ui-monospace, monospace; font-size: 11px;
-}
-.modal-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 100;
-}
-.modal {
-    background: #252526; color: #e6e6e6;
-    border: 1px solid #3a3a3a; border-radius: 6px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-    padding: 14px 16px;
-    display: flex; flex-direction: column;
-    min-width: 520px; max-width: 90vw;
-}
-.modal-head {
-    display: flex; align-items: center; justify-content: space-between;
-    font-weight: 600; font-size: 13px;
-    margin-bottom: 4px;
-}
-.modal-head button { font-size: 13px; }
-.modal-actions {
-    display: flex; gap: 6px; justify-content: flex-end;
-    margin-top: 10px;
-}
-.config-modal { width: 720px; max-height: 80vh; }
-.config-editor {
-    flex: 1;
-    min-height: 360px;
-    width: 100%;
-    margin-top: 8px;
-    background: #1e1e1e; color: #d6d6d6;
-    border: 1px solid #3a3a3a; border-radius: 4px;
-    padding: 8px 10px;
-    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
-    font-size: 12px;
-    line-height: 1.45;
-    resize: vertical;
-}
-.config-editor:focus { outline: 1px solid #4a9eff; border-color: #4a9eff; }
-.config-error {
-    margin-top: 8px;
-    background: #3a1f1f; color: #ffd0d0;
-    border: 1px solid #5a2d2d; border-radius: 4px;
-    padding: 6px 8px;
-    font-family: ui-monospace, monospace; font-size: 11px;
-    white-space: pre-wrap;
-    max-height: 140px; overflow-y: auto;
-}
-"#;

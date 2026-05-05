@@ -116,8 +116,22 @@ impl T {
             Lang::Ja => format!("{count} 件 ・ {sel_count} 件選択中"),
         }
     }
-    pub fn lang_select_title(self) -> &'static str {
-        self.pair("Language", "言語")
+
+    // Progress overlay
+    pub fn op_tagging(self) -> &'static str {
+        self.pair("Tagging…", "タグ付け中…")
+    }
+    pub fn op_captioning(self) -> &'static str {
+        self.pair("Captioning…", "キャプション生成中…")
+    }
+    pub fn op_fetching_booru(self) -> &'static str {
+        self.pair("Fetching booru…", "Booru取得中…")
+    }
+    pub fn progress_count(self, current: usize, total: usize) -> String {
+        match self.lang {
+            Lang::En => format!("{current} / {total} images"),
+            Lang::Ja => format!("{current} / {total} 件"),
+        }
     }
 
     // Grid / status flags

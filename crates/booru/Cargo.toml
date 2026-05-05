@@ -1,8 +1,16 @@
 [package]
 name = "anima-tagger-booru"
+description = "Danbooru-API tag fetcher used by anima-tagger to enrich sidecars with human-curated booru tags."
+categories = ["api-bindings"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
 
 [dependencies]
 anima-tagger-core = { workspace = true }

@@ -8,8 +8,7 @@
 #
 # Flags:
 #   --version <tag>   release tag to install (default: latest)
-#   --prefix <dir>    install root for CLI binary (default: $HOME/.local)
-#   --app-dir <dir>   install root for macOS .app (default: $HOME/Applications)
+#   --prefix <dir>    install root for binaries (default: $HOME/.local)
 #   --cli-only        skip GUI install
 #   --gui-only        skip CLI install
 #   --no-verify       skip SHA256 verification
@@ -19,7 +18,6 @@ set -euo pipefail
 REPO="fwaunstp/anima-tagger"
 VERSION="latest"
 PREFIX="${HOME}/.local"
-APP_DIR="${HOME}/Applications"
 INSTALL_CLI=1
 INSTALL_GUI=1
 VERIFY=1
@@ -31,12 +29,11 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)    VERSION="$2"; shift 2 ;;
         --prefix)     PREFIX="$2"; shift 2 ;;
-        --app-dir)    APP_DIR="$2"; shift 2 ;;
         --cli-only)   INSTALL_GUI=0; shift ;;
         --gui-only)   INSTALL_CLI=0; shift ;;
         --no-verify)  VERIFY=0; shift ;;
         -h|--help)
-            sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) err "unknown flag: $1" ;;
@@ -66,7 +63,6 @@ fi
 TARGET="${OS}-${ARCH}"
 info "platform: ${TARGET}"
 
-# Resolve version → tag
 if [ "$VERSION" = "latest" ]; then
     info "resolving latest release"
     TAG="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
@@ -83,7 +79,6 @@ BASE_URL="https://github.com/${REPO}/releases/download/${TAG}"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Optional checksum verification
 if [ "$VERIFY" = "1" ] && command -v sha256sum >/dev/null 2>&1; then
     info "downloading SHA256SUMS"
     curl -fsSL -o "$TMPDIR/SHA256SUMS" "${BASE_URL}/SHA256SUMS" || {
@@ -105,7 +100,7 @@ download() {
     verify "$name" || err "checksum verification failed for ${name}"
 }
 
-# CLI install
+# CLI install — single binary tarball with anima-tagger at the root.
 if [ "$INSTALL_CLI" = "1" ]; then
     CLI_NAME="anima-tagger-cli-${VER}-${TARGET}.tar.gz"
     download "$CLI_NAME"
@@ -115,29 +110,24 @@ if [ "$INSTALL_CLI" = "1" ]; then
     info "installed CLI: ${PREFIX}/bin/anima-tagger"
 fi
 
-# GUI install
+# GUI install — the GUI archive is a tar.gz of a directory containing
+# both binaries. We extract just the anima-tagger-gui binary alongside
+# the CLI in $PREFIX/bin (uniform across macOS and Linux now that the
+# macOS .app wrapper has been dropped).
 if [ "$INSTALL_GUI" = "1" ]; then
-    case "$OS" in
-        macos)
-            GUI_NAME="anima-tagger-${VER}-${TARGET}.app.tar.gz"
-            download "$GUI_NAME"
-            mkdir -p "$APP_DIR"
-            # Replace existing copy if present.
-            rm -rf "$APP_DIR/anima-tagger.app"
-            tar xzf "$TMPDIR/${GUI_NAME}" -C "$APP_DIR"
-            xattr -dr com.apple.quarantine "$APP_DIR/anima-tagger.app" 2>/dev/null || true
-            info "installed GUI: ${APP_DIR}/anima-tagger.app"
-            info "first launch: open the app via Finder (right-click → Open) since the build is not notarized"
-            ;;
-        linux)
-            GUI_NAME="anima-tagger-${VER}-${TARGET}.AppImage"
-            download "$GUI_NAME"
-            mkdir -p "${PREFIX}/bin"
-            cp "$TMPDIR/${GUI_NAME}" "${PREFIX}/bin/anima-tagger-gui"
-            chmod +x "${PREFIX}/bin/anima-tagger-gui"
-            info "installed GUI: ${PREFIX}/bin/anima-tagger-gui"
-            ;;
-    esac
+    GUI_NAME="anima-tagger-${VER}-${TARGET}.tar.gz"
+    download "$GUI_NAME"
+    EXTRACT_DIR="$TMPDIR/extract"
+    mkdir -p "$EXTRACT_DIR" "${PREFIX}/bin"
+    tar xzf "$TMPDIR/${GUI_NAME}" -C "$EXTRACT_DIR"
+    INNER_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+    cp "$INNER_DIR/anima-tagger-gui" "${PREFIX}/bin/anima-tagger-gui"
+    chmod +x "${PREFIX}/bin/anima-tagger-gui"
+    if [ "$OS" = "macos" ]; then
+        # Strip the quarantine bit so Gatekeeper doesn't block first launch.
+        xattr -d com.apple.quarantine "${PREFIX}/bin/anima-tagger-gui" 2>/dev/null || true
+    fi
+    info "installed GUI: ${PREFIX}/bin/anima-tagger-gui"
 fi
 
 case ":${PATH}:" in

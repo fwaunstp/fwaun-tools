@@ -43,7 +43,7 @@ crates/
   captioner/   ── Florence-2 ONNX captioner (4-session pipeline).
   booru/       ── Danbooru md5-lookup tag fetcher (ureq + md5).
   cli/         ── `anima-tagger` binary. Thin layer over the above.
-  gui/         ── `anima-tagger-gui` binary (dioxus-desktop).
+  gui/         ── `anima-tagger-gui` binary (egui / eframe).
 ```
 
 Each ML/network surface is its own crate so the GUI doesn't pull ort just to
@@ -211,8 +211,12 @@ Detail panel:
 - N selected: bulk-edit mode with text input. Type `foo` to add a positive
   tag to all selected, `-foo` to suppress.
 
-The dioxus crate is used because the user is also building a separate mobile
-app with dioxus and wants one framework to learn for review purposes.
+The GUI uses egui via eframe. The first cut was dioxus-desktop (chosen
+to share a framework with a separate mobile project), but webkit2gtk
+prevents Linux single-binary distribution and dioxus has no
+mobile-rendering benefit on this side anyway, so v0.2 swapped to
+eframe — same dataset, native windowing, single binary on every
+target.
 
 ---
 
@@ -363,8 +367,9 @@ non-shuffled metadata file diffs cleanly across runs.
 - **No caption-side beam search.** Greedy decoding only. With the merged
   decoder's KV cache already wired in, beam-3 would be cheap to add.
 - **GUI freezes during long ops**. Tagger / captioner / booru runs block
-  the dioxus event loop. Move to `spawn_blocking` + a progress signal so
-  the user can see progress and cancel.
+  the egui event loop synchronously inside `update()`. Move to a
+  background thread + `mpsc` channel so the user can see progress and
+  cancel.
 - **Single image at a time** for tagger and captioner. Batching would
   reduce per-image overhead, especially for the vision and embedding
   sessions.
@@ -395,12 +400,19 @@ non-shuffled metadata file diffs cleanly across runs.
 cargo test -p anima-tagger-core    # 9 unit tests covering export logic
 cargo check --workspace            # everything compiles (~10s incremental)
 cargo build -p anima-tagger-cli    # binary builds (~40s first time, ort download)
-cargo build -p anima-tagger-gui    # GUI builds (~3min first time, webkit2gtk)
+cargo build -p anima-tagger-gui    # GUI builds (egui + ort, ~1min first time)
 ```
 
 The captioner and tagger have no automated tests because they require model
 files. Manual testing is via `cargo run -p anima-tagger-cli -- caption <dir>`
 on a small sample and inspecting the resulting `.ron` sidecars.
+
+The annotated config example used by both `core` (snapshot test) and
+`gui` (Config… modal default text) lives at
+[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example).
+Re-exported as `anima_tagger_core::config::CONFIG_EXAMPLE`. Keep it
+inside the core crate dir — `include_str!` paths must stay within the
+package on crates.io.
 
 ---
 

@@ -1,8 +1,16 @@
 [package]
 name = "anima-tagger-gui"
+description = "Desktop GUI for anima-tagger: curate Stable Diffusion LoRA datasets with an integrated tag/caption editor."
+categories = ["gui"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
 
 [[bin]]
 name = "anima-tagger-gui"
@@ -13,12 +21,13 @@ anima-tagger-core = { workspace = true }
 anima-tagger-tagger = { workspace = true }
 anima-tagger-captioner = { workspace = true }
 anima-tagger-booru = { workspace = true }
-dioxus = { version = "0.7", features = ["desktop"] }
+eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { version = "0.32" }
+egui_extras = { version = "0.32", features = ["image"] }
 serde = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 rfd = "0.15"
 image = { workspace = true }
-base64 = "0.22"
 toml = { workspace = true }
 sys-locale = "0.3"

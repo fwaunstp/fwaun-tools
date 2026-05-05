@@ -43,22 +43,28 @@ irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1 | i
 ```
 
 Both installers download the latest GitHub release, verify SHA256, and
-place:
+drop both binaries side-by-side:
 
 | Platform | CLI                                        | GUI                                                |
 | -------- | ------------------------------------------ | -------------------------------------------------- |
-| macOS    | `~/.local/bin/anima-tagger`                | `~/Applications/anima-tagger.app`                  |
-| Linux    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui` (AppImage)         |
-| Windows  | `%USERPROFILE%\bin\anima-tagger.exe`       | installed via MSI (UAC prompt)                     |
+| macOS    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui`                    |
+| Linux    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui`                    |
+| Windows  | `%USERPROFILE%\bin\anima-tagger.exe`       | `%USERPROFILE%\bin\anima-tagger-gui.exe`           |
 
 Pin a specific version with `--version v0.1.0` (or `-Version v0.1.0` on
 PowerShell).
 
-### macOS first launch
+The GUI is a single self-contained binary (built with [egui][egui]) —
+no `.app`, no AppImage, no MSI. On Linux it depends on the standard
+X11 / Wayland system libraries that ship with every desktop
+distribution, but no extra runtime install is required.
 
-The macOS bundle is **not notarized**. The installer clears the
-`com.apple.quarantine` attribute, but if Gatekeeper still blocks it,
-right-click the app in Finder → **Open** to confirm once.
+On macOS the binary is **not notarized**. The installer clears the
+`com.apple.quarantine` attribute, but if Gatekeeper still blocks it
+when launched from Finder, run it from Terminal once
+(`~/.local/bin/anima-tagger-gui`).
+
+[egui]: https://github.com/emilk/egui
 
 ### Linux glibc requirement
 
@@ -76,8 +82,10 @@ breaks.
 
 ### Build from source
 
-Requires Rust 1.85+ (edition 2024). On Linux, install
-`libwebkit2gtk-4.1-dev` (or your distro's equivalent) for the GUI:
+Requires Rust 1.85+ (edition 2024). On Linux, install standard X11 /
+Wayland dev headers (`libx11-dev`, `libxcb1-dev`, `libxkbcommon-dev`,
+`libwayland-dev`, `libgl1-mesa-dev`, or your distro's equivalents) for
+the GUI:
 
 ```sh
 git clone https://github.com/fwaunstp/anima-tagger
@@ -108,7 +116,7 @@ cargo build --release -p anima-tagger-gui
 
 `anima-tagger.toml` lives in the dataset directory. Everything is
 optional — without it, defaults kick in. See
-[`examples/anima-tagger.toml`](examples/anima-tagger.toml) for the
+[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example) for the
 annotated full schema. Highlights:
 
 ```toml
@@ -149,7 +157,7 @@ anima-tagger tokens <dir>
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — architecture, crate layout,
   ONNX session shapes, ort version notes. Read this before
   contributing.
-- **[examples/anima-tagger.toml](examples/anima-tagger.toml)** —
+- **[crates/core/anima-tagger.toml.example](crates/core/anima-tagger.toml.example)** —
   annotated configuration example.
 
 ## License

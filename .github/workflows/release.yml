@@ -27,33 +27,22 @@ jobs:
           - name: macos-arm64
             runner: macos-14
             os: macos
-            gui_pkg: macos
-            gui_glob: "*.app"
-            cli_archive: tar.gz
+            archive_ext: tar.gz
           - name: linux-x64
             # ubuntu-24.04 (glibc 2.39) is required because pyke's
-            # prebuilt onnxruntime references __isoc23_strtol /
-            # __isoc23_strtoull / __isoc23_strtoll, which only exist
-            # in glibc >= 2.38. AppImage cannot bundle libc, so the
-            # resulting binary inherits a glibc 2.39+ floor at runtime
-            # too. README.md flags this for users on older distros.
+            # prebuilt onnxruntime references __isoc23_strtol et al,
+            # which only exist in glibc >= 2.38.
             runner: ubuntu-24.04
             os: linux
-            gui_pkg: appimage
-            gui_glob: "*.AppImage"
-            cli_archive: tar.gz
+            archive_ext: tar.gz
           - name: linux-arm64
             runner: ubuntu-24.04-arm
             os: linux
-            gui_pkg: appimage
-            gui_glob: "*.AppImage"
-            cli_archive: tar.gz
+            archive_ext: tar.gz
           - name: windows-x64
             runner: windows-2022
             os: windows
-            gui_pkg: msi
-            gui_glob: "*.msi"
-            cli_archive: zip
+            archive_ext: zip
     steps:
       - uses: actions/checkout@v4
         with:
@@ -65,43 +54,32 @@ jobs:
         with:
           shared-key: release-${{ matrix.target.name }}
 
-      - name: install linux deps (webkit2gtk + AppImage tooling)
+      - name: install linux deps (egui needs X11/Wayland dev headers)
         if: matrix.target.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev \
             pkg-config \
             build-essential \
             libssl-dev \
-            libfuse2 \
-            file \
             zip
 
-      - uses: cargo-bins/cargo-binstall@main
-
-      - name: install dioxus-cli
-        run: cargo binstall --no-confirm --force dioxus-cli
-
-      - name: build CLI
-        run: cargo build --release -p anima-tagger-cli
-
-      - name: bundle GUI
-        working-directory: crates/gui
-        run: dx bundle --release --package-types ${{ matrix.target.gui_pkg }}
+      - name: build CLI + GUI
+        run: |
+          cargo build --release -p anima-tagger-cli
+          cargo build --release -p anima-tagger-gui
 
       - name: stage artifacts
         shell: bash
         env:
           TARGET_NAME: ${{ matrix.target.name }}
           OS: ${{ matrix.target.os }}
-          GUI_GLOB: ${{ matrix.target.gui_glob }}
-          CLI_ARCHIVE: ${{ matrix.target.cli_archive }}
+          ARCHIVE_EXT: ${{ matrix.target.archive_ext }}
         run: |
           set -euxo pipefail
           mkdir -p staging
@@ -111,46 +89,35 @@ jobs:
             VERSION="${VERSION#v}"
           fi
 
-          # Locate dx bundle output (path varies between dx versions;
-          # glob from target/). macOS .app is a directory, not a file.
-          # Avoiding `mapfile` because the macOS runners ship Bash 3.2.
-          if [ "$OS" = "macos" ]; then
-            BUNDLE_SRC="$(find target -type d -name '*.app' 2>/dev/null | head -n1)"
+          # Per-platform binary suffix
+          if [ "$OS" = "windows" ]; then
+            CLI_BIN="target/release/anima-tagger.exe"
+            GUI_BIN="target/release/anima-tagger-gui.exe"
           else
-            BUNDLE_SRC="$(find target -type f -name "${GUI_GLOB}" 2>/dev/null | head -n1)"
+            CLI_BIN="target/release/anima-tagger"
+            GUI_BIN="target/release/anima-tagger-gui"
           fi
-          if [ -z "${BUNDLE_SRC}" ]; then
-            echo "no GUI bundle produced — searched for ${GUI_GLOB} under target/" >&2
-            find target -maxdepth 6 \( -type d -name 'bundle' -o -type d -name 'dx' \) 2>/dev/null | head -20
-            exit 1
-          fi
-          echo "found bundle: $BUNDLE_SRC"
 
-          case "$OS" in
-            macos)
-              # Tar the .app so file permissions and bundle structure survive.
-              GUI_OUT_NAME="anima-tagger-${VERSION}-${TARGET_NAME}.app.tar.gz"
-              ( cd "$(dirname "$BUNDLE_SRC")" && tar czf "${GITHUB_WORKSPACE}/staging/${GUI_OUT_NAME}" "$(basename "$BUNDLE_SRC")" )
-              ;;
-            linux)
-              GUI_OUT_NAME="anima-tagger-${VERSION}-${TARGET_NAME}.AppImage"
-              cp "$BUNDLE_SRC" "staging/${GUI_OUT_NAME}"
-              chmod +x "staging/${GUI_OUT_NAME}"
-              ;;
-            windows)
-              GUI_OUT_NAME="anima-tagger-${VERSION}-${TARGET_NAME}.msi"
-              cp "$BUNDLE_SRC" "staging/${GUI_OUT_NAME}"
-              ;;
-          esac
-
-          # CLI archive
-          CLI_BIN="target/release/anima-tagger"
-          [ "$OS" = "windows" ] && CLI_BIN="target/release/anima-tagger.exe"
+          # CLI archive (always single-binary).
           CLI_NAME="anima-tagger-cli-${VERSION}-${TARGET_NAME}"
-          if [ "$CLI_ARCHIVE" = "zip" ]; then
+          if [ "$ARCHIVE_EXT" = "zip" ]; then
             ( cd "$(dirname "$CLI_BIN")" && 7z a "${GITHUB_WORKSPACE}/staging/${CLI_NAME}.zip" "$(basename "$CLI_BIN")" )
           else
             tar czf "staging/${CLI_NAME}.tar.gz" -C "$(dirname "$CLI_BIN")" "$(basename "$CLI_BIN")"
+          fi
+
+          # GUI artifact (same shape on every OS — a single archive
+          # holding both binaries plus the LICENSE files).
+          PKG_DIR="dist/anima-tagger-${VERSION}-${TARGET_NAME}"
+          rm -rf "$PKG_DIR"
+          mkdir -p "$PKG_DIR"
+          cp "$GUI_BIN" "$PKG_DIR/$(basename "$GUI_BIN")"
+          cp "$CLI_BIN" "$PKG_DIR/$(basename "$CLI_BIN")"
+          cp LICENSE-MIT LICENSE-APACHE "$PKG_DIR/"
+          if [ "$ARCHIVE_EXT" = "zip" ]; then
+            ( cd dist && 7z a "${GITHUB_WORKSPACE}/staging/anima-tagger-${VERSION}-${TARGET_NAME}.zip" "$(basename "$PKG_DIR")" )
+          else
+            ( cd dist && tar czf "${GITHUB_WORKSPACE}/staging/anima-tagger-${VERSION}-${TARGET_NAME}.tar.gz" "$(basename "$PKG_DIR")" )
           fi
 
           ls -la staging

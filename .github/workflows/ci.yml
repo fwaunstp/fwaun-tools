@@ -28,17 +28,16 @@ jobs:
         with:
           shared-key: ci-${{ matrix.os }}
 
-      - name: install linux deps (webkit2gtk for dioxus-desktop)
+      - name: install linux deps (egui needs X11/Wayland dev headers)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libsoup-3.0-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libxdo-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libgl1-mesa-dev \
             pkg-config \
             build-essential \
             libssl-dev

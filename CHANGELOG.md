@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-05-07
+
 ### Added
 
 - **Progress overlay for tagger / captioner / booru runs.** Long-
@@ -17,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   main thread (each per-image worker result is applied as it arrives),
   so model state stays consistent and there is no race against the
   user clicking around.
+- **GUI: skip already-processed images on tagger / captioner / booru
+  runs.** Selections are filtered against the in-memory sidecars before
+  the worker spawns, mirroring the CLI's default behavior (no
+  `--force`). Tagger and booru skip per image; captioner skips per
+  `(image, prompt-key)` pair so a partially-captioned image still
+  gets its missing prompts run. The status banner reports how many
+  were skipped, or notes when nothing remains to do.
+- **GUI: delete image action.** A red `Delete image…` /
+  `Delete selected images…` button at the bottom of the detail panel
+  opens a confirmation modal that lists the affected files. On
+  confirm, the image and its `.ron` sidecar are removed from disk
+  and the in-memory grid / selection / thumbnail / edit-buffer state
+  is updated in lock-step.
 
 ### Changed
 
@@ -145,5 +160,6 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.0
 [0.1.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.1.0

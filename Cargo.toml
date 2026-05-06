@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -14,10 +14,10 @@ readme = "README.md"
 keywords = ["stable-diffusion", "lora", "tagging", "captioning", "dataset"]
 
 [workspace.dependencies]
-anima-tagger-core = { path = "crates/core", version = "0.1.0" }
-anima-tagger-tagger = { path = "crates/tagger", version = "0.1.0" }
-anima-tagger-captioner = { path = "crates/captioner", version = "0.1.0" }
-anima-tagger-booru = { path = "crates/booru", version = "0.1.0" }
+anima-tagger-core = { path = "crates/core", version = "0.2.0" }
+anima-tagger-tagger = { path = "crates/tagger", version = "0.2.0" }
+anima-tagger-captioner = { path = "crates/captioner", version = "0.2.0" }
+anima-tagger-booru = { path = "crates/booru", version = "0.2.0" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ureq = { version = "2", features = ["json"] }
 md5 = "0.7"

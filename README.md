@@ -51,7 +51,7 @@ drop both binaries side-by-side:
 | Linux    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui`                    |
 | Windows  | `%USERPROFILE%\bin\anima-tagger.exe`       | `%USERPROFILE%\bin\anima-tagger-gui.exe`           |
 
-Pin a specific version with `--version v0.1.0` (or `-Version v0.1.0` on
+Pin a specific version with `--version v0.2.0` (or `-Version v0.2.0` on
 PowerShell).
 
 The GUI is a single self-contained binary (built with [egui][egui]) —

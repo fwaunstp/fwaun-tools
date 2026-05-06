@@ -48,7 +48,7 @@ irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1 | i
 | Linux            | `~/.local/bin/anima-tagger`          | `~/.local/bin/anima-tagger-gui`              |
 | Windows          | `%USERPROFILE%\bin\anima-tagger.exe` | `%USERPROFILE%\bin\anima-tagger-gui.exe`     |
 
-特定のバージョンを指定したい場合は `--version v0.1.0` （PowerShellなら `-Version v0.1.0`）を付けてください。
+特定のバージョンを指定したい場合は `--version v0.2.0` （PowerShellなら `-Version v0.2.0`）を付けてください。
 
 GUI は [egui][egui] でビルドされたシングルバイナリです。
 `.app`/AppImage/MSI といった追加ラッパーはありません。

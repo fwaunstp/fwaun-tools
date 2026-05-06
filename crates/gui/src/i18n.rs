@@ -312,6 +312,59 @@ impl T {
         self.pair("Add", "追加")
     }
 
+    // Delete image
+    pub fn delete_image(self) -> &'static str {
+        self.pair("Delete image…", "画像を削除…")
+    }
+    pub fn delete_images(self) -> &'static str {
+        self.pair("Delete selected images…", "選択中の画像を削除…")
+    }
+    pub fn delete_image_title(self) -> &'static str {
+        self.pair(
+            "Permanently delete the image file and its sidecar from disk.",
+            "画像ファイルとサイドカーをディスクから完全に削除します。",
+        )
+    }
+    pub fn delete_confirm_title(self) -> &'static str {
+        self.pair("Delete image(s)", "画像を削除")
+    }
+    pub fn delete_confirm_body(self, n: usize) -> String {
+        match self.lang {
+            Lang::En => format!(
+                "Permanently delete {n} image file(s) and their sidecars? This cannot be undone."
+            ),
+            Lang::Ja => format!(
+                "{n} 件の画像ファイルとサイドカーを完全に削除します。元に戻せません。よろしいですか？"
+            ),
+        }
+    }
+    pub fn delete_confirm_ok(self) -> &'static str {
+        self.pair("Delete", "削除")
+    }
+    pub fn delete_confirm_cancel(self) -> &'static str {
+        self.pair("Cancel", "キャンセル")
+    }
+    pub fn err_delete_failed(self, path: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("delete failed: {path}: {err}"),
+            Lang::Ja => format!("削除に失敗しました: {path}: {err}"),
+        }
+    }
+
+    // Tagger skip
+    pub fn info_all_already_tagged(self) -> &'static str {
+        self.pair(
+            "All selected images are already auto-tagged. Nothing to do.",
+            "選択中の画像はすべて自動タグ付け済みです。実行する処理はありません。",
+        )
+    }
+    pub fn info_skipped_already_tagged(self, skipped: usize) -> String {
+        match self.lang {
+            Lang::En => format!("{skipped} already auto-tagged image(s) skipped."),
+            Lang::Ja => format!("自動タグ付け済みの {skipped} 件をスキップしました。"),
+        }
+    }
+
     // Config modal
     pub fn config_validate(self) -> &'static str {
         self.pair("Validate", "検証")

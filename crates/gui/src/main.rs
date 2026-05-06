@@ -11,7 +11,7 @@ use std::thread;
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
 use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig};
-use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo};
+use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, sidecar_path_for};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
 use chrono::{DateTime, Utc};
@@ -217,6 +217,10 @@ struct AnimaTaggerApp {
     // it goes back to None and the action buttons re-enable.
     progress: Option<Progress>,
     worker_rx: Option<Receiver<WorkerMsg>>,
+
+    // When Some, the next `update()` shows a confirmation modal before
+    // removing these paths' image+sidecar files from disk.
+    pending_delete: Option<Vec<PathBuf>>,
 }
 
 impl AnimaTaggerApp {
@@ -244,6 +248,7 @@ impl AnimaTaggerApp {
             thumbnails: HashMap::new(),
             progress: None,
             worker_rx: None,
+            pending_delete: None,
         }
     }
 
@@ -318,6 +323,9 @@ impl eframe::App for AnimaTaggerApp {
         });
         if self.config_open {
             self.ui_config_modal(ctx);
+        }
+        if self.pending_delete.is_some() {
+            self.ui_delete_modal(ctx);
         }
         if self.progress.is_some() {
             self.ui_progress_overlay(ctx);
@@ -839,6 +847,17 @@ impl AnimaTaggerApp {
             };
             ui.weak(label);
         }
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(4.0);
+        if ui
+            .button(egui::RichText::new(t.delete_image()).color(egui::Color32::from_rgb(220, 90, 90)))
+            .on_hover_text(t.delete_image_title())
+            .clicked()
+        {
+            self.pending_delete = Some(vec![path.to_path_buf()]);
+        }
     }
 }
 
@@ -1008,6 +1027,17 @@ impl AnimaTaggerApp {
         ui.add(egui::Label::new(
             egui::RichText::new(t.switch_to_single_hint()).small().weak(),
         ));
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(4.0);
+        if ui
+            .button(egui::RichText::new(t.delete_images()).color(egui::Color32::from_rgb(220, 90, 90)))
+            .on_hover_text(t.delete_image_title())
+            .clicked()
+        {
+            self.pending_delete = Some(sel.to_vec());
+        }
     }
 }
 
@@ -1085,6 +1115,104 @@ impl AnimaTaggerApp {
     }
 }
 
+// ───────── Delete confirmation ─────────
+
+impl AnimaTaggerApp {
+    fn ui_delete_modal(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        let Some(paths) = self.pending_delete.clone() else {
+            return;
+        };
+        let n = paths.len();
+        let mut do_delete = false;
+        let mut do_cancel = false;
+        let mut open = true;
+        egui::Window::new(t.delete_confirm_title())
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.label(t.delete_confirm_body(n));
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .show(ui, |ui| {
+                        for p in &paths {
+                            let name = p
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or_default();
+                            ui.label(egui::RichText::new(name).monospace().small().weak());
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t.delete_confirm_cancel()).clicked() {
+                        do_cancel = true;
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new(t.delete_confirm_ok())
+                                .color(egui::Color32::from_rgb(220, 90, 90)),
+                        )
+                        .clicked()
+                    {
+                        do_delete = true;
+                    }
+                });
+            });
+        if !open || do_cancel {
+            self.pending_delete = None;
+            return;
+        }
+        if do_delete {
+            self.delete_paths(&paths);
+            self.pending_delete = None;
+        }
+    }
+
+    fn delete_paths(&mut self, paths: &[PathBuf]) {
+        let mut errors: Vec<String> = Vec::new();
+        for p in paths {
+            let sidecar = sidecar_path_for(p);
+            if let Err(e) = fs::remove_file(p) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    errors.push(self.t().err_delete_failed(&p.display().to_string(), &e.to_string()));
+                    continue;
+                }
+            }
+            if sidecar.exists() {
+                if let Err(e) = fs::remove_file(&sidecar) {
+                    errors.push(
+                        self.t()
+                            .err_delete_failed(&sidecar.display().to_string(), &e.to_string()),
+                    );
+                }
+            }
+        }
+        let to_remove: HashSet<PathBuf> = paths.iter().cloned().collect();
+        self.images.retain(|i| !to_remove.contains(&i.path));
+        self.selected.retain(|p| !to_remove.contains(p));
+        for p in &to_remove {
+            self.thumbnails.remove(p);
+            self.manual_caption_buf.remove(p);
+            self.caption_hint_buf.remove(p);
+        }
+        if let Some(last) = self.last_single.as_ref()
+            && to_remove.contains(last)
+        {
+            self.last_single = None;
+        }
+        // Force bulk-edit buffers to re-derive against the new selection.
+        self.bulk_signature = 0;
+        if !errors.is_empty() {
+            self.error_msg = Some(errors.join("; "));
+        }
+    }
+}
+
 // ───────── Long-running operations (background thread) ─────────
 //
 // Each run_* spawns a worker thread, ships any pre-loaded model into
@@ -1109,9 +1237,30 @@ impl AnimaTaggerApp {
             }
         };
         let (model_name, profile) = cfg.resolve_tagger(None);
-        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
-        if sel.is_empty() {
+        let sel_all: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel_all.is_empty() {
             return;
+        }
+        // Skip images that already have auto-tags — matches the CLI's
+        // default behavior (`anima-tagger tag` without --force).
+        let already: std::collections::HashSet<PathBuf> = self
+            .images
+            .iter()
+            .filter(|i| sel_all.contains(&i.path) && i.sidecar.is_auto_tagged())
+            .map(|i| i.path.clone())
+            .collect();
+        let sel: Vec<PathBuf> = sel_all
+            .iter()
+            .filter(|p| !already.contains(*p))
+            .cloned()
+            .collect();
+        let skipped = already.len();
+        if sel.is_empty() {
+            self.error_msg = Some(t.info_all_already_tagged().to_string());
+            return;
+        }
+        if skipped > 0 {
+            self.error_msg = Some(t.info_skipped_already_tagged(skipped));
         }
         let total = sel.len();
         let mut tagger = self.tagger.take();
@@ -1196,9 +1345,44 @@ impl AnimaTaggerApp {
                 return;
             }
         };
-        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
-        if sel.is_empty() {
+        let sel_all: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel_all.is_empty() {
             return;
+        }
+        // Skip per (image, prompt-key) pair: only ship images that have
+        // at least one prompt-key not already present in the sidecar.
+        // Mirrors the CLI's default behavior (`anima-tagger caption`
+        // without --force).
+        let prompt_keys: Vec<String> =
+            prompts.iter().map(|(n, _)| format!("{model_name}.{n}")).collect();
+        let existing_keys: HashMap<PathBuf, HashSet<String>> = self
+            .images
+            .iter()
+            .filter(|i| sel_all.contains(&i.path))
+            .map(|i| {
+                (
+                    i.path.clone(),
+                    i.sidecar.captions.keys().cloned().collect::<HashSet<_>>(),
+                )
+            })
+            .collect();
+        let sel: Vec<PathBuf> = sel_all
+            .iter()
+            .filter(|p| {
+                let have = existing_keys.get(*p);
+                prompt_keys
+                    .iter()
+                    .any(|k| have.is_none_or(|s| !s.contains(k)))
+            })
+            .cloned()
+            .collect();
+        let skipped = sel_all.len() - sel.len();
+        if sel.is_empty() {
+            self.error_msg = Some(t.info_all_already_tagged().to_string());
+            return;
+        }
+        if skipped > 0 {
+            self.error_msg = Some(t.info_skipped_already_tagged(skipped));
         }
         let total = sel.len();
         let hints: HashMap<PathBuf, Option<String>> = self
@@ -1234,9 +1418,13 @@ impl AnimaTaggerApp {
                 }));
                 ctx_clone.request_repaint();
                 let hint = hints.get(path).cloned().flatten();
+                let have = existing_keys.get(path);
                 let mut entries: Vec<(String, String)> = Vec::new();
                 for (pname, ptext) in &prompts {
                     let key = format!("{model_name}.{pname}");
+                    if have.is_some_and(|s| s.contains(&key)) {
+                        continue;
+                    }
                     match captioner_inst.caption_image(path, ptext, hint.as_deref()) {
                         Ok(caption) => entries.push((key, caption)),
                         Err(e) => {
@@ -1274,9 +1462,31 @@ impl AnimaTaggerApp {
     }
 
     fn run_booru(&mut self, ctx: &egui::Context) {
-        let sel: Vec<PathBuf> = self.selected.iter().cloned().collect();
-        if sel.is_empty() {
+        let t = self.t();
+        let sel_all: Vec<PathBuf> = self.selected.iter().cloned().collect();
+        if sel_all.is_empty() {
             return;
+        }
+        // Skip images that already have booru data — matches the CLI's
+        // default behavior (`anima-tagger booru` without --force).
+        let already: HashSet<PathBuf> = self
+            .images
+            .iter()
+            .filter(|i| sel_all.contains(&i.path) && i.sidecar.has_booru())
+            .map(|i| i.path.clone())
+            .collect();
+        let sel: Vec<PathBuf> = sel_all
+            .iter()
+            .filter(|p| !already.contains(*p))
+            .cloned()
+            .collect();
+        let skipped = already.len();
+        if sel.is_empty() {
+            self.error_msg = Some(t.info_all_already_tagged().to_string());
+            return;
+        }
+        if skipped > 0 {
+            self.error_msg = Some(t.info_skipped_already_tagged(skipped));
         }
         let total = sel.len();
         let ctx_clone = ctx.clone();

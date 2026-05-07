@@ -10,8 +10,9 @@ use std::thread;
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig};
+use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig, TagGroup};
 use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, sidecar_path_for};
+use anima_tagger_core::tag_group::{self, Classification, DropTarget};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
 use chrono::{DateTime, Utc};
@@ -221,6 +222,35 @@ struct AnimaTaggerApp {
     // When Some, the next `update()` shows a confirmation modal before
     // removing these paths' image+sidecar files from disk.
     pending_delete: Option<Vec<PathBuf>>,
+
+    // Cached effective ProjectConfig for the current folder. Loaded by
+    // `load_folder` so the Kanban view can read `tag_groups` without
+    // re-parsing TOML each frame. `None` when no folder is loaded or
+    // the config failed to load (treated as empty).
+    project_config: Option<ProjectConfig>,
+    // Current main-area view mode.
+    view_mode: ViewMode,
+    // Active drag in the Kanban view, if any. The payload carries one or
+    // more image paths (multi-select drag carries the whole selection).
+    kanban_drag: Option<KanbanDrag>,
+}
+
+/// Main-area view mode. `Grid` is the existing thumbnail grid; `Kanban`
+/// classifies images into one column per tag of the named tag_group plus
+/// "unset" and "violation" columns. The group name is owned to keep
+/// borrow lifetimes simple.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ViewMode {
+    Grid,
+    Kanban { group: String },
+}
+
+/// In-flight Kanban drag. Captured the first frame `Response::dragged()`
+/// fires on a thumbnail; cleared on drop or when the drag is cancelled
+/// (pointer released without hitting a column).
+#[derive(Debug, Clone)]
+struct KanbanDrag {
+    paths: Vec<PathBuf>,
 }
 
 impl AnimaTaggerApp {
@@ -249,6 +279,9 @@ impl AnimaTaggerApp {
             progress: None,
             worker_rx: None,
             pending_delete: None,
+            project_config: None,
+            view_mode: ViewMode::Grid,
+            kanban_drag: None,
         }
     }
 
@@ -268,6 +301,29 @@ impl AnimaTaggerApp {
         self.last_single = None;
         self.bulk_hint_buf.clear();
         self.bulk_signature = 0;
+        self.kanban_drag = None;
+
+        // Best-effort config load. A broken TOML is reported in the
+        // banner; the app still functions in Grid mode without groups.
+        match ProjectConfig::load_or_default(dir) {
+            Ok(cfg) => self.project_config = Some(cfg),
+            Err(e) => {
+                self.project_config = None;
+                self.error_msg = Some(format!("config load failed: {e}"));
+            }
+        }
+        // Drop a stale Kanban view if its group no longer exists in the
+        // newly-loaded config.
+        if let ViewMode::Kanban { group } = &self.view_mode {
+            let still_exists = self
+                .project_config
+                .as_ref()
+                .map(|c| c.tag_groups.contains_key(group))
+                .unwrap_or(false);
+            if !still_exists {
+                self.view_mode = ViewMode::Grid;
+            }
+        }
 
         for path in iter_images(dir) {
             let sidecar = Sidecar::load_or_default(&path).unwrap_or_default();
@@ -319,7 +375,10 @@ impl eframe::App for AnimaTaggerApp {
                 });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.ui_grid(ui);
+            match self.view_mode.clone() {
+                ViewMode::Grid => self.ui_grid(ui),
+                ViewMode::Kanban { group } => self.ui_kanban(ui, &group),
+            }
         });
         if self.config_open {
             self.ui_config_modal(ctx);
@@ -385,6 +444,48 @@ impl AnimaTaggerApp {
                         ui.selectable_value(&mut self.filter, f, f.label(t));
                     }
                 });
+
+            // View dropdown — Grid plus one entry per [tag_group.<name>].
+            let group_names: Vec<String> = self
+                .project_config
+                .as_ref()
+                .map(|c| c.tag_groups.keys().cloned().collect())
+                .unwrap_or_default();
+            let view_label = match &self.view_mode {
+                ViewMode::Grid => t.view_grid().to_string(),
+                ViewMode::Kanban { group } => {
+                    format!("{}{group}", t.view_kanban_prefix())
+                }
+            };
+            let view_resp = egui::ComboBox::from_id_salt("view_combo")
+                .selected_text(view_label)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(
+                            matches!(self.view_mode, ViewMode::Grid),
+                            t.view_grid(),
+                        )
+                        .clicked()
+                    {
+                        self.view_mode = ViewMode::Grid;
+                    }
+                    for name in &group_names {
+                        let active = matches!(
+                            &self.view_mode,
+                            ViewMode::Kanban { group } if group == name
+                        );
+                        let label = format!("{}{name}", t.view_kanban_prefix());
+                        if ui.selectable_label(active, label).clicked() {
+                            self.view_mode = ViewMode::Kanban {
+                                group: name.clone(),
+                            };
+                        }
+                    }
+                })
+                .response;
+            if group_names.is_empty() {
+                view_resp.on_hover_text(t.kanban_no_groups_hint());
+            }
 
             // Tag filter input
             ui.add(
@@ -559,6 +660,281 @@ impl AnimaTaggerApp {
             } else {
                 self.selected.clear();
                 self.selected.insert(path.to_path_buf());
+            }
+        }
+    }
+
+    /// Render the Kanban view for `group_name`. One column per tag in
+    /// the group, plus an "unset" column and a "violation" column.
+    /// Thumbnails are draggable; dropping into a tag column or "unset"
+    /// rewrites `manual_tags` via [`tag_group::apply_drop`]. The
+    /// "violation" column is intentionally not a drop target.
+    fn ui_kanban(&mut self, ui: &mut egui::Ui, group_name: &str) {
+        let t = self.t();
+
+        // Resolve the group from the cached config. If it disappeared
+        // (TOML edited live, group renamed, etc.), fall back to Grid.
+        let group = match self
+            .project_config
+            .as_ref()
+            .and_then(|c| c.tag_groups.get(group_name).cloned())
+        {
+            Some(g) => g,
+            None => {
+                self.view_mode = ViewMode::Grid;
+                ui.centered_and_justified(|ui| ui.label(t.kanban_no_groups_hint()));
+                return;
+            }
+        };
+
+        // Bucket images by classification. Each bucket holds the image
+        // paths in load order. Same `Filter` and tag-search filtering as
+        // the grid view, so the toolbar controls keep their meaning.
+        let mut by_tag: Vec<(String, Vec<PathBuf>)> =
+            group.tags.iter().map(|t| (t.clone(), Vec::new())).collect();
+        let mut unset: Vec<PathBuf> = Vec::new();
+        let mut violation: Vec<PathBuf> = Vec::new();
+        let tag_filter = self.tag_filter.trim().to_lowercase();
+
+        for item in &self.images {
+            if !self.filter.matches(item) {
+                continue;
+            }
+            if !tag_filter.is_empty() && !matches_tag_query(item, &tag_filter) {
+                continue;
+            }
+            match tag_group::classify(&item.sidecar, &group) {
+                Classification::Tag(tag) => {
+                    if let Some(slot) = by_tag.iter_mut().find(|(name, _)| *name == tag) {
+                        slot.1.push(item.path.clone());
+                    } else {
+                        violation.push(item.path.clone());
+                    }
+                }
+                Classification::Unset => unset.push(item.path.clone()),
+                Classification::Violation(_) => violation.push(item.path.clone()),
+            }
+        }
+
+        let mods = ui.input(|i| i.modifiers);
+        let column_count = by_tag.len() + 2;
+        let column_w =
+            ((ui.available_width() - 12.0 * column_count as f32) / column_count as f32).max(160.0);
+
+        // First column whose rect contained the pointer at the moment
+        // the drag was released — that's where the drop lands. None
+        // means either no drop happened this frame, or the release
+        // happened over a non-drop-target column / outside the panel.
+        let mut drop_target: Option<DropTarget> = None;
+
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    for (name, paths) in &by_tag {
+                        if let Some(t) = self.ui_kanban_column(
+                            ui,
+                            name,
+                            name,
+                            paths,
+                            column_w,
+                            mods,
+                            Some(DropTarget::Tag(name.clone())),
+                        ) {
+                            drop_target = Some(t);
+                        }
+                    }
+                    if let Some(t) = self.ui_kanban_column(
+                        ui,
+                        "__unset__",
+                        t.kanban_unset_column(),
+                        &unset,
+                        column_w,
+                        mods,
+                        Some(DropTarget::Unset),
+                    ) {
+                        drop_target = Some(t);
+                    }
+                    // Violation column is read-only — drop target = None.
+                    self.ui_kanban_column(
+                        ui,
+                        "__violation__",
+                        t.kanban_violation_column(),
+                        &violation,
+                        column_w,
+                        mods,
+                        None,
+                    );
+                });
+            });
+
+        // Resolve the drag at end-of-frame so all columns have rendered
+        // and we know which one (if any) the pointer was over on release.
+        if let Some(target) = drop_target
+            && let Some(drag) = self.kanban_drag.take()
+        {
+            self.apply_kanban_drop(&group, &target, &drag.paths);
+        } else if ui.input(|i| i.pointer.any_released()) {
+            // Released without hitting a drop target — abandon the drag.
+            self.kanban_drag = None;
+        }
+    }
+
+    /// Render one Kanban column. `id` is a stable per-column identifier
+    /// used for egui scroll-area / drop-target IDs; `heading` is the
+    /// human label shown at the top. `drop_target` is `None` for
+    /// read-only columns (the violation bucket); columns with `Some`
+    /// participate in drag-and-drop and return that target if the
+    /// pointer was over the column when the drag was released this
+    /// frame.
+    #[allow(clippy::too_many_arguments)]
+    fn ui_kanban_column(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: &str,
+        heading: &str,
+        paths: &[PathBuf],
+        width: f32,
+        mods: egui::Modifiers,
+        drop_target: Option<DropTarget>,
+    ) -> Option<DropTarget> {
+        let dragging = self.kanban_drag.is_some() && drop_target.is_some();
+        let column_response = ui
+            .allocate_ui(egui::vec2(width, ui.available_height()), |ui| {
+                let frame = egui::Frame::group(ui.style())
+                    .inner_margin(6.0)
+                    .stroke(if dragging && ui.rect_contains_pointer(ui.max_rect()) {
+                        egui::Stroke::new(2.0, ui.visuals().selection.bg_fill)
+                    } else {
+                        ui.visuals().widgets.noninteractive.bg_stroke
+                    });
+                frame
+                    .show(ui, |ui| {
+                        ui.set_min_width(width);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{heading} ({})", paths.len()))
+                                    .strong(),
+                            );
+                            ui.separator();
+                            egui::ScrollArea::vertical()
+                                .id_salt(("kanban_col", id))
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    for path in paths {
+                                        if drop_target.is_some() {
+                                            self.ui_kanban_thumb(ui, path, mods);
+                                        } else {
+                                            // Violation column: clickable
+                                            // for selection but not draggable.
+                                            self.ui_thumb(ui, path, mods);
+                                        }
+                                    }
+                                });
+                        });
+                    })
+                    .response
+            })
+            .response;
+
+        if let Some(target) = drop_target
+            && self.kanban_drag.is_some()
+            && column_response.rect.contains(
+                ui.input(|i| i.pointer.hover_pos())
+                    .unwrap_or(egui::Pos2::ZERO),
+            )
+            && ui.input(|i| i.pointer.any_released())
+        {
+            return Some(target);
+        }
+        None
+    }
+
+    /// Like `ui_thumb`, but with click-and-drag sensing so dragging a
+    /// thumbnail starts a Kanban move. Click behavior (selection) is
+    /// preserved — egui distinguishes click from drag automatically.
+    fn ui_kanban_thumb(&mut self, ui: &mut egui::Ui, path: &Path, mods: egui::Modifiers) {
+        let texture = match self.thumbnails.get(path) {
+            Some(t) => t.clone(),
+            None => return,
+        };
+        let item = match self.images.iter().find(|i| i.path == path) {
+            Some(it) => it,
+            None => return,
+        };
+        let is_selected = self.selected.contains(path);
+
+        let frame = egui::Frame::group(ui.style())
+            .inner_margin(2.0)
+            .stroke(if is_selected {
+                egui::Stroke::new(2.0, ui.visuals().selection.bg_fill)
+            } else {
+                egui::Stroke::new(2.0, egui::Color32::TRANSPARENT)
+            });
+
+        let response = frame
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    let img = egui::Image::new(&texture)
+                        .fit_to_exact_size(egui::vec2(THUMB_DRAW_PX, THUMB_DRAW_PX));
+                    ui.add(img);
+                    ui.label(
+                        egui::RichText::new(status_flags(&item.sidecar))
+                            .size(10.0)
+                            .monospace(),
+                    )
+                    .on_hover_text(self.t().thumb_status_title());
+                });
+            })
+            .response
+            .interact(egui::Sense::click_and_drag());
+
+        if response.clicked() {
+            let multi = mods.command || mods.shift || mods.ctrl;
+            if multi {
+                if is_selected {
+                    self.selected.remove(path);
+                } else {
+                    self.selected.insert(path.to_path_buf());
+                }
+            } else {
+                self.selected.clear();
+                self.selected.insert(path.to_path_buf());
+            }
+        }
+        if response.drag_started() {
+            // If the dragged thumb is one of several selected, carry
+            // the whole selection. Otherwise carry just this one (and
+            // leave the prior selection intact).
+            let paths: Vec<PathBuf> = if is_selected && self.selected.len() > 1 {
+                self.selected.iter().cloned().collect()
+            } else {
+                vec![path.to_path_buf()]
+            };
+            self.kanban_drag = Some(KanbanDrag { paths });
+        }
+    }
+
+    /// Apply a Kanban drop: mutate each path's in-memory sidecar via
+    /// [`tag_group::apply_drop`] and persist it to disk. Errors surface
+    /// in the top error banner; remaining paths are still attempted so
+    /// a single broken file doesn't abort the whole drop.
+    fn apply_kanban_drop(
+        &mut self,
+        group: &TagGroup,
+        target: &DropTarget,
+        paths: &[PathBuf],
+    ) {
+        let t = self.t();
+        for path in paths {
+            let Some(item) = self.images.iter_mut().find(|i| i.path == *path) else {
+                continue;
+            };
+            tag_group::apply_drop(&mut item.sidecar, group, target);
+            let save_result = item.sidecar.save(&item.path);
+            let path_str = item.path.display().to_string();
+            if let Err(e) = save_result {
+                self.error_msg = Some(t.kanban_drop_failed(&path_str, &e.to_string()));
             }
         }
     }

@@ -117,6 +117,32 @@ impl T {
         }
     }
 
+    // View / Kanban
+    pub fn view_grid(self) -> &'static str {
+        self.pair("Grid", "グリッド")
+    }
+    pub fn view_kanban_prefix(self) -> &'static str {
+        self.pair("Kanban: ", "カンバン: ")
+    }
+    pub fn kanban_no_groups_hint(self) -> &'static str {
+        self.pair(
+            "Define [tag_group.<name>] in anima-tagger.toml to enable Kanban views.",
+            "カンバン表示を使うには anima-tagger.toml で [tag_group.<name>] を定義してください。",
+        )
+    }
+    pub fn kanban_unset_column(self) -> &'static str {
+        self.pair("(unset)", "（未設定）")
+    }
+    pub fn kanban_violation_column(self) -> &'static str {
+        self.pair("(violation)", "（違反）")
+    }
+    pub fn kanban_drop_failed(self, path: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Failed to save sidecar for {path}: {err}"),
+            Lang::Ja => format!("{path} のサイドカー保存に失敗: {err}"),
+        }
+    }
+
     // Progress overlay
     pub fn op_tagging(self) -> &'static str {
         self.pair("Tagging…", "タグ付け中…")

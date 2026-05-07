@@ -101,6 +101,22 @@ enum Command {
     },
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
+    /// Classify images against a `[tag_group.<name>]` from
+    /// `anima-tagger.toml`. Each image is bucketed as one of the group's
+    /// tags, "unset" (no group tag present), or "violation" (multiple).
+    /// Violations are informational, not errors.
+    ValidateTagGroup {
+        dir: PathBuf,
+        /// Name of the `[tag_group.<name>]` to check against.
+        #[arg(long)]
+        group: String,
+        /// Show only unset + violation rows; hide cleanly-classified images.
+        #[arg(long)]
+        problems_only: bool,
+        /// Emit one JSON object per line instead of the text table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Tokenize the would-be export text per image and flag overflows
     /// against the training context budget. Uses ANIMA's text encoder
     /// tokenizer (`Qwen/Qwen3-0.6B`).
@@ -148,6 +164,12 @@ fn main() -> Result<()> {
             output,
         } => cmd_metadata(dir, profile, threshold, output),
         Command::Status { dir } => cmd_status(dir),
+        Command::ValidateTagGroup {
+            dir,
+            group,
+            problems_only,
+            json,
+        } => cmd_validate_tag_group(dir, group, problems_only, json),
         Command::Tokens {
             dir,
             profile,
@@ -445,6 +467,74 @@ fn cmd_status(dir: PathBuf) -> Result<()> {
                 println!("[{auto}{cap}{booru}] manual={n:<3} {}", image.display());
             }
         }
+    }
+    Ok(())
+}
+
+fn cmd_validate_tag_group(
+    dir: PathBuf,
+    group_name: String,
+    problems_only: bool,
+    json: bool,
+) -> Result<()> {
+    use anima_tagger_core::tag_group::{Classification, classify};
+
+    let cfg = ProjectConfig::load_or_default(&dir)
+        .with_context(|| format!("loading config in {}", dir.display()))?;
+    let group = cfg.tag_groups.get(&group_name).with_context(|| {
+        format!(
+            "tag_group `{group_name}` is not defined in any anima-tagger.toml \
+             (project or user). Add a [tag_group.{group_name}] section."
+        )
+    })?;
+
+    let mut tagged = 0usize;
+    let mut unset = 0usize;
+    let mut violations = 0usize;
+
+    for image in iter_images(&dir) {
+        let sc = Sidecar::load_or_default(&image)?;
+        let classification = classify(&sc, group);
+        let (state_text, state_json) = match &classification {
+            Classification::Tag(t) => {
+                tagged += 1;
+                (format!("tag={t}"), serde_json::json!({"state": "tag", "tag": t}))
+            }
+            Classification::Unset => {
+                unset += 1;
+                ("unset".to_string(), serde_json::json!({"state": "unset"}))
+            }
+            Classification::Violation(tags) => {
+                violations += 1;
+                (
+                    format!("violation={}", tags.join(",")),
+                    serde_json::json!({"state": "violation", "tags": tags}),
+                )
+            }
+        };
+
+        let is_problem = matches!(
+            classification,
+            Classification::Unset | Classification::Violation(_)
+        );
+        if problems_only && !is_problem {
+            continue;
+        }
+
+        if json {
+            let mut obj = state_json.as_object().unwrap().clone();
+            obj.insert(
+                "image".to_string(),
+                serde_json::Value::String(image.display().to_string()),
+            );
+            println!("{}", serde_json::Value::Object(obj));
+        } else {
+            println!("{state_text:<32} {}", image.display());
+        }
+    }
+
+    if !json {
+        eprintln!("{tagged} tagged, {unset} unset, {violations} violation");
     }
     Ok(())
 }

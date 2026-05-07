@@ -53,6 +53,7 @@ use anima_tagger_core::config::OnnxCaptionerProfile;
 use anima_tagger_core::hub;
 use image::DynamicImage;
 use image::imageops::FilterType;
+use ort::memory::Allocator;
 use ort::session::{Session, SessionInputValue};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -289,8 +290,8 @@ impl OnnxCaptioner {
             for layer in 0..NUM_LAYERS {
                 let k_kv = &past_kv[layer * 2];
                 let v_kv = &past_kv[layer * 2 + 1];
-                let k_tensor = Tensor::from_array((k_kv.shape_i64(), k_kv.data.clone()))?;
-                let v_tensor = Tensor::from_array((v_kv.shape_i64(), v_kv.data.clone()))?;
+                let k_tensor = k_kv.to_tensor()?;
+                let v_tensor = v_kv.to_tensor()?;
                 named.push((
                     Cow::Owned(format!("past_key_values.{layer}.key")),
                     k_tensor.into(),
@@ -347,8 +348,13 @@ impl OnnxCaptioner {
             // intentionally-empty vision tensor with 0 rows. The embedding
             // session's masked_scatter is a no-op when no input_id matches
             // <|image_pad|>.
-            let empty_vision =
-                Tensor::from_array(([0_i64, HIDDEN_SIZE as i64], Vec::<f32>::new()))?;
+            // `Tensor::from_array` rejects any dim < 1 in ort 2.0.0-rc.12, so
+            // the zero-row vision input has to be constructed via the
+            // allocator-based ctor instead.
+            let empty_vision = Tensor::<f32>::new(
+                &Allocator::default(),
+                [0_i64, HIDDEN_SIZE as i64],
+            )?;
             let next_embed_out = self
                 .embed
                 .run(ort::inputs! {
@@ -407,6 +413,17 @@ impl KvTensor {
 
     fn shape_i64(&self) -> [i64; 4] {
         [1, NUM_KV_HEADS as i64, self.seq as i64, HEAD_DIM as i64]
+    }
+
+    /// Build the per-step decoder input tensor. On the first step `seq == 0`,
+    /// and `Tensor::from_array` rejects any dim < 1 in ort 2.0.0-rc.12, so the
+    /// empty cache has to go through the allocator-based ctor instead.
+    fn to_tensor(&self) -> Result<Tensor<f32>, CaptionerError> {
+        if self.seq == 0 {
+            Ok(Tensor::<f32>::new(&Allocator::default(), self.shape_i64())?)
+        } else {
+            Ok(Tensor::from_array((self.shape_i64(), self.data.clone()))?)
+        }
     }
 
     fn extract(value: &ort::value::DynValue) -> Result<Self, CaptionerError> {

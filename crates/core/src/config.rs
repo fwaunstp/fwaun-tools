@@ -53,6 +53,14 @@ pub struct ProjectConfig {
     /// overrides it.
     #[serde(default)]
     pub captioner_prompts: BTreeMap<String, String>,
+    /// Named groups of tags that should be mutually exclusive on each
+    /// image (e.g. costume variants, pose categories). Used by the CLI's
+    /// `validate-tag-group` command and by the GUI Kanban view to bucket
+    /// images into one column per tag, plus an "unset" and "violation"
+    /// column. Single-tag groups are valid — handy for "is tag X set or
+    /// not?" curation passes.
+    #[serde(default, rename = "tag_group")]
+    pub tag_groups: BTreeMap<String, TagGroup>,
 }
 
 /// HuggingFace-hosted WD14-family tagger profile. Models are downloaded into
@@ -240,6 +248,25 @@ impl Default for ExportProfile {
     }
 }
 
+/// Named group of tags. Currently always treated as mutually exclusive
+/// on each image — i.e. at most one of `tags` is expected to be present
+/// in the effective tag set (manual positive ∪ auto ∪ booru, minus
+/// `-foo` suppressions). Two or more co-occurring is a "violation" —
+/// flagged but not an error, since edge cases like character setting
+/// sheets legitimately show multiple costumes in one frame.
+///
+/// Single-tag groups are valid and useful for a "set / unset" split on
+/// one tag (e.g. `[tag_group.solo_check] tags = ["solo"]`).
+///
+/// A future `exclusive: bool` field can be added with
+/// `#[serde(default = "...")]` (defaulting to `true`) without breaking
+/// existing configs, if non-exclusive grouping ever becomes useful.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagGroup {
+    /// Tags that participate in this group.
+    pub tags: Vec<String>,
+}
+
 impl ExportProfile {
     pub fn anima() -> Self {
         let mut category_prefixes = BTreeMap::new();
@@ -348,6 +375,7 @@ impl Default for ProjectConfig {
             tagger: BTreeMap::new(),
             captioner: BTreeMap::new(),
             captioner_prompts: BTreeMap::new(),
+            tag_groups: BTreeMap::new(),
         }
     }
 }
@@ -368,6 +396,8 @@ pub enum ConfigError {
     },
     #[error("unknown prompt name `{0}` — define it in [captioner_prompts] or pick an existing one")]
     UnknownPrompt(String),
+    #[error("tag_group `{0}` has no tags — every group must list at least one tag")]
+    EmptyTagGroup(String),
 }
 
 impl ProjectConfig {
@@ -441,7 +471,24 @@ impl ProjectConfig {
         if let Some(project) = Self::load(dir)? {
             cfg.merge_from(project);
         }
+        cfg.validate_tag_groups()?;
         Ok(cfg)
+    }
+
+    /// Reject obviously broken `[tag_group.*]` entries. Called from
+    /// `load_or_default` after the merge so an error here represents the
+    /// user's effective config (a user-level entry can be repaired by
+    /// project-level override and vice versa). Single-tag groups,
+    /// cross-group overlap, and tags absent from every image are all
+    /// allowed — they show up as informational signals in the CLI's
+    /// validate output and the GUI Kanban view rather than hard errors.
+    pub fn validate_tag_groups(&self) -> Result<(), ConfigError> {
+        for (name, group) in &self.tag_groups {
+            if group.tags.is_empty() {
+                return Err(ConfigError::EmptyTagGroup(name.clone()));
+            }
+        }
+        Ok(())
     }
 
     /// Overlay `other` onto `self`. `other`'s scalars overwrite `self`'s
@@ -467,6 +514,9 @@ impl ProjectConfig {
         }
         for (k, v) in other.captioner_prompts {
             self.captioner_prompts.insert(k, v);
+        }
+        for (k, v) in other.tag_groups {
+            self.tag_groups.insert(k, v);
         }
     }
 
@@ -835,11 +885,15 @@ mod tests {
             jpeg_quality: default_openai_jpeg_quality(),
             timeout_secs: default_openai_timeout_secs(),
         });
+        let full_tag_group = TagGroup {
+            tags: vec!["x".into()],
+        };
 
         let expected_export = struct_keys(full_export);
         let expected_tagger = struct_keys(full_tagger);
         let expected_onnx = struct_keys(full_onnx);
         let expected_openai = struct_keys(full_openai);
+        let expected_tag_group = struct_keys(full_tag_group);
 
         if let Err(missing) =
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
@@ -879,5 +933,54 @@ mod tests {
                  closest match is missing {missing:?}"
             );
         }
+        if let Err(missing) =
+            missing_from_best_match(raw_table.get("tag_group"), &expected_tag_group, |_| true)
+        {
+            panic!(
+                "no [tag_group.*] entry in crates/core/anima-tagger.toml.example covers every \
+                 TagGroup field; closest match is missing {missing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tag_group_round_trips_through_toml() {
+        let mut cfg = ProjectConfig::default();
+        cfg.tag_groups.insert(
+            "official_costumes".into(),
+            TagGroup {
+                tags: vec!["a".into(), "b".into()],
+            },
+        );
+        let s = toml::to_string(&cfg).expect("serialize");
+        let parsed: ProjectConfig = toml::from_str(&s).expect("re-parse");
+        let group = parsed
+            .tag_groups
+            .get("official_costumes")
+            .expect("group survives round-trip");
+        assert_eq!(group.tags, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn validate_tag_groups_rejects_empty_tags() {
+        let mut cfg = ProjectConfig::default();
+        cfg.tag_groups
+            .insert("foo".into(), TagGroup { tags: Vec::new() });
+        match cfg.validate_tag_groups() {
+            Err(ConfigError::EmptyTagGroup(name)) => assert_eq!(name, "foo"),
+            other => panic!("expected EmptyTagGroup, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_tag_groups_accepts_single_tag_group() {
+        let mut cfg = ProjectConfig::default();
+        cfg.tag_groups.insert(
+            "solo_check".into(),
+            TagGroup {
+                tags: vec!["solo".into()],
+            },
+        );
+        cfg.validate_tag_groups().expect("single-tag group is valid");
     }
 }

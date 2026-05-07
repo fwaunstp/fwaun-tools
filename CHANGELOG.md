@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-05-07
+
+### Fixed
+
+- **ONNX captioner crashed on the first decode step.** `Tensor::from_array`
+  in `ort` 2.0.0-rc.12 rejects any dim `< 1`, so the empty initial KV
+  cache (`[1, 8, 0, 128]`) and the post-prefill empty vision input
+  (`[0, 2560]`) both failed with `Invalid dimension #3; all dimensions
+  must be >= 1 when creating a tensor from row data`. Zero-sized inputs
+  now go through `Tensor::<f32>::new(&Allocator::default(), shape)`
+  (CreateTensorAsOrtValue), which accepts zero-sized dims; non-empty
+  KV cache still goes through `from_array`.
+
 ## [0.2.0] — 2026-05-07
 
 ### Added
@@ -160,6 +173,7 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.1
 [0.2.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.0
 [0.1.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.1.0

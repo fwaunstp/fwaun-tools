@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-booru"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anima-tagger-core",
  "chrono",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-captioner"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anima-tagger-core",
  "base64 0.22.1",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anima-tagger-booru",
  "anima-tagger-captioner",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "hf-hub",
@@ -139,7 +139,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-gui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anima-tagger-booru",
  "anima-tagger-captioner",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "anima-tagger-tagger"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anima-tagger-core",
  "csv",

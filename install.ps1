@@ -5,7 +5,7 @@
 #
 # With arguments:
 #   $script = irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1
-#   & ([scriptblock]::Create($script)) -Version v0.2.0 -CliOnly
+#   & ([scriptblock]::Create($script)) -Version v0.2.1 -CliOnly
 #
 # Parameters:
 #   -Version <tag>   release tag to install (default: latest)

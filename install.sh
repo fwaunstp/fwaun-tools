@@ -3,7 +3,7 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh -s -- --version v0.2.0
+#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh -s -- --version v0.2.1
 #   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh -s -- --cli-only
 #
 # Flags:

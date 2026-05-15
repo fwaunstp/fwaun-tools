@@ -1,5 +1,6 @@
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
+mod config_ui;
 mod i18n;
 
 use std::collections::{HashMap, HashSet};
@@ -10,7 +11,7 @@ use std::thread;
 
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::{CONFIG_EXAMPLE, CONFIG_FILE, ProjectConfig, TagGroup};
+use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
 use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, sidecar_path_for};
 use anima_tagger_core::tag_group::{self, Classification, DropTarget};
 use anima_tagger_core::walk::iter_images;
@@ -19,6 +20,7 @@ use chrono::{DateTime, Utc};
 use eframe::egui;
 use egui::{ColorImage, Key, TextureHandle};
 
+use crate::config_ui::{ConfigAction, ConfigDraft, ConfigTab, show_config_modal};
 use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
 
 /// Bundled CJK font so Japanese labels render out of the box without a
@@ -192,7 +194,8 @@ struct AnimaTaggerApp {
 
     // Modal: config editor
     config_open: bool,
-    config_text: String,
+    config_draft: Option<ConfigDraft>,
+    config_tab: ConfigTab,
     config_error: Option<String>,
     // Resolved target for the config modal: an ancestor's
     // `anima-tagger.toml` if one exists, otherwise the path where a new
@@ -272,7 +275,8 @@ impl AnimaTaggerApp {
             tagger: None,
             captioner: None,
             config_open: false,
-            config_text: String::new(),
+            config_draft: None,
+            config_tab: ConfigTab::default(),
             config_error: None,
             config_path: None,
             lang: load_pref_or_detect(),
@@ -419,22 +423,35 @@ impl AnimaTaggerApp {
                 // shadowed by a new sibling file in a subdirectory.
                 // Falls back to the current folder when nothing exists
                 // up the tree (new file will be created on save).
-                let (path, text) = match self.folder.as_ref() {
+                let (path, draft, load_err) = match self.folder.as_ref() {
                     Some(p) => {
                         let resolved = ProjectConfig::find_project_config(p)
                             .unwrap_or_else(|| p.join(CONFIG_FILE));
-                        let body = if resolved.exists() {
-                            fs::read_to_string(&resolved).unwrap_or_default()
+                        let (cfg, err) = if resolved.exists() {
+                            match fs::read_to_string(&resolved)
+                                .map_err(|e| e.to_string())
+                                .and_then(|s| {
+                                    toml::from_str::<ProjectConfig>(&s)
+                                        .map_err(|e| e.to_string())
+                                }) {
+                                Ok(c) => (c, None),
+                                Err(e) => (ProjectConfig::default(), Some(e)),
+                            }
                         } else {
-                            CONFIG_EXAMPLE.to_string()
+                            (ProjectConfig::default(), None)
                         };
-                        (Some(resolved), body)
+                        (Some(resolved), ConfigDraft::from_config(cfg), err)
                     }
-                    None => (None, CONFIG_EXAMPLE.to_string()),
+                    None => (
+                        None,
+                        ConfigDraft::from_config(ProjectConfig::default()),
+                        None,
+                    ),
                 };
                 self.config_path = path;
-                self.config_text = text;
-                self.config_error = None;
+                self.config_draft = Some(draft);
+                self.config_tab = ConfigTab::default();
+                self.config_error = load_err.map(|e| t.cfg_err_load(&e));
                 self.config_open = true;
             }
 
@@ -1441,76 +1458,76 @@ impl AnimaTaggerApp {
             Some(p) => p.display().to_string(),
             None => t.no_folder().to_string(),
         };
-        let mut open = true;
-        egui::Window::new("anima-tagger.toml")
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_size([720.0, 520.0])
-            .show(ctx, |ui| {
-                ui.label(egui::RichText::new(target_label).monospace().weak());
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .max_height(360.0)
-                    .show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.config_text)
-                                .code_editor()
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(20),
-                        );
-                    });
-                if let Some(err) = self.config_error.clone() {
-                    ui.colored_label(egui::Color32::from_rgb(255, 180, 180), err);
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button(t.config_validate()).clicked() {
-                        match toml::from_str::<ProjectConfig>(&self.config_text) {
-                            Ok(_) => self.config_error = None,
-                            Err(e) => self.config_error = Some(e.to_string()),
-                        }
-                    }
-                    if ui.button(t.config_save()).clicked() {
-                        if let Err(e) = toml::from_str::<ProjectConfig>(&self.config_text) {
-                            self.config_error = Some(e.to_string());
-                            return;
-                        }
-                        let Some(target) = self.config_path.clone() else {
-                            self.error_msg = Some(t.err_open_folder_first());
-                            return;
-                        };
-                        if let Some(parent) = target.parent()
-                            && let Err(e) = fs::create_dir_all(parent)
-                        {
-                            self.config_error =
-                                Some(format!("create {}: {e}", parent.display()));
-                            return;
-                        }
-                        if let Err(e) = fs::write(&target, self.config_text.as_bytes()) {
-                            self.config_error =
-                                Some(format!("write {}: {e}", target.display()));
-                            return;
-                        }
-                        // Drop cached models so the next run resolves
-                        // against the new profile.
-                        self.tagger = None;
-                        self.captioner = None;
-                        self.config_error = None;
-                        self.config_open = false;
-                        self.config_path = None;
-                    }
-                    if ui.button(t.config_cancel()).clicked() {
-                        self.config_error = None;
-                        self.config_open = false;
-                        self.config_path = None;
-                    }
-                });
-            });
-        if !open {
+        let Some(draft) = self.config_draft.as_mut() else {
+            // Defensive: modal should only be open with a draft present.
             self.config_open = false;
-            self.config_error = None;
-            self.config_path = None;
+            return;
+        };
+        let action = show_config_modal(
+            ctx,
+            t,
+            &target_label,
+            draft,
+            &mut self.config_tab,
+            &mut self.config_error,
+        );
+        match action {
+            ConfigAction::None => {}
+            ConfigAction::Cancel => {
+                self.config_open = false;
+                self.config_error = None;
+                self.config_draft = None;
+                self.config_path = None;
+            }
+            ConfigAction::Save => {
+                let Some(draft) = self.config_draft.as_ref() else {
+                    return;
+                };
+                let cfg = match draft.to_config(t) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        self.config_error = Some(e);
+                        return;
+                    }
+                };
+                let toml_text = match toml::to_string_pretty(&cfg) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        self.config_error = Some(format!("serialize: {e}"));
+                        return;
+                    }
+                };
+                let Some(target) = self.config_path.clone() else {
+                    self.error_msg = Some(t.err_open_folder_first());
+                    return;
+                };
+                if let Some(parent) = target.parent()
+                    && let Err(e) = fs::create_dir_all(parent)
+                {
+                    self.config_error = Some(format!("create {}: {e}", parent.display()));
+                    return;
+                }
+                if let Err(e) = fs::write(&target, toml_text.as_bytes()) {
+                    self.config_error = Some(format!("write {}: {e}", target.display()));
+                    return;
+                }
+                // Drop cached models so the next run resolves against
+                // the new profile, and refresh the in-memory effective
+                // config so Kanban / view dropdowns pick up tag-group
+                // changes immediately.
+                self.tagger = None;
+                self.captioner = None;
+                if let Some(folder) = self.folder.clone() {
+                    match ProjectConfig::load_or_default(&folder) {
+                        Ok(c) => self.project_config = Some(c),
+                        Err(e) => self.error_msg = Some(format!("config reload: {e}")),
+                    }
+                }
+                self.config_error = None;
+                self.config_open = false;
+                self.config_draft = None;
+                self.config_path = None;
+            }
         }
     }
 }

@@ -194,6 +194,11 @@ struct AnimaTaggerApp {
     config_open: bool,
     config_text: String,
     config_error: Option<String>,
+    // Resolved target for the config modal: an ancestor's
+    // `anima-tagger.toml` if one exists, otherwise the path where a new
+    // file would be created in the current folder. `None` while the
+    // modal is closed or no folder is loaded.
+    config_path: Option<PathBuf>,
 
     // Localization
     lang: Lang,
@@ -269,6 +274,7 @@ impl AnimaTaggerApp {
             config_open: false,
             config_text: String::new(),
             config_error: None,
+            config_path: None,
             lang: load_pref_or_detect(),
             manual_caption_buf: HashMap::new(),
             caption_hint_buf: HashMap::new(),
@@ -407,17 +413,26 @@ impl AnimaTaggerApp {
                 .button(t.config_button())
                 .on_hover_text(t.config_button_title());
             if cfg_btn.clicked() {
-                let text = match self.folder.as_ref() {
+                // Walk up from the loaded folder to find the nearest
+                // existing `anima-tagger.toml` so a config kept at the
+                // dataset root is edited in place rather than getting
+                // shadowed by a new sibling file in a subdirectory.
+                // Falls back to the current folder when nothing exists
+                // up the tree (new file will be created on save).
+                let (path, text) = match self.folder.as_ref() {
                     Some(p) => {
-                        let target = p.join(CONFIG_FILE);
-                        if target.exists() {
-                            fs::read_to_string(&target).unwrap_or_default()
+                        let resolved = ProjectConfig::find_project_config(p)
+                            .unwrap_or_else(|| p.join(CONFIG_FILE));
+                        let body = if resolved.exists() {
+                            fs::read_to_string(&resolved).unwrap_or_default()
                         } else {
                             CONFIG_EXAMPLE.to_string()
-                        }
+                        };
+                        (Some(resolved), body)
                     }
-                    None => CONFIG_EXAMPLE.to_string(),
+                    None => (None, CONFIG_EXAMPLE.to_string()),
                 };
+                self.config_path = path;
                 self.config_text = text;
                 self.config_error = None;
                 self.config_open = true;
@@ -1422,8 +1437,8 @@ impl AnimaTaggerApp {
 impl AnimaTaggerApp {
     fn ui_config_modal(&mut self, ctx: &egui::Context) {
         let t = self.t();
-        let target_label = match self.folder.as_ref() {
-            Some(p) => p.join(CONFIG_FILE).display().to_string(),
+        let target_label = match self.config_path.as_ref() {
+            Some(p) => p.display().to_string(),
             None => t.no_folder().to_string(),
         };
         let mut open = true;
@@ -1461,11 +1476,17 @@ impl AnimaTaggerApp {
                             self.config_error = Some(e.to_string());
                             return;
                         }
-                        let Some(folder) = self.folder.clone() else {
+                        let Some(target) = self.config_path.clone() else {
                             self.error_msg = Some(t.err_open_folder_first());
                             return;
                         };
-                        let target = folder.join(CONFIG_FILE);
+                        if let Some(parent) = target.parent()
+                            && let Err(e) = fs::create_dir_all(parent)
+                        {
+                            self.config_error =
+                                Some(format!("create {}: {e}", parent.display()));
+                            return;
+                        }
                         if let Err(e) = fs::write(&target, self.config_text.as_bytes()) {
                             self.config_error =
                                 Some(format!("write {}: {e}", target.display()));
@@ -1477,16 +1498,19 @@ impl AnimaTaggerApp {
                         self.captioner = None;
                         self.config_error = None;
                         self.config_open = false;
+                        self.config_path = None;
                     }
                     if ui.button(t.config_cancel()).clicked() {
                         self.config_error = None;
                         self.config_open = false;
+                        self.config_path = None;
                     }
                 });
             });
         if !open {
             self.config_open = false;
             self.config_error = None;
+            self.config_path = None;
         }
     }
 }

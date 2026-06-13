@@ -20,6 +20,9 @@ model and export profiles are not ANIMA-specific.
 - **Negative-tag suppression that survives model swaps.** Mark `-foo`
   once; re-running the tagger preserves the suppression even with a
   different model.
+- **Tag groups + Kanban view.** Declare mutually-exclusive tag sets
+  (e.g. costume variants) in `anima-tagger.toml`; the GUI shows one
+  column per tag with drag-and-drop to switch.
 - **Per-folder configuration via `anima-tagger.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
 - **Two output modes.** `export` writes one `<image>.txt` per image
@@ -150,6 +153,36 @@ anima-tagger export <dir>   [--profile NAME] [--threshold X]
 anima-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 anima-tagger status <dir>
 anima-tagger tokens <dir>
+anima-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
+```
+
+## Tag groups
+
+Declare named groups of tags that should be mutually exclusive on each
+image. The CLI's `validate-tag-group` reports each image as one of the
+group's tags, "unset", or "violation" (multiple group tags coexist —
+informational, not an error). The GUI's **View → Kanban** mode renders
+the same buckets as columns; thumbnails are draggable between them, and
+each drop rewrites `manual_tags` to record the new state.
+
+Costume separation for a character LoRA — every image lands in exactly
+one column, so it's easy to spot stragglers:
+
+```toml
+[tag_group.official_costumes]
+tags = ["official_school_uniform", "official_lounge_wear"]
+```
+
+Single-tag groups are valid too — handy as a "is tag X set?" sanity
+pass on a dataset:
+
+```toml
+[tag_group.solo_check]
+tags = ["solo"]
+```
+
+```sh
+anima-tagger validate-tag-group ./dataset --group official_costumes
 ```
 
 ## Documentation

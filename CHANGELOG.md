@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tag groups for mutually-exclusive tag classification.** Declare
+  named groups in `anima-tagger.toml` (e.g.
+  `[tag_group.official_costumes] tags = ["official_school_uniform",
+  "official_lounge_wear"]`); each image is bucketed as one of the
+  group's tags, "unset", or "violation" (multiple group tags coexist —
+  informational, not an error). Single-tag groups are also valid for
+  "is tag X set?" curation passes.
+- **CLI: `validate-tag-group` subcommand.** Reports each image's bucket
+  for a chosen group as a text table or JSON; `--problems-only` hides
+  cleanly-classified rows.
+- **GUI: Kanban view with drag-and-drop.** A new View → Kanban: <name>
+  selector switches the central panel into one column per tag (plus
+  "unset" and "violation"); thumbnails are draggable between columns
+  and each drop rewrites `manual_tags` (positive on the destination
+  tag, `-X` suppression on previously-present sibling tags). The
+  violation column is read-only — to create a multi-tag image
+  intentionally, use the detail panel.
+
 ## [0.2.1] — 2026-05-07
 
 ### Fixed

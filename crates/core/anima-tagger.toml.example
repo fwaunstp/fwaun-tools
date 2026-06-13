@@ -143,3 +143,27 @@ timeout_secs = 600
 # Run two prompts per image: one general description and one focused on
 # characters. Both share the same loaded model.
 prompts = ["default", "character"]
+
+# ---------------------------------------------------------------------------
+# Tag groups — declare sets of tags that should be mutually exclusive on
+# each image. Used by `anima-tagger validate-tag-group` and the GUI's
+# Kanban view to bucket images per-tag, plus an "unset" and "violation"
+# (multiple tags coexisting) bucket.
+#
+# Two or more group tags coexisting on one image is a "violation", but
+# this is informational rather than an error — character setting sheets
+# legitimately show multiple costumes in one frame.
+# ---------------------------------------------------------------------------
+
+# Costume separation for a character LoRA where the official material
+# offers a school uniform and lounge wear. Each training image should
+# fall into exactly one of: `official_school_uniform`,
+# `official_lounge_wear`, or "unset" (use `-foo` markers in
+# `manual_tags` to opt out of both).
+[tag_group.official_costumes]
+tags = ["official_school_uniform", "official_lounge_wear"]
+
+# Single-tag groups are valid too — handy for "is tag X set or not?"
+# curation passes. Uncomment and edit:
+# [tag_group.solo_check]
+# tags = ["solo"]

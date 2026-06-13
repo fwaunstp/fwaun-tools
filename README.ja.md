@@ -18,6 +18,9 @@
   出所を意識する必要はありません。
 - **モデルを切り替えても消えない非表示指定。** `-foo` を一度書いておけば、
   別のタガーモデルで再実行しても抑制設定は維持されます。
+- **タググループ + カンバン表示。** `anima-tagger.toml` で排他的なタグの組
+  （例: 衣装の種類）を宣言すると、GUI ではタグごとの列にサムネイルが
+  振り分けられ、ドラッグ&ドロップで切り替えられます。
 - **データセット単位の設定 (`anima-tagger.toml`)。** タガーモデル、
   キャプショナー、エクスポートプロファイル、しきい値などをディレクトリごとに切り替え可能。
 - **2つの書き出しモード。** `export` は `<image>.txt` を画像ごとに出力
@@ -150,6 +153,36 @@ anima-tagger export <dir>   [--profile NAME] [--threshold X]
 anima-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 anima-tagger status <dir>
 anima-tagger tokens <dir>
+anima-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
+```
+
+## タググループ
+
+排他的なタグの組を名前付きで宣言する仕組みです。CLI の
+`validate-tag-group` は各画像をグループ内のいずれかのタグ・「未設定」・
+「違反」（複数のグループタグが共存している状態 — エラーではなく情報表示）
+のいずれかに分類して一覧します。GUI の **表示 → カンバン** モードでは
+同じバケットを列として描画し、サムネイルをドラッグ&ドロップすると
+`manual_tags` を書き換えてタグを切り替えます。
+
+キャラクター LoRA の衣装ごとの分類例。各画像が必ずどれかの列に入るので、
+分類漏れに気付きやすくなります:
+
+```toml
+[tag_group.official_costumes]
+tags = ["official_school_uniform", "official_lounge_wear"]
+```
+
+タグ1つだけのグループも有効です。「特定のタグが設定済みか」を
+確認したいだけのときに便利です:
+
+```toml
+[tag_group.solo_check]
+tags = ["solo"]
+```
+
+```sh
+anima-tagger validate-tag-group ./dataset --group official_costumes
 ```
 
 ## ドキュメント

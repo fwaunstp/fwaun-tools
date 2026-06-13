@@ -117,6 +117,32 @@ impl T {
         }
     }
 
+    // View / Kanban
+    pub fn view_grid(self) -> &'static str {
+        self.pair("Grid", "グリッド")
+    }
+    pub fn view_kanban_prefix(self) -> &'static str {
+        self.pair("Kanban: ", "カンバン: ")
+    }
+    pub fn kanban_no_groups_hint(self) -> &'static str {
+        self.pair(
+            "Define [tag_group.<name>] in anima-tagger.toml to enable Kanban views.",
+            "カンバン表示を使うには anima-tagger.toml で [tag_group.<name>] を定義してください。",
+        )
+    }
+    pub fn kanban_unset_column(self) -> &'static str {
+        self.pair("(unset)", "（未設定）")
+    }
+    pub fn kanban_violation_column(self) -> &'static str {
+        self.pair("(violation)", "（違反）")
+    }
+    pub fn kanban_drop_failed(self, path: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Failed to save sidecar for {path}: {err}"),
+            Lang::Ja => format!("{path} のサイドカー保存に失敗: {err}"),
+        }
+    }
+
     // Progress overlay
     pub fn op_tagging(self) -> &'static str {
         self.pair("Tagging…", "タグ付け中…")
@@ -366,14 +392,186 @@ impl T {
     }
 
     // Config modal
-    pub fn config_validate(self) -> &'static str {
-        self.pair("Validate", "検証")
-    }
     pub fn config_save(self) -> &'static str {
         self.pair("Save & reload", "保存して再読み込み")
     }
     pub fn config_cancel(self) -> &'static str {
         self.pair("Cancel", "キャンセル")
+    }
+    pub fn cfg_window_title(self) -> &'static str {
+        self.pair("Settings", "設定")
+    }
+    pub fn cfg_tab_general(self) -> &'static str {
+        self.pair("General", "一般")
+    }
+    pub fn cfg_tab_tagger(self) -> &'static str {
+        self.pair("Tagger", "タガー")
+    }
+    pub fn cfg_tab_captioner(self) -> &'static str {
+        self.pair("Captioner", "キャプショナー")
+    }
+    pub fn cfg_tab_prompts(self) -> &'static str {
+        self.pair("Prompts", "プロンプト")
+    }
+    pub fn cfg_tab_export(self) -> &'static str {
+        self.pair("Export", "エクスポート")
+    }
+    pub fn cfg_tab_tag_groups(self) -> &'static str {
+        self.pair("Tag groups", "タググループ")
+    }
+    pub fn cfg_default_profile(self) -> &'static str {
+        self.pair("Default export profile", "既定エクスポートプロファイル")
+    }
+    pub fn cfg_default_tagger(self) -> &'static str {
+        self.pair("Default tagger profile", "既定タガープロファイル")
+    }
+    pub fn cfg_default_captioner(self) -> &'static str {
+        self.pair("Default captioner profile", "既定キャプショナープロファイル")
+    }
+    pub fn cfg_none(self) -> &'static str {
+        self.pair("(none — use built-in)", "（未指定 — 組込みを使用）")
+    }
+    pub fn cfg_general_note(self) -> &'static str {
+        self.pair(
+            "Defaults are picked when no `--profile` / `--tagger` / `--captioner` is passed. Leaving these unset falls back to the built-in models.",
+            "`--profile` / `--tagger` / `--captioner` を指定しなかった場合に使用される既定値です。未指定なら組込みモデルが使われます。",
+        )
+    }
+    pub fn cfg_unnamed(self) -> &'static str {
+        self.pair("unnamed", "名称未設定")
+    }
+    pub fn cfg_name(self) -> &'static str {
+        self.pair("Name", "名前")
+    }
+    pub fn cfg_repo(self) -> &'static str {
+        self.pair("HuggingFace repo", "HuggingFace リポジトリ")
+    }
+    pub fn cfg_revision(self) -> &'static str {
+        self.pair("Revision (optional)", "リビジョン（任意）")
+    }
+    pub fn cfg_subdir(self) -> &'static str {
+        self.pair("Subdirectory (optional)", "サブディレクトリ（任意）")
+    }
+    pub fn cfg_input_size(self) -> &'static str {
+        self.pair("Input size (px)", "入力サイズ (px)")
+    }
+    pub fn cfg_storage_threshold(self) -> &'static str {
+        self.pair("Storage threshold", "保存しきい値")
+    }
+    pub fn cfg_kind(self) -> &'static str {
+        self.pair("Kind", "種別")
+    }
+    pub fn cfg_endpoint(self) -> &'static str {
+        self.pair("Endpoint", "エンドポイント")
+    }
+    pub fn cfg_model(self) -> &'static str {
+        self.pair("Model name (optional)", "モデル名（任意）")
+    }
+    pub fn cfg_api_key(self) -> &'static str {
+        self.pair("API key (optional)", "APIキー（任意）")
+    }
+    pub fn cfg_max_pixels(self) -> &'static str {
+        self.pair("Max pixels", "最大ピクセル数")
+    }
+    pub fn cfg_max_new_tokens(self) -> &'static str {
+        self.pair("Max new tokens", "最大新規トークン数")
+    }
+    pub fn cfg_max_tokens(self) -> &'static str {
+        self.pair("Max tokens", "最大トークン数")
+    }
+    pub fn cfg_temperature(self) -> &'static str {
+        self.pair("Temperature (optional)", "温度（任意）")
+    }
+    pub fn cfg_max_edge(self) -> &'static str {
+        self.pair("Max edge (resize, 0=off)", "最大辺サイズ（リサイズ、0で無効）")
+    }
+    pub fn cfg_jpeg_quality(self) -> &'static str {
+        self.pair("JPEG quality", "JPEG品質")
+    }
+    pub fn cfg_timeout_secs(self) -> &'static str {
+        self.pair("Timeout (sec)", "タイムアウト（秒）")
+    }
+    pub fn cfg_prompts(self) -> &'static str {
+        self.pair("Prompts", "プロンプト")
+    }
+    pub fn cfg_prompts_note(self) -> &'static str {
+        self.pair(
+            "Prompts are referenced by name from each captioner profile's `prompts = [...]`. The built-in `default` is always available; redefining `default` here overrides it.",
+            "ここで定義したプロンプトは各キャプショナープロファイルの `prompts = [...]` から名前で参照されます。組込みの `default` は常に利用可能で、ここで `default` を定義すると上書きされます。",
+        )
+    }
+    pub fn cfg_threshold(self) -> &'static str {
+        self.pair("Threshold", "しきい値")
+    }
+    pub fn cfg_shuffle(self) -> &'static str {
+        self.pair("Shuffle on export", "書き出し時にシャッフル")
+    }
+    pub fn cfg_exclude_categories(self) -> &'static str {
+        self.pair("Exclude categories", "除外カテゴリ")
+    }
+    pub fn cfg_category_prefixes(self) -> &'static str {
+        self.pair("Category prefixes", "カテゴリ別プレフィックス")
+    }
+    pub fn cfg_category(self) -> &'static str {
+        self.pair("category", "カテゴリ")
+    }
+    pub fn cfg_prefix(self) -> &'static str {
+        self.pair("prefix", "プレフィックス")
+    }
+    pub fn cfg_tags(self) -> &'static str {
+        self.pair("Tags", "タグ")
+    }
+    pub fn cfg_tag_groups_note(self) -> &'static str {
+        self.pair(
+            "Tag groups define mutually-exclusive tag sets. The Kanban view shows one column per tag plus an \"unset\" and \"violation\" column.",
+            "タググループは相互排他なタグの集合を定義します。カンバン表示ではタグごとに 1 列 + 「未設定」「違反」の列が表示されます。",
+        )
+    }
+    pub fn cfg_add(self) -> &'static str {
+        self.pair("+ Add", "+ 追加")
+    }
+    pub fn cfg_remove(self) -> &'static str {
+        self.pair("Remove", "削除")
+    }
+    pub fn cfg_add_tagger(self) -> &'static str {
+        self.pair("+ Add tagger profile", "+ タガープロファイルを追加")
+    }
+    pub fn cfg_add_captioner_onnx(self) -> &'static str {
+        self.pair("+ Add ONNX captioner", "+ ONNX キャプショナーを追加")
+    }
+    pub fn cfg_add_captioner_openai(self) -> &'static str {
+        self.pair("+ Add OpenAI captioner", "+ OpenAI キャプショナーを追加")
+    }
+    pub fn cfg_add_prompt(self) -> &'static str {
+        self.pair("+ Add prompt", "+ プロンプトを追加")
+    }
+    pub fn cfg_add_export(self) -> &'static str {
+        self.pair("+ Add export profile", "+ エクスポートプロファイルを追加")
+    }
+    pub fn cfg_add_tag_group(self) -> &'static str {
+        self.pair("+ Add tag group", "+ タググループを追加")
+    }
+    pub fn cfg_err_empty_name(self, section: &str) -> String {
+        match self.lang {
+            Lang::En => format!("[{section}] entry has an empty name"),
+            Lang::Ja => format!("[{section}] に名前が空のエントリがあります"),
+        }
+    }
+    pub fn cfg_err_duplicate_name(self, section: &str, name: &str) -> String {
+        match self.lang {
+            Lang::En => format!("[{section}] has duplicate name `{name}`"),
+            Lang::Ja => format!("[{section}] に重複した名前 `{name}` があります"),
+        }
+    }
+    pub fn cfg_err_load(self, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!(
+                "Existing config could not be parsed; starting from defaults: {err}"
+            ),
+            Lang::Ja => format!(
+                "既存の設定を解析できなかったため、既定値から編集します: {err}"
+            ),
+        }
     }
 
     // Errors raised from the UI (most others come from anyhow / external).

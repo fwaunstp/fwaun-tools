@@ -415,6 +415,7 @@ fn ui_captioner(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     max_edge: 1024,
                     jpeg_quality: 90,
                     timeout_secs: 600,
+                max_retries: 3,
                 }),
             ));
         }
@@ -460,6 +461,7 @@ fn captioner_kind_combo(ui: &mut egui::Ui, idx: usize, profile: &mut CaptionerPr
                 max_edge: 1024,
                 jpeg_quality: 90,
                 timeout_secs: 600,
+            max_retries: 3,
             }),
         };
     }
@@ -559,6 +561,14 @@ fn ui_captioner_openai(ui: &mut egui::Ui, t: T, idx: usize, p: &mut OpenAiCaptio
             ui.add(
                 egui::DragValue::new(&mut p.timeout_secs)
                     .range(1..=86_400)
+                    .speed(1.0),
+            );
+            ui.end_row();
+
+            ui.label(t.cfg_max_retries());
+            ui.add(
+                egui::DragValue::new(&mut p.max_retries)
+                    .range(0..=10)
                     .speed(1.0),
             );
             ui.end_row();

@@ -75,28 +75,69 @@ impl OpenAiCaptioner {
         };
 
         let url = format!("{}/chat/completions", self.profile.endpoint.trim_end_matches('/'));
-        let mut req = self.agent.post(&url).set("content-type", "application/json");
-        if let Some(key) = self.profile.api_key.as_deref().filter(|s| !s.is_empty()) {
-            req = req.set("authorization", &format!("Bearer {key}"));
-        }
 
         eprintln!(
             "[captioner:openai] POST {url} (model={}, max_tokens={})",
             body.model, body.max_tokens
         );
-        let resp = match req.send_json(&body) {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, response)) => {
-                // llama-server / koboldcpp / Ollama all return a JSON error
-                // body on non-2xx — surface it so missing-mmproj and similar
-                // server-side misconfigurations are obvious from this side.
-                let body = response.into_string().unwrap_or_default();
-                return Err(CaptionerError::Api(format!(
-                    "HTTP {code} from {url}: {body}"
-                )));
-            }
-            Err(ureq::Error::Transport(t)) => {
-                return Err(CaptionerError::Http(t.to_string()));
+
+        // Some servers (gpt-oss harmony parsing in particular) intermittently
+        // 500 on a request that succeeds on a fresh attempt. Retry transient
+        // failures — HTTP 5xx and transport errors — but never 4xx, which are
+        // deterministic client mistakes that won't fix themselves.
+        let resp = {
+            let mut attempt = 0u32;
+            loop {
+                // `send_json` consumes the request builder, so rebuild it each
+                // attempt. The body is unchanged, so reuse the serialized JSON.
+                let mut req = self
+                    .agent
+                    .post(&url)
+                    .set("content-type", "application/json");
+                if let Some(key) = self.profile.api_key.as_deref().filter(|s| !s.is_empty()) {
+                    req = req.set("authorization", &format!("Bearer {key}"));
+                }
+                match req.send_json(&body) {
+                    Ok(r) => break r,
+                    Err(ureq::Error::Status(code, response)) => {
+                        // llama-server / koboldcpp / Ollama all return a JSON
+                        // error body on non-2xx — surface it so missing-mmproj
+                        // and similar server-side misconfigurations are obvious
+                        // from this side.
+                        let err_body = response.into_string().unwrap_or_default();
+                        let retryable = code >= 500;
+                        if retryable && attempt < self.profile.max_retries {
+                            attempt += 1;
+                            let backoff = retry_backoff(attempt);
+                            eprintln!(
+                                "[captioner:openai] HTTP {code} (transient); retry \
+                                 {attempt}/{} in {:.1}s",
+                                self.profile.max_retries,
+                                backoff.as_secs_f32()
+                            );
+                            std::thread::sleep(backoff);
+                            continue;
+                        }
+                        return Err(CaptionerError::Api(format!(
+                            "HTTP {code} from {url}: {err_body}"
+                        )));
+                    }
+                    Err(ureq::Error::Transport(t)) => {
+                        if attempt < self.profile.max_retries {
+                            attempt += 1;
+                            let backoff = retry_backoff(attempt);
+                            eprintln!(
+                                "[captioner:openai] transport error ({t}); retry \
+                                 {attempt}/{} in {:.1}s",
+                                self.profile.max_retries,
+                                backoff.as_secs_f32()
+                            );
+                            std::thread::sleep(backoff);
+                            continue;
+                        }
+                        return Err(CaptionerError::Http(t.to_string()));
+                    }
+                }
             }
         };
         let parsed: ChatResponse = resp
@@ -115,6 +156,13 @@ impl OpenAiCaptioner {
 
         Ok(text.trim().to_string())
     }
+}
+
+/// Exponential backoff between retry attempts: ~1s, 2s, 4s, … capped at 30s.
+/// `attempt` is 1-based (the delay before the first retry uses `attempt == 1`).
+fn retry_backoff(attempt: u32) -> Duration {
+    let secs = 1u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(u64::MAX);
+    Duration::from_secs(secs.min(30))
 }
 
 fn encode_image_data_url(

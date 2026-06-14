@@ -491,6 +491,9 @@ impl T {
     pub fn cfg_timeout_secs(self) -> &'static str {
         self.pair("Timeout (sec)", "タイムアウト（秒）")
     }
+    pub fn cfg_max_retries(self) -> &'static str {
+        self.pair("Max retries", "最大リトライ回数")
+    }
     pub fn cfg_prompts(self) -> &'static str {
         self.pair("Prompts", "プロンプト")
     }

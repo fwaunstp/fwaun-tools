@@ -164,6 +164,12 @@ pub struct OpenAiCaptionerProfile {
     /// several minutes for a single caption.
     #[serde(default = "default_openai_timeout_secs")]
     pub timeout_secs: u64,
+    /// How many times to retry a request that fails with a transient error
+    /// (HTTP 5xx or a transport/network failure). Some local servers — gpt-oss
+    /// harmony parsing in particular — intermittently 500 on a request that
+    /// succeeds on a fresh attempt. 0 = never retry. Default 3.
+    #[serde(default = "default_openai_max_retries")]
+    pub max_retries: u32,
 }
 
 /// The built-in `default` prompt text. Sized to fit comfortably inside
@@ -211,6 +217,10 @@ fn default_openai_jpeg_quality() -> u8 {
 
 fn default_openai_timeout_secs() -> u64 {
     600
+}
+
+fn default_openai_max_retries() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -653,6 +663,7 @@ mod tests {
                 max_edge: 1024,
                 jpeg_quality: 90,
                 timeout_secs: 600,
+                max_retries: 3,
             }),
         );
 
@@ -669,6 +680,7 @@ mod tests {
                 max_edge: 1024,
                 jpeg_quality: 90,
                 timeout_secs: 600,
+                max_retries: 3,
             }),
         );
 
@@ -884,6 +896,7 @@ mod tests {
             max_edge: default_openai_max_edge(),
             jpeg_quality: default_openai_jpeg_quality(),
             timeout_secs: default_openai_timeout_secs(),
+            max_retries: default_openai_max_retries(),
         });
         let full_tag_group = TagGroup {
             tags: vec!["x".into()],

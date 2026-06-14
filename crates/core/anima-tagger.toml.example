@@ -140,6 +140,11 @@ jpeg_quality = 90
 # Per-request timeout. CPU-bound local servers can need several minutes
 # for a single caption.
 timeout_secs = 600
+# Retry a request that fails with a transient error (HTTP 5xx or a
+# transport/network failure) up to this many times before giving up. Helps
+# with servers that intermittently 500 — e.g. gpt-oss harmony parse errors.
+# 0 = never retry.
+max_retries = 3
 # Run two prompts per image: one general description and one focused on
 # characters. Both share the same loaded model.
 prompts = ["default", "character"]

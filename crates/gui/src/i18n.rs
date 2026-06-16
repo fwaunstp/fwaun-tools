@@ -180,8 +180,8 @@ impl T {
     }
     pub fn tip_suppress(self) -> &'static str {
         self.pair(
-            "Tip: type \"-tag\" in the input below to suppress an auto/booru tag (it stays in the data but is hidden from export).",
-            "ヒント: 下の入力欄に \"-タグ\" と入れると、自動/Booruタグの非表示指定になります（データには残りますが、書き出されません）。",
+            "Tip: \"-tag\" suppresses an auto/booru tag; \"_tag\" is a curation-only label (kept for tag-group sorting but never exported). Both stay in the data, out of the caption.",
+            "ヒント: \"-タグ\" は自動/Booruタグの非表示指定、\"_タグ\" は整理用ラベル（タググループ分類には使われますが書き出されません）。どちらもデータには残り、キャプションには出ません。",
         )
     }
 
@@ -332,7 +332,10 @@ impl T {
 
     // Add input
     pub fn add_input_placeholder(self) -> &'static str {
-        self.pair("tag, or -tag to suppress", "タグ（または非表示にするなら -タグ）")
+        self.pair(
+            "tag, -tag to suppress, _tag for curation-only",
+            "タグ（-タグ で非表示、_タグ で整理用）",
+        )
     }
     pub fn add_button(self) -> &'static str {
         self.pair("Add", "追加")

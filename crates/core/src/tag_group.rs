@@ -217,6 +217,17 @@ mod tests {
     }
 
     #[test]
+    fn organizational_tag_classifies_as_its_own_bucket() {
+        // `_none` is curation-only (never exported) but a member of the group,
+        // so a reviewed "deliberately none of these" image lands in the
+        // `_none` bucket rather than Unset.
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("_none".into());
+        let g = group(&["char_a", "char_b", "_none"]);
+        assert_eq!(classify(&sc, &g), Classification::Tag("_none".into()));
+    }
+
+    #[test]
     fn classify_skips_tags_suppressed_by_negative_marker() {
         let mut sc = Sidecar::default();
         sc.auto_tags.push(auto("a"));

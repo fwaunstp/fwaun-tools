@@ -12,7 +12,9 @@ use std::thread;
 use anima_tagger_booru::{BooruClient, BooruError};
 use anima_tagger_captioner::Captioner;
 use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
-use anima_tagger_core::sidecar::{AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, sidecar_path_for};
+use anima_tagger_core::sidecar::{
+    AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, is_organizational, sidecar_path_for,
+};
 use anima_tagger_core::tag_group::{self, Classification, DropTarget};
 use anima_tagger_core::walk::iter_images;
 use anima_tagger_tagger::Tagger;
@@ -1106,7 +1108,7 @@ impl AnimaTaggerApp {
             let mut to_toggle_suppression: Vec<String> = Vec::new();
             ui.horizontal_wrapped(|ui| {
                 for tag in &manual_positives {
-                    if chip(ui, tag, ChipKind::Manual, false) {
+                    if chip(ui, tag, manual_chip_kind(tag), false) {
                         to_remove_manual.push(tag.clone());
                     }
                 }
@@ -1338,11 +1340,7 @@ impl AnimaTaggerApp {
                     } else {
                         tag.clone()
                     };
-                    let kind = if tag.starts_with('-') {
-                        ChipKind::Negative
-                    } else {
-                        ChipKind::Manual
-                    };
+                    let kind = manual_chip_kind(tag);
                     if chip(ui, &label, kind, false) {
                         to_remove.push(tag.clone());
                     }
@@ -2195,6 +2193,10 @@ impl AnimaTaggerApp {
 enum ChipKind {
     Manual,
     Negative,
+    /// Curation-only `_foo` manual entry: kept in the data and counted for
+    /// tag-group classification, but never exported. Coloured distinctly so
+    /// the user can tell at a glance it won't reach the training caption.
+    Organizational,
     Auto,
     Booru,
 }
@@ -2204,6 +2206,7 @@ impl ChipKind {
         match self {
             Self::Manual => egui::Color32::from_rgb(45, 74, 110),
             Self::Negative => egui::Color32::from_rgb(90, 45, 45),
+            Self::Organizational => egui::Color32::from_rgb(74, 58, 100),
             Self::Auto => egui::Color32::from_rgb(58, 58, 58),
             Self::Booru => egui::Color32::from_rgb(45, 90, 58),
         }
@@ -2212,9 +2215,22 @@ impl ChipKind {
         match self {
             Self::Manual => egui::Color32::from_rgb(207, 227, 255),
             Self::Negative => egui::Color32::from_rgb(255, 208, 208),
+            Self::Organizational => egui::Color32::from_rgb(226, 213, 255),
             Self::Auto => egui::Color32::from_rgb(204, 204, 204),
             Self::Booru => egui::Color32::from_rgb(207, 229, 208),
         }
+    }
+}
+
+/// Pick the chip colour for a raw manual entry: `-foo` suppression markers,
+/// `_foo` curation-only organizational tags, or plain positive tags.
+fn manual_chip_kind(tag: &str) -> ChipKind {
+    if tag.trim_start().starts_with('-') {
+        ChipKind::Negative
+    } else if is_organizational(tag) {
+        ChipKind::Organizational
+    } else {
+        ChipKind::Manual
     }
 }
 

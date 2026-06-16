@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Curation-only organizational tags.** A positive manual tag starting
+  with an underscore (`_foo`) is kept in the data and counted for
+  tag-group classification, but is never written to the exported `.txt`.
+  Lets you distinguish "not yet reviewed" from "reviewed, deliberately
+  none of these" — add an organizational tag as a tag-group member to
+  give the latter its own Kanban column. The GUI colours such chips
+  distinctly. (Suppression markers remain `-foo`.)
 - **Tag groups for mutually-exclusive tag classification.** Declare
   named groups in `anima-tagger.toml` (e.g.
   `[tag_group.official_costumes] tags = ["official_school_uniform",

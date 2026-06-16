@@ -6,7 +6,7 @@ use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::config::ExportProfile;
-use crate::sidecar::Sidecar;
+use crate::sidecar::{is_organizational, Sidecar};
 
 #[derive(Debug, Error)]
 pub enum ExportError {
@@ -30,6 +30,8 @@ pub fn export_text_path(image: &Path) -> PathBuf {
 /// - optional shuffle
 ///
 /// Negative manual entries (`-foo`) are never emitted as positive tags.
+/// Organizational manual entries (`_foo`) are curation-only and never
+/// exported either, though they still count for tag-group classification.
 pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -37,7 +39,7 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
 
     for raw in sidecar.manual_positive_tags() {
         let trimmed = raw.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() || is_organizational(trimmed) {
             continue;
         }
         let stem = normalize_stem(trimmed, profile);
@@ -271,6 +273,35 @@ mod tests {
         let profile = no_shuffle(ExportProfile::default());
         let tags = build_tags(&sidecar, &profile);
         assert_eq!(tags, vec!["bar".to_string()]);
+    }
+
+    #[test]
+    fn organizational_manual_tag_not_exported() {
+        let sidecar = Sidecar {
+            manual_tags: vec!["_no_character".into(), "1girl".into()],
+            ..Default::default()
+        };
+        let profile = no_shuffle(ExportProfile::default());
+        let tags = build_tags(&sidecar, &profile);
+        assert_eq!(tags, vec!["1girl".to_string()]);
+    }
+
+    #[test]
+    fn organizational_tag_does_not_suppress_matching_external_tag() {
+        // `_foo` is curation-only, NOT a suppression marker: an auto/booru
+        // tag with the same stem (sans underscore) is still exported.
+        let sidecar = Sidecar {
+            manual_tags: vec!["_watermark".into()],
+            auto_tags: vec![AutoTag {
+                tag: "watermark".into(),
+                score: 0.9,
+                category: "meta".into(),
+            }],
+            ..Default::default()
+        };
+        let profile = no_shuffle(ExportProfile::default());
+        let tags = build_tags(&sidecar, &profile);
+        assert_eq!(tags, vec!["watermark".to_string()]);
     }
 
     #[test]

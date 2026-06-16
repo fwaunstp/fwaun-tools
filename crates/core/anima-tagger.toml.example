@@ -172,3 +172,12 @@ tags = ["official_school_uniform", "official_lounge_wear"]
 # curation passes. Uncomment and edit:
 # [tag_group.solo_check]
 # tags = ["solo"]
+
+# Curation-only "organizational" tags: a positive manual entry starting with
+# an underscore (`_foo`) is kept in the data and counted for tag-group
+# classification, but is NEVER written to the exported `.txt`. This lets you
+# tell apart "not yet reviewed" (no group tag at all → the Kanban "unset"
+# column) from "reviewed, deliberately none of these" (an organizational tag).
+# Add such a tag as a group member to give "confirmed none" its own column:
+# [tag_group.character]
+# tags = ["character_a", "character_b", "_no_character"]

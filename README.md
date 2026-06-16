@@ -20,6 +20,10 @@ model and export profiles are not ANIMA-specific.
 - **Negative-tag suppression that survives model swaps.** Mark `-foo`
   once; re-running the tagger preserves the suppression even with a
   different model.
+- **Curation-only organizational tags.** A positive manual tag starting
+  with an underscore (`_foo`) is kept in the data and counted for
+  tag-group sorting but never exported — so you can mark "reviewed,
+  none of these" distinctly from "not yet reviewed".
 - **Tag groups + Kanban view.** Declare mutually-exclusive tag sets
   (e.g. costume variants) in `anima-tagger.toml`; the GUI shows one
   column per tag with drag-and-drop to switch.
@@ -180,6 +184,26 @@ pass on a dataset:
 [tag_group.solo_check]
 tags = ["solo"]
 ```
+
+### Curation-only (organizational) tags
+
+A positive manual tag starting with an underscore (`_foo`) is an
+*organizational* tag: it's kept in the data and counted for tag-group
+classification, but never written to the exported `.txt`. (Suppression
+markers use `-foo`; organizational tags use `_foo`.)
+
+This solves a common ambiguity in character/style tagging: an image with
+no group tag could mean either "not reviewed yet" or "reviewed, and it's
+deliberately none of these". Add an organizational tag as a group member
+to give the latter its own Kanban column, separate from "unset":
+
+```toml
+[tag_group.character]
+tags = ["character_a", "character_b", "_no_character"]
+```
+
+Images you drag into `_no_character` are marked reviewed without the
+underscore tag ever leaking into the training caption.
 
 ```sh
 anima-tagger validate-tag-group ./dataset --group official_costumes

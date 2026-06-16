@@ -23,6 +23,21 @@ pub const SIDECAR_EXTENSION: &str = "ron";
 /// from the export, regardless of which tagger produced it).
 pub const NEGATIVE_PREFIX: char = '-';
 
+/// Positive manual entries beginning with this character are *organizational*
+/// tags: curation-only labels kept out of the exported training `.txt` but
+/// still part of the effective tag set used by tag-group classification /
+/// the Kanban view. Lets the user distinguish "not yet reviewed" (no group
+/// tag at all) from "reviewed, deliberately none of these" (an organizational
+/// tag like `_no_character` placed in the group) without polluting the
+/// training captions. Booru-style tags use `_` mid-word but never lead with
+/// it, so a leading `_` is an unambiguous marker.
+pub const ORGANIZATIONAL_PREFIX: char = '_';
+
+/// True if `tag` is an organizational (curation-only, never-exported) entry.
+pub fn is_organizational(tag: &str) -> bool {
+    tag.trim().starts_with(ORGANIZATIONAL_PREFIX)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "SidecarOnDisk")]
 pub struct Sidecar {

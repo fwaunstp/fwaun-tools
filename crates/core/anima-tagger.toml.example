@@ -16,8 +16,10 @@ default_tagger    = "wd-eva02-large-v3"
 default_captioner = "qwen3-vl-4b"
 
 # ---------------------------------------------------------------------------
-# Export profiles — control how tags are filtered/formatted on `export`
-# (one .txt per image) and `metadata` (one meta.json for the directory).
+# Export profiles — control how tags/captions are filtered/formatted on
+# `export` (one .txt per image) and `metadata`. `metadata --format
+# sd-scripts` writes one meta.json (tags + captions); `metadata --format
+# musubi` writes a caption-only meta.jsonl for musubi-tuner.
 # ---------------------------------------------------------------------------
 
 [export.anima]
@@ -39,6 +41,30 @@ exclude_categories = []
 
 # (no per-category prefixes for plain training)
 [export.plain.category_prefixes]
+
+# Caption-only profile for musubi-tuner (`metadata --format musubi`) or any
+# caption-driven trainer. The caption carries the description; tags that mark
+# a controllable mode are folded into a deterministic caption prefix instead
+# of being emitted as tags.
+[export.musubi]
+threshold = 0.35
+shuffle = false
+exclude_categories = []
+
+# Caption-only output → no per-category tag prefixes.
+[export.musubi.category_prefixes]
+
+# Fold curation tags into a caption prefix. On caption export, if the image
+# has a positive manual tag matching a key here (matched case-insensitively,
+# a leading organizational `_` is ignored), the value is prepended verbatim
+# to the caption — include your own trailing separator. Multiple matches are
+# emitted in key order. Example below: a head-to-body trigger for a single
+# art-style LoRA, where the unmarked default is the house proportion and the
+# two extremes get an explicit token. No common style trigger is needed when
+# the LoRA only ever outputs the one style.
+[export.musubi.caption_prefixes]
+realistic = "realistic proportions, "
+super_deformed = "super deformed, "
 
 # ---------------------------------------------------------------------------
 # Captioner prompt library — define each prompt once here and reference

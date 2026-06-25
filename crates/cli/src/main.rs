@@ -15,13 +15,17 @@ use clap::{Parser, Subcommand, ValueEnum};
 /// after captioning. Default depends on the resolved prompt count: a
 /// single prompt promotes if-empty (the typical case where the auto
 /// caption *is* the canonical one); multiple prompts default to `never`
-/// so a comparison run doesn't randomly pick one to promote. Force
-/// overwrite is intentionally not exposed; clear `manual_caption` first
-/// (in the GUI bulk panel) and re-run.
+/// so a comparison run doesn't randomly pick one to promote. Use
+/// `always` to overwrite an existing manual caption (e.g. when promoting
+/// a second prompt's caption over a previously-promoted one) without
+/// clearing it in the GUI first.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum PromoteMode {
     Never,
     IfEmpty,
+    /// Copy the resolved prompt's caption into `manual_caption`,
+    /// overwriting any existing manual caption.
+    Always,
 }
 
 /// Output layout for the `metadata` command.
@@ -80,6 +84,8 @@ enum Command {
         prompts: Option<Vec<String>>,
         /// Copy the resolved single prompt's caption into the manual
         /// slot after generation. Requires exactly one resolved prompt.
+        /// `if-empty` only fills an empty manual slot; `always` overwrites
+        /// an existing manual caption; `never` skips promotion.
         /// Default: `if-empty` when 1 prompt is active, `never` otherwise.
         #[arg(long, value_enum)]
         promote_to_manual: Option<PromoteMode>,
@@ -327,6 +333,7 @@ fn cmd_caption(
                 .unwrap_or(true);
             let copy = match promote_mode {
                 PromoteMode::IfEmpty => manual_empty,
+                PromoteMode::Always => true,
                 PromoteMode::Never => false,
             };
             if copy {

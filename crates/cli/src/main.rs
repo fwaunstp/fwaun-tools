@@ -24,6 +24,21 @@ enum PromoteMode {
     IfEmpty,
 }
 
+/// Output layout for the `metadata` command.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum MetadataFormat {
+    /// kohya-ss/sd-scripts fine-tune metadata: a single `meta.json` mapping
+    /// each image's absolute path to `{ tags, caption }`. Tags and caption
+    /// are kept in separate fields.
+    SdScripts,
+    /// musubi-tuner metadata JSONL (`image_jsonl_file`): one
+    /// `{"image_path", "caption"}` object per line. Caption-only — tags are
+    /// not emitted as a separate field; fold any trigger/proportion tags
+    /// into the caption via `[export.<p>.caption_prefixes]`. Images without
+    /// a caption are skipped.
+    Musubi,
+}
+
 #[derive(Parser)]
 #[command(
     name = "anima-tagger",
@@ -87,15 +102,22 @@ enum Command {
         #[arg(long)]
         threshold: Option<f32>,
     },
-    /// Write a kohya-ss/sd-scripts fine-tune metadata JSON containing tags +
-    /// captions for every image with a sidecar.
+    /// Write a dataset metadata file for every image with a sidecar.
+    /// `--format sd-scripts` (default) emits a kohya-ss/sd-scripts
+    /// `meta.json` with tags + captions; `--format musubi` emits a
+    /// musubi-tuner caption-only JSONL.
     Metadata {
         dir: PathBuf,
         #[arg(long)]
         profile: Option<String>,
         #[arg(long)]
         threshold: Option<f32>,
-        /// Output path (default: `<dir>/meta.json`).
+        /// Metadata layout. `sd-scripts` → `meta.json`; `musubi` →
+        /// caption-only `meta.jsonl`.
+        #[arg(long, value_enum, default_value = "sd-scripts")]
+        format: MetadataFormat,
+        /// Output path (default: `<dir>/meta.json` for sd-scripts,
+        /// `<dir>/meta.jsonl` for musubi).
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -161,8 +183,9 @@ fn main() -> Result<()> {
             dir,
             profile,
             threshold,
+            format,
             output,
-        } => cmd_metadata(dir, profile, threshold, output),
+        } => cmd_metadata(dir, profile, threshold, format, output),
         Command::Status { dir } => cmd_status(dir),
         Command::ValidateTagGroup {
             dir,
@@ -395,24 +418,36 @@ fn cmd_metadata(
     dir: PathBuf,
     profile_name: Option<String>,
     threshold: Option<f32>,
+    format: MetadataFormat,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    use std::collections::BTreeMap;
-
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let mut profile = cfg.resolve_profile(profile_name.as_deref());
     if let Some(t) = threshold {
         profile.threshold = t;
     }
-    // sd-scripts will shuffle at training time; metadata stays stable for diffability.
+    // The trainer shuffles tags at training time; metadata stays stable for diffability.
     profile.shuffle = false;
+
+    match format {
+        MetadataFormat::SdScripts => cmd_metadata_sd_scripts(&dir, &profile, output),
+        MetadataFormat::Musubi => cmd_metadata_musubi(&dir, &profile, output),
+    }
+}
+
+fn cmd_metadata_sd_scripts(
+    dir: &std::path::Path,
+    profile: &anima_tagger_core::config::ExportProfile,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    use std::collections::BTreeMap;
 
     let mut meta: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     let mut count = 0usize;
     let mut skipped = 0usize;
 
-    for image in iter_images(&dir) {
+    for image in iter_images(dir) {
         let sidecar = match Sidecar::load(&image)? {
             Some(s) => s,
             None => {
@@ -420,7 +455,7 @@ fn cmd_metadata(
                 continue;
             }
         };
-        let tags = anima_tagger_core::export::build_tags(&sidecar, &profile);
+        let tags = export::build_tags(&sidecar, profile);
         let mut entry = serde_json::Map::new();
         if !tags.is_empty() {
             let joined = tags
@@ -430,17 +465,13 @@ fn cmd_metadata(
                 .join(", ");
             entry.insert("tags".to_string(), serde_json::Value::String(joined));
         }
-        if let Some(cap) = sidecar.export_caption() {
+        if let Some(cap) = export::build_caption(&sidecar, profile) {
             entry.insert("caption".to_string(), serde_json::Value::String(cap));
         }
         if entry.is_empty() {
             continue;
         }
-        let key = image
-            .canonicalize()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| image.display().to_string());
-        meta.insert(key, serde_json::Value::Object(entry));
+        meta.insert(metadata_image_key(&image), serde_json::Value::Object(entry));
         count += 1;
     }
 
@@ -453,6 +484,62 @@ fn cmd_metadata(
         output_path.display()
     );
     Ok(())
+}
+
+fn cmd_metadata_musubi(
+    dir: &std::path::Path,
+    profile: &anima_tagger_core::config::ExportProfile,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    // (image_path, caption) pairs, sorted by path so the JSONL is stable
+    // across runs (diff-friendly) regardless of directory iteration order.
+    let mut rows: Vec<(String, String)> = Vec::new();
+    let mut no_sidecar = 0usize;
+    let mut no_caption = 0usize;
+
+    for image in iter_images(dir) {
+        let sidecar = match Sidecar::load(&image)? {
+            Some(s) => s,
+            None => {
+                no_sidecar += 1;
+                continue;
+            }
+        };
+        // musubi training here is caption-only: an image without a caption
+        // has nothing to contribute, so skip it rather than emit a blank.
+        match export::build_caption(&sidecar, profile) {
+            Some(cap) => rows.push((metadata_image_key(&image), cap)),
+            None => no_caption += 1,
+        }
+    }
+    rows.sort();
+
+    let mut body = String::new();
+    for (image_path, caption) in &rows {
+        let line = serde_json::json!({ "image_path": image_path, "caption": caption });
+        body.push_str(&serde_json::to_string(&line)?);
+        body.push('\n');
+    }
+
+    let output_path = output.unwrap_or_else(|| dir.join("meta.jsonl"));
+    std::fs::write(&output_path, body)
+        .with_context(|| format!("writing {}", output_path.display()))?;
+    println!(
+        "wrote {} ({} entries, {no_caption} without caption skipped, \
+         {no_sidecar} without sidecar skipped)",
+        output_path.display(),
+        rows.len(),
+    );
+    Ok(())
+}
+
+/// Absolute path used as an image's metadata key (canonicalized when
+/// possible, falling back to the display path for not-yet-existing inputs).
+fn metadata_image_key(image: &std::path::Path) -> String {
+    image
+        .canonicalize()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| image.display().to_string())
 }
 
 fn cmd_status(dir: PathBuf) -> Result<()> {
@@ -588,7 +675,7 @@ fn cmd_tokens(
             .map(|t| t.replace('_', " "))
             .collect::<Vec<_>>()
             .join(", ");
-        let caption_text = sidecar.export_caption().unwrap_or_default();
+        let caption_text = export::build_caption(&sidecar, &profile).unwrap_or_default();
 
         let tag_tok = count(&tags_text)?;
         let cap_tok = count(&caption_text)?;

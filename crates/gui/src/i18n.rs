@@ -524,6 +524,12 @@ impl T {
     pub fn cfg_prefix(self) -> &'static str {
         self.pair("prefix", "プレフィックス")
     }
+    pub fn cfg_caption_prefixes(self) -> &'static str {
+        self.pair("Caption prefixes", "キャプションプレフィックス")
+    }
+    pub fn cfg_tag(self) -> &'static str {
+        self.pair("tag", "タグ")
+    }
     pub fn cfg_tags(self) -> &'static str {
         self.pair("Tags", "タグ")
     }

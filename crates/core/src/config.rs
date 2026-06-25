@@ -235,6 +235,19 @@ pub struct ExportProfile {
     /// (e.g. ANIMA: `{ "artist" = "@" }`).
     #[serde(default)]
     pub category_prefixes: BTreeMap<String, String>,
+    /// Map of tag name -> caption prefix string. On caption export, for each
+    /// entry whose tag is present among the image's positive manual tags
+    /// (matched case-insensitively, ignoring a leading organizational `_`),
+    /// the prefix string is prepended verbatim to the caption. Matched
+    /// prefixes are emitted in key order; include any separator (e.g. a
+    /// trailing `", "`) in the value yourself.
+    ///
+    /// Folds curation tags (e.g. `realistic`, `super_deformed`) into a
+    /// deterministic caption prefix for caption-only training
+    /// (musubi-tuner), instead of relying on the captioner to weave a
+    /// trigger word into its prose. Defaults to empty (no prefixing).
+    #[serde(default)]
+    pub caption_prefixes: BTreeMap<String, String>,
 }
 
 fn default_threshold() -> f32 {
@@ -254,6 +267,7 @@ impl Default for ExportProfile {
             shuffle: default_shuffle(),
             exclude_categories: Vec::new(),
             category_prefixes: BTreeMap::new(),
+            caption_prefixes: BTreeMap::new(),
         }
     }
 }
@@ -286,6 +300,7 @@ impl ExportProfile {
             shuffle: default_shuffle(),
             exclude_categories: Vec::new(),
             category_prefixes,
+            caption_prefixes: BTreeMap::new(),
         }
     }
 
@@ -871,6 +886,7 @@ mod tests {
             shuffle: true,
             exclude_categories: vec!["meta".into()],
             category_prefixes: BTreeMap::from([("artist".into(), "@".into())]),
+            caption_prefixes: BTreeMap::from([("realistic".into(), "realistic proportions, ".into())]),
         };
         let full_tagger = TaggerProfile {
             repo: "r".into(),

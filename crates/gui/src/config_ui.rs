@@ -34,6 +34,7 @@ pub struct ExportProfileDraft {
     pub shuffle: bool,
     pub exclude_categories: Vec<String>,
     pub category_prefixes: Vec<(String, String)>,
+    pub caption_prefixes: Vec<(String, String)>,
 }
 
 impl From<ExportProfile> for ExportProfileDraft {
@@ -43,6 +44,7 @@ impl From<ExportProfile> for ExportProfileDraft {
             shuffle: p.shuffle,
             exclude_categories: p.exclude_categories,
             category_prefixes: p.category_prefixes.into_iter().collect(),
+            caption_prefixes: p.caption_prefixes.into_iter().collect(),
         }
     }
 }
@@ -99,30 +101,36 @@ impl ConfigDraft {
             if !seen.insert(name.clone()) {
                 return Err(t.cfg_err_duplicate_name("export", &name));
             }
-            // Validate category_prefix keys: empty key is meaningless,
-            // and duplicate keys would silently merge in the BTreeMap.
-            let mut prefixes = BTreeMap::new();
-            let mut prefix_seen = BTreeSet::new();
-            for (k_raw, v) in &draft.category_prefixes {
-                let k = k_raw.trim().to_string();
-                if k.is_empty() {
-                    return Err(t.cfg_err_empty_name(&format!("export.{name}.category_prefix")));
+            // Validate prefix keys: empty key is meaningless, and duplicate
+            // keys would silently merge in the BTreeMap. Same rule for the
+            // category- and caption-prefix tables.
+            let collect_prefixes = |entries: &[(String, String)], section: &str| {
+                let mut prefixes = BTreeMap::new();
+                let mut prefix_seen = BTreeSet::new();
+                for (k_raw, v) in entries {
+                    let k = k_raw.trim().to_string();
+                    if k.is_empty() {
+                        return Err(t.cfg_err_empty_name(&format!("export.{name}.{section}")));
+                    }
+                    if !prefix_seen.insert(k.clone()) {
+                        return Err(
+                            t.cfg_err_duplicate_name(&format!("export.{name}.{section}"), &k)
+                        );
+                    }
+                    prefixes.insert(k, v.clone());
                 }
-                if !prefix_seen.insert(k.clone()) {
-                    return Err(t.cfg_err_duplicate_name(
-                        &format!("export.{name}.category_prefix"),
-                        &k,
-                    ));
-                }
-                prefixes.insert(k, v.clone());
-            }
+                Ok(prefixes)
+            };
+            let category_prefixes = collect_prefixes(&draft.category_prefixes, "category_prefix")?;
+            let caption_prefixes = collect_prefixes(&draft.caption_prefixes, "caption_prefix")?;
             export.insert(
                 name,
                 ExportProfile {
                     threshold: draft.threshold,
                     shuffle: draft.shuffle,
                     exclude_categories: draft.exclude_categories.clone(),
-                    category_prefixes: prefixes,
+                    category_prefixes,
+                    caption_prefixes,
                 },
             );
         }
@@ -670,6 +678,16 @@ fn ui_export(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     t.cfg_prefix(),
                     t,
                 );
+                ui.add_space(4.0);
+                ui.label(t.cfg_caption_prefixes());
+                kv_list_editor(
+                    ui,
+                    ("export_cap_pref", idx),
+                    &mut p.caption_prefixes,
+                    t.cfg_tag(),
+                    t.cfg_prefix(),
+                    t,
+                );
             });
         ui.add_space(2.0);
     }
@@ -684,6 +702,7 @@ fn ui_export(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                 shuffle: false,
                 exclude_categories: Vec::new(),
                 category_prefixes: Vec::new(),
+                caption_prefixes: Vec::new(),
             },
         ));
     }

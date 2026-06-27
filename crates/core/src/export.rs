@@ -86,45 +86,52 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
     out
 }
 
-/// Caption text for export, with any configured `caption_prefixes`
-/// prepended.
+/// Caption text for export, with any configured `caption_prefixes` /
+/// `caption_suffixes` applied.
 ///
 /// The body comes from [`Sidecar::export_caption`] (manual caption wins,
-/// else the joined active auto captions). For each `(tag, prefix)` rule in
-/// `profile.caption_prefixes` whose tag matches one of the image's positive
-/// manual tags — compared case-insensitively, ignoring a leading
-/// organizational `_` — the prefix is prepended verbatim. Matched prefixes
-/// are emitted in the profile's key order (BTreeMap = sorted), so output is
-/// deterministic even if several rules match.
+/// else the joined active auto captions). For each `(tag, affix)` rule
+/// whose tag matches one of the image's positive manual tags — compared
+/// case-insensitively, ignoring a leading organizational `_` — the affix is
+/// prepended (`caption_prefixes`) or appended (`caption_suffixes`) verbatim.
+/// Matched affixes are emitted in the profile's key order (BTreeMap =
+/// sorted), so output is deterministic even if several rules match.
 ///
-/// Returns `None` when the image has no caption body at all: a bare prefix
+/// Returns `None` when the image has no caption body at all: a bare affix
 /// without a caption isn't a useful training caption, so such images are
-/// skipped by callers rather than emitted prefix-only.
+/// skipped by callers rather than emitted affix-only.
 pub fn build_caption(sidecar: &Sidecar, profile: &ExportProfile) -> Option<String> {
     let body = sidecar.export_caption()?;
-    let prefix = build_caption_prefix(sidecar, profile);
-    if prefix.is_empty() {
+    let present = present_caption_stems(sidecar, profile);
+    let prefix = matched_affixes(&profile.caption_prefixes, &present);
+    let suffix = matched_affixes(&profile.caption_suffixes, &present);
+    if prefix.is_empty() && suffix.is_empty() {
         Some(body)
     } else {
-        Some(format!("{prefix}{body}"))
+        Some(format!("{prefix}{body}{suffix}"))
     }
 }
 
-/// Concatenate the caption prefixes whose tag is present on the image, in
-/// profile key order. Empty when nothing matches.
-fn build_caption_prefix(sidecar: &Sidecar, profile: &ExportProfile) -> String {
-    if profile.caption_prefixes.is_empty() {
-        return String::new();
+/// Stems of the image's positive manual tags, normalized for affix
+/// matching. Empty (and cheap) when neither affix table is configured.
+fn present_caption_stems(sidecar: &Sidecar, profile: &ExportProfile) -> HashSet<String> {
+    if profile.caption_prefixes.is_empty() && profile.caption_suffixes.is_empty() {
+        return HashSet::new();
     }
-    let present: HashSet<String> = sidecar
+    sidecar
         .manual_positive_tags()
         .map(caption_prefix_stem)
         .filter(|s| !s.is_empty())
-        .collect();
+        .collect()
+}
+
+/// Concatenate the affixes whose tag stem is present, in map key order.
+/// Empty when nothing matches.
+fn matched_affixes(affixes: &std::collections::BTreeMap<String, String>, present: &HashSet<String>) -> String {
     let mut out = String::new();
-    for (tag, prefix) in &profile.caption_prefixes {
+    for (tag, affix) in affixes {
         if present.contains(&caption_prefix_stem(tag)) {
-            out.push_str(prefix);
+            out.push_str(affix);
         }
     }
     out
@@ -457,6 +464,44 @@ mod tests {
         };
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(build_caption(&sidecar, &profile), None);
+    }
+
+    #[test]
+    fn caption_suffix_appended_when_tag_present() {
+        let mut sidecar = Sidecar {
+            manual_tags: vec!["realistic".into()],
+            ..Default::default()
+        };
+        sidecar.set_caption("a", "a girl standing in a field");
+        let mut profile = ExportProfile::default();
+        profile.caption_suffixes =
+            [("realistic".to_string(), ", realistic proportions".to_string())]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            build_caption(&sidecar, &profile).as_deref(),
+            Some("a girl standing in a field, realistic proportions")
+        );
+    }
+
+    #[test]
+    fn caption_prefix_and_suffix_both_apply() {
+        let mut sidecar = Sidecar {
+            manual_tags: vec!["super_deformed".into()],
+            ..Default::default()
+        };
+        sidecar.set_caption("a", "a cat");
+        let mut profile = ExportProfile::default();
+        profile.caption_prefixes = [("super_deformed".to_string(), "PRE ".to_string())]
+            .into_iter()
+            .collect();
+        profile.caption_suffixes = [("super_deformed".to_string(), " SUF".to_string())]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            build_caption(&sidecar, &profile).as_deref(),
+            Some("PRE a cat SUF")
+        );
     }
 
     #[test]

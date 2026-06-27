@@ -59,12 +59,26 @@ exclude_categories = []
 # a leading organizational `_` is ignored), the value is prepended verbatim
 # to the caption — include your own trailing separator. Multiple matches are
 # emitted in key order. Example below: a head-to-body trigger for a single
-# art-style LoRA, where the unmarked default is the house proportion and the
-# two extremes get an explicit token. No common style trigger is needed when
-# the LoRA only ever outputs the one style.
+# art-style LoRA. Give every mode its own explicit token (including the
+# "default" look) — an unmarked default tends to drift toward whichever mode
+# dominates the set rather than staying put.
 [export.musubi.caption_prefixes]
 realistic = "realistic proportions, "
+standard = "stylized proportions, "
 super_deformed = "super deformed, "
+
+# Caption suffixes — same matching as prefixes, but appended to the end.
+# Use these for trainers / inference templates that expect the trigger word
+# as a trailing tag. ComfyUI's Krea-2 template, for instance, concatenates
+# the LoRA trigger onto the end of the prompt (`{prompt}, {trigger}`) using a
+# natural-language "... style" phrase, so a caption trained the same way
+# (`{description}, {trigger}`) lines up at inference. Include your own leading
+# separator (here `", "`). Configure prefixes OR suffixes per profile — you
+# don't normally want both.
+[export.musubi.caption_suffixes]
+realistic = ", fwaun style, realistic proportions"
+standard = ", fwaun style, stylized proportions"
+super_deformed = ", fwaun style, chibi proportions"
 
 # ---------------------------------------------------------------------------
 # Captioner prompt library — define each prompt once here and reference

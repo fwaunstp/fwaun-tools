@@ -248,6 +248,16 @@ pub struct ExportProfile {
     /// trigger word into its prose. Defaults to empty (no prefixing).
     #[serde(default)]
     pub caption_prefixes: BTreeMap<String, String>,
+    /// Like `caption_prefixes`, but appended to the end of the caption
+    /// instead of the front. Same matching rules. Use this for trainers /
+    /// inference templates that expect the trigger word as a trailing tag
+    /// — e.g. ComfyUI's Krea-2 template concatenates the LoRA trigger word
+    /// onto the end of the prompt (`{prompt}, {trigger}`), so a caption
+    /// trained the same way (`{description}, {trigger}`) lines up. Include
+    /// your own leading separator (e.g. a `", "`) in the value. Defaults to
+    /// empty (no suffixing).
+    #[serde(default)]
+    pub caption_suffixes: BTreeMap<String, String>,
 }
 
 fn default_threshold() -> f32 {
@@ -268,6 +278,7 @@ impl Default for ExportProfile {
             exclude_categories: Vec::new(),
             category_prefixes: BTreeMap::new(),
             caption_prefixes: BTreeMap::new(),
+            caption_suffixes: BTreeMap::new(),
         }
     }
 }
@@ -301,6 +312,7 @@ impl ExportProfile {
             exclude_categories: Vec::new(),
             category_prefixes,
             caption_prefixes: BTreeMap::new(),
+            caption_suffixes: BTreeMap::new(),
         }
     }
 
@@ -887,6 +899,7 @@ mod tests {
             exclude_categories: vec!["meta".into()],
             category_prefixes: BTreeMap::from([("artist".into(), "@".into())]),
             caption_prefixes: BTreeMap::from([("realistic".into(), "realistic proportions, ".into())]),
+            caption_suffixes: BTreeMap::from([("realistic".into(), ", realistic proportions".into())]),
         };
         let full_tagger = TaggerProfile {
             repo: "r".into(),

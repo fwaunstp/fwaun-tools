@@ -35,6 +35,7 @@ pub struct ExportProfileDraft {
     pub exclude_categories: Vec<String>,
     pub category_prefixes: Vec<(String, String)>,
     pub caption_prefixes: Vec<(String, String)>,
+    pub caption_suffixes: Vec<(String, String)>,
 }
 
 impl From<ExportProfile> for ExportProfileDraft {
@@ -45,6 +46,7 @@ impl From<ExportProfile> for ExportProfileDraft {
             exclude_categories: p.exclude_categories,
             category_prefixes: p.category_prefixes.into_iter().collect(),
             caption_prefixes: p.caption_prefixes.into_iter().collect(),
+            caption_suffixes: p.caption_suffixes.into_iter().collect(),
         }
     }
 }
@@ -123,6 +125,7 @@ impl ConfigDraft {
             };
             let category_prefixes = collect_prefixes(&draft.category_prefixes, "category_prefix")?;
             let caption_prefixes = collect_prefixes(&draft.caption_prefixes, "caption_prefix")?;
+            let caption_suffixes = collect_prefixes(&draft.caption_suffixes, "caption_suffix")?;
             export.insert(
                 name,
                 ExportProfile {
@@ -131,6 +134,7 @@ impl ConfigDraft {
                     exclude_categories: draft.exclude_categories.clone(),
                     category_prefixes,
                     caption_prefixes,
+                    caption_suffixes,
                 },
             );
         }
@@ -688,6 +692,16 @@ fn ui_export(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     t.cfg_prefix(),
                     t,
                 );
+                ui.add_space(4.0);
+                ui.label(t.cfg_caption_suffixes());
+                kv_list_editor(
+                    ui,
+                    ("export_cap_suf", idx),
+                    &mut p.caption_suffixes,
+                    t.cfg_tag(),
+                    t.cfg_suffix(),
+                    t,
+                );
             });
         ui.add_space(2.0);
     }
@@ -703,6 +717,7 @@ fn ui_export(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                 exclude_categories: Vec::new(),
                 category_prefixes: Vec::new(),
                 caption_prefixes: Vec::new(),
+                caption_suffixes: Vec::new(),
             },
         ));
     }

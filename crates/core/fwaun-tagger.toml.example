@@ -1,9 +1,9 @@
-# Example anima-tagger configuration.
+# Example fwaun-tagger configuration.
 #
-# Drop this file into a dataset directory as `anima-tagger.toml` for
+# Drop this file into a dataset directory as `fwaun-tagger.toml` for
 # project-local options, or keep a copy at
-# `~/.config/anima-tagger/config.toml` (resp.
-# `$XDG_CONFIG_HOME/anima-tagger/config.toml`) for user-wide defaults.
+# `~/.config/fwaun-tagger/config.toml` (resp.
+# `$XDG_CONFIG_HOME/fwaun-tagger/config.toml`) for user-wide defaults.
 # Per-directory entries win on key collision; everything is optional and
 # falls back to the built-in defaults if the file is absent.
 
@@ -135,7 +135,7 @@ storage_threshold = 0.10
 #     becomes overly conservative and produces mid-sentence cutoffs.
 #     Bump `max_tokens` to 800-1024 for those backends; the prompt's
 #     length cap (`under 200 words`) still keeps prose bounded, and you
-#     can verify against ANIMA's real budget with `anima-tagger tokens`.
+#     can verify against ANIMA's real budget with `fwaun-tagger tokens`.
 #
 # `prompts = ["..."]` is a list of names looked up in
 # `[captioner_prompts]`. Each named prompt produces its own caption
@@ -170,7 +170,7 @@ model = "local"
 api_key = ""
 # Counted in this server's tokenizer, not ANIMA's. Bump to 800-1024
 # for Gemma-style models if you see mid-sentence truncation; verify
-# with `anima-tagger tokens` after generation.
+# with `fwaun-tagger tokens` after generation.
 max_tokens = 512
 temperature = 0.7
 # Resize so the longest edge is at most this many pixels before sending.
@@ -191,7 +191,7 @@ prompts = ["default", "character"]
 
 # ---------------------------------------------------------------------------
 # Tag groups — declare sets of tags that should be mutually exclusive on
-# each image. Used by `anima-tagger validate-tag-group` and the GUI's
+# each image. Used by `fwaun-tagger validate-tag-group` and the GUI's
 # Kanban view to bucket images per-tag, plus an "unset" and "violation"
 # (multiple tags coexisting) bucket.
 #

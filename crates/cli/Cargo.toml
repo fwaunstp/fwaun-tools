@@ -1,6 +1,6 @@
 [package]
-name = "anima-tagger-cli"
-description = "Command-line interface for anima-tagger: tag, caption, and export Stable Diffusion LoRA datasets."
+name = "fwaun-tagger-cli"
+description = "Command-line interface for fwaun-tagger: tag, caption, and export Stable Diffusion LoRA datasets."
 categories = ["command-line-utilities"]
 version.workspace = true
 edition.workspace = true
@@ -13,14 +13,14 @@ readme.workspace = true
 keywords.workspace = true
 
 [[bin]]
-name = "anima-tagger"
+name = "fwaun-tagger"
 path = "src/main.rs"
 
 [dependencies]
-anima-tagger-core = { workspace = true }
-anima-tagger-tagger = { workspace = true }
-anima-tagger-captioner = { workspace = true }
-anima-tagger-booru = { workspace = true }
+fwaun-tagger-core = { workspace = true }
+fwaun-tagger-tagger = { workspace = true }
+fwaun-tagger-captioner = { workspace = true }
+fwaun-tagger-booru = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

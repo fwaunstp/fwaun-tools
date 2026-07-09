@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use anima_tagger_core::sidecar::{BooruInfo, BooruTag};
+use fwaun_tagger_core::sidecar::{BooruInfo, BooruTag};
 use chrono::Utc;
 use serde::Deserialize;
 use thiserror::Error;
@@ -31,7 +31,7 @@ impl BooruClient {
     pub fn danbooru() -> Self {
         Self {
             base_url: "https://danbooru.donmai.us".to_string(),
-            user_agent: format!("anima-tagger/{}", env!("CARGO_PKG_VERSION")),
+            user_agent: format!("fwaun-tagger/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 

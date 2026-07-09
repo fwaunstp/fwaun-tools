@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use anima_tagger_booru::{BooruClient, BooruError};
-use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::ProjectConfig;
-use anima_tagger_core::export;
-use anima_tagger_core::sidecar::{Sidecar, TaggerInfo};
-use anima_tagger_core::walk::iter_images;
-use anima_tagger_tagger::Tagger;
+use fwaun_tagger_booru::{BooruClient, BooruError};
+use fwaun_tagger_captioner::Captioner;
+use fwaun_tagger_core::config::ProjectConfig;
+use fwaun_tagger_core::export;
+use fwaun_tagger_core::sidecar::{Sidecar, TaggerInfo};
+use fwaun_tagger_core::walk::iter_images;
+use fwaun_tagger_tagger::Tagger;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -45,7 +45,7 @@ enum MetadataFormat {
 
 #[derive(Parser)]
 #[command(
-    name = "anima-tagger",
+    name = "fwaun-tagger",
     about = "Manage manual + auto + booru tags and captions for ANIMA-style LoRA datasets"
 )]
 struct Cli {
@@ -58,7 +58,7 @@ enum Command {
     /// Run the automatic tagger over images in a directory.
     Tag {
         dir: PathBuf,
-        /// Name of a `[tagger.<name>]` profile in `anima-tagger.toml`.
+        /// Name of a `[tagger.<name>]` profile in `fwaun-tagger.toml`.
         #[arg(long)]
         model: Option<String>,
         /// Re-tag images that already have an auto-tag record.
@@ -71,7 +71,7 @@ enum Command {
     /// Run the automatic captioner over images in a directory.
     Caption {
         dir: PathBuf,
-        /// Name of a `[captioner.<name>]` profile in `anima-tagger.toml`.
+        /// Name of a `[captioner.<name>]` profile in `fwaun-tagger.toml`.
         #[arg(long)]
         model: Option<String>,
         /// Re-caption images that already have a caption record.
@@ -148,7 +148,7 @@ enum Command {
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
     /// Classify images against a `[tag_group.<name>]` from
-    /// `anima-tagger.toml`. Each image is bucketed as one of the group's
+    /// `fwaun-tagger.toml`. Each image is bucketed as one of the group's
     /// tags, "unset" (no group tag present), or "violation" (multiple).
     /// Violations are informational, not errors.
     ValidateTagGroup {
@@ -469,7 +469,7 @@ fn cmd_metadata(
 
 fn cmd_metadata_sd_scripts(
     dir: &std::path::Path,
-    profile: &anima_tagger_core::config::ExportProfile,
+    profile: &fwaun_tagger_core::config::ExportProfile,
     output: Option<PathBuf>,
 ) -> Result<()> {
     use std::collections::BTreeMap;
@@ -519,7 +519,7 @@ fn cmd_metadata_sd_scripts(
 
 fn cmd_metadata_musubi(
     dir: &std::path::Path,
-    profile: &anima_tagger_core::config::ExportProfile,
+    profile: &fwaun_tagger_core::config::ExportProfile,
     output: Option<PathBuf>,
 ) -> Result<()> {
     // (image_path, caption) pairs, sorted by path so the JSONL is stable
@@ -574,8 +574,8 @@ fn metadata_image_key(image: &std::path::Path) -> String {
 }
 
 fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
-    use anima_tagger_core::sidecar::sidecar_path_for;
-    use anima_tagger_core::tag_group::effective_tag_set;
+    use fwaun_tagger_core::sidecar::sidecar_path_for;
+    use fwaun_tagger_core::tag_group::effective_tag_set;
 
     // Normalize query tags the same way the effective tag set is keyed:
     // trimmed + lowercased. Empty entries (e.g. from a trailing comma) are
@@ -705,13 +705,13 @@ fn cmd_validate_tag_group(
     problems_only: bool,
     json: bool,
 ) -> Result<()> {
-    use anima_tagger_core::tag_group::{Classification, classify};
+    use fwaun_tagger_core::tag_group::{Classification, classify};
 
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let group = cfg.tag_groups.get(&group_name).with_context(|| {
         format!(
-            "tag_group `{group_name}` is not defined in any anima-tagger.toml \
+            "tag_group `{group_name}` is not defined in any fwaun-tagger.toml \
              (project or user). Add a [tag_group.{group_name}] section."
         )
     })?;
@@ -773,7 +773,7 @@ fn cmd_tokens(
     threshold: Option<f32>,
     limit: usize,
 ) -> Result<()> {
-    use anima_tagger_core::hub;
+    use fwaun_tagger_core::hub;
     use tokenizers::Tokenizer;
 
     let cfg = ProjectConfig::load_or_default(&dir)
@@ -810,7 +810,7 @@ fn cmd_tokens(
             no_sidecar += 1;
             continue;
         };
-        let tags = anima_tagger_core::export::build_tags(&sidecar, &profile);
+        let tags = fwaun_tagger_core::export::build_tags(&sidecar, &profile);
         let tags_text = tags
             .iter()
             .map(|t| t.replace('_', " "))

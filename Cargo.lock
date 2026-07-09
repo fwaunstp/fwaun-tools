@@ -82,95 +82,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anima-tagger-booru"
-version = "0.2.1"
-dependencies = [
- "anima-tagger-core",
- "chrono",
- "md5",
- "serde",
- "thiserror 2.0.18",
- "ureq 2.12.1",
-]
-
-[[package]]
-name = "anima-tagger-captioner"
-version = "0.2.1"
-dependencies = [
- "anima-tagger-core",
- "base64 0.22.1",
- "image",
- "ort",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokenizers",
- "ureq 2.12.1",
-]
-
-[[package]]
-name = "anima-tagger-cli"
-version = "0.2.1"
-dependencies = [
- "anima-tagger-booru",
- "anima-tagger-captioner",
- "anima-tagger-core",
- "anima-tagger-tagger",
- "anyhow",
- "chrono",
- "clap",
- "serde_json",
- "tokenizers",
-]
-
-[[package]]
-name = "anima-tagger-core"
-version = "0.2.1"
-dependencies = [
- "chrono",
- "hf-hub",
- "rand 0.8.6",
- "ron",
- "serde",
- "thiserror 2.0.18",
- "toml",
- "walkdir",
-]
-
-[[package]]
-name = "anima-tagger-gui"
-version = "0.2.1"
-dependencies = [
- "anima-tagger-booru",
- "anima-tagger-captioner",
- "anima-tagger-core",
- "anima-tagger-tagger",
- "anyhow",
- "chrono",
- "eframe",
- "egui",
- "egui_extras",
- "image",
- "rfd",
- "serde",
- "sys-locale",
- "toml",
-]
-
-[[package]]
-name = "anima-tagger-tagger"
-version = "0.2.1"
-dependencies = [
- "anima-tagger-core",
- "csv",
- "image",
- "ndarray 0.16.1",
- "ort",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1520,6 +1431,95 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "fwaun-tagger-booru"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "fwaun-tagger-core",
+ "md5",
+ "serde",
+ "thiserror 2.0.18",
+ "ureq 2.12.1",
+]
+
+[[package]]
+name = "fwaun-tagger-captioner"
+version = "0.2.1"
+dependencies = [
+ "base64 0.22.1",
+ "fwaun-tagger-core",
+ "image",
+ "ort",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokenizers",
+ "ureq 2.12.1",
+]
+
+[[package]]
+name = "fwaun-tagger-cli"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "fwaun-tagger-booru",
+ "fwaun-tagger-captioner",
+ "fwaun-tagger-core",
+ "fwaun-tagger-tagger",
+ "serde_json",
+ "tokenizers",
+]
+
+[[package]]
+name = "fwaun-tagger-core"
+version = "0.2.1"
+dependencies = [
+ "chrono",
+ "hf-hub",
+ "rand 0.8.6",
+ "ron",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+ "walkdir",
+]
+
+[[package]]
+name = "fwaun-tagger-gui"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "eframe",
+ "egui",
+ "egui_extras",
+ "fwaun-tagger-booru",
+ "fwaun-tagger-captioner",
+ "fwaun-tagger-core",
+ "fwaun-tagger-tagger",
+ "image",
+ "rfd",
+ "serde",
+ "sys-locale",
+ "toml",
+]
+
+[[package]]
+name = "fwaun-tagger-tagger"
+version = "0.2.1"
+dependencies = [
+ "csv",
+ "fwaun-tagger-core",
+ "image",
+ "ndarray 0.16.1",
+ "ort",
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

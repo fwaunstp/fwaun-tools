@@ -1,6 +1,6 @@
 [package]
-name = "anima-tagger-captioner"
-description = "Qwen3-VL ONNX image captioner used by anima-tagger, with an OpenAI-compatible HTTP backend as an alternative."
+name = "fwaun-tagger-captioner"
+description = "Qwen3-VL ONNX image captioner used by fwaun-tagger, with an OpenAI-compatible HTTP backend as an alternative."
 categories = ["computer-vision"]
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-anima-tagger-core = { workspace = true }
+fwaun-tagger-core = { workspace = true }
 ort = { workspace = true }
 image = { workspace = true }
 tokenizers = { workspace = true }

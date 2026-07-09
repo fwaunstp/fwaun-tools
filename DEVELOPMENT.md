@@ -1,4 +1,4 @@
-# anima-tagger
+# fwaun-tagger
 
 A Rust workspace for managing tags and captions on a local Stable Diffusion
 LoRA dataset. Combines three sources of tags — manual edits, an automatic
@@ -42,8 +42,8 @@ crates/
   tagger/      ── WD14-family ONNX tagger via ort 2.0.0-rc.12.
   captioner/   ── Florence-2 ONNX captioner (4-session pipeline).
   booru/       ── Danbooru md5-lookup tag fetcher (ureq + md5).
-  cli/         ── `anima-tagger` binary. Thin layer over the above.
-  gui/         ── `anima-tagger-gui` binary (egui / eframe).
+  cli/         ── `fwaun-tagger` binary. Thin layer over the above.
+  gui/         ── `fwaun-tagger-gui` binary (egui / eframe).
 ```
 
 Each ML/network surface is its own crate so the GUI doesn't pull ort just to
@@ -117,7 +117,7 @@ scene context). On export the merged caption is `"{manual} {auto}"`.
 
 ---
 
-## Configuration: `anima-tagger.toml`
+## Configuration: `fwaun-tagger.toml`
 
 Lives in the dataset directory. **Entirely optional** — with no config file at
 all, the CLI/GUI fall back to built-in tagger and captioner profiles
@@ -181,12 +181,12 @@ prefixes) are encoded as **export profiles**, not hardcoded.
 ## CLI commands
 
 ```
-anima-tagger tag <dir> [--model NAME] [--threshold X] [--force]
-anima-tagger caption <dir> [--model NAME] [--force]
-anima-tagger booru <dir> [--source danbooru] [--force]
-anima-tagger export <dir> [--profile NAME] [--threshold X]
-anima-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-anima-tagger status <dir>
+fwaun-tagger tag <dir> [--model NAME] [--threshold X] [--force]
+fwaun-tagger caption <dir> [--model NAME] [--force]
+fwaun-tagger booru <dir> [--source danbooru] [--force]
+fwaun-tagger export <dir> [--profile NAME] [--threshold X]
+fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tagger status <dir>
 ```
 
 - `tag` / `caption` / `booru` — populate sidecars. Skip already-populated
@@ -203,7 +203,7 @@ anima-tagger status <dir>
 
 ## GUI
 
-`cargo run -p anima-tagger-gui --release`
+`cargo run -p fwaun-tagger-gui --release`
 
 Toolbar: open folder, filter dropdown, Select visible / Clear sel., Run
 tagger / Run captioner / Fetch booru. The model loads lazily on first run
@@ -405,20 +405,20 @@ non-shuffled metadata file diffs cleanly across runs.
 ## Testing
 
 ```bash
-cargo test -p anima-tagger-core    # 9 unit tests covering export logic
+cargo test -p fwaun-tagger-core    # 9 unit tests covering export logic
 cargo check --workspace            # everything compiles (~10s incremental)
-cargo build -p anima-tagger-cli    # binary builds (~40s first time, ort download)
-cargo build -p anima-tagger-gui    # GUI builds (egui + ort, ~1min first time)
+cargo build -p fwaun-tagger-cli    # binary builds (~40s first time, ort download)
+cargo build -p fwaun-tagger-gui    # GUI builds (egui + ort, ~1min first time)
 ```
 
 The captioner and tagger have no automated tests because they require model
-files. Manual testing is via `cargo run -p anima-tagger-cli -- caption <dir>`
+files. Manual testing is via `cargo run -p fwaun-tagger-cli -- caption <dir>`
 on a small sample and inspecting the resulting `.ron` sidecars.
 
 The annotated config example used by both `core` (snapshot test) and
 `gui` (Config… modal default text) lives at
-[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example).
-Re-exported as `anima_tagger_core::config::CONFIG_EXAMPLE`. Keep it
+[`crates/core/fwaun-tagger.toml.example`](crates/core/fwaun-tagger.toml.example).
+Re-exported as `fwaun_tagger_core::config::CONFIG_EXAMPLE`. Keep it
 inside the core crate dir — `include_str!` paths must stay within the
 package on crates.io.
 

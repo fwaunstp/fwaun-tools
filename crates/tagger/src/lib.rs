@@ -3,9 +3,9 @@
 
 use std::path::Path;
 
-use anima_tagger_core::config::TaggerProfile;
-use anima_tagger_core::hub;
-use anima_tagger_core::sidecar::AutoTag;
+use fwaun_tagger_core::config::TaggerProfile;
+use fwaun_tagger_core::hub;
+use fwaun_tagger_core::sidecar::AutoTag;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use image::{Rgb, RgbImage};

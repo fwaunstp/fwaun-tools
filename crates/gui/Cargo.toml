@@ -1,6 +1,6 @@
 [package]
-name = "anima-tagger-gui"
-description = "Desktop GUI for anima-tagger: curate Stable Diffusion LoRA datasets with an integrated tag/caption editor."
+name = "fwaun-tagger-gui"
+description = "Desktop GUI for fwaun-tagger: curate Stable Diffusion LoRA datasets with an integrated tag/caption editor."
 categories = ["gui"]
 version.workspace = true
 edition.workspace = true
@@ -13,14 +13,14 @@ readme.workspace = true
 keywords.workspace = true
 
 [[bin]]
-name = "anima-tagger-gui"
+name = "fwaun-tagger-gui"
 path = "src/main.rs"
 
 [dependencies]
-anima-tagger-core = { workspace = true }
-anima-tagger-tagger = { workspace = true }
-anima-tagger-captioner = { workspace = true }
-anima-tagger-booru = { workspace = true }
+fwaun-tagger-core = { workspace = true }
+fwaun-tagger-tagger = { workspace = true }
+fwaun-tagger-captioner = { workspace = true }
+fwaun-tagger-booru = { workspace = true }
 eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = { version = "0.32" }
 egui_extras = { version = "0.32", features = ["image"] }

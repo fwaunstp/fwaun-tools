@@ -1,4 +1,4 @@
-# anima-tagger
+# fwaun-tagger
 
 ローカルの Stable Diffusion LoRA データセット向け、タグ・キャプション編集ツールです。
 手動編集／WD14系の自動タガー／Qwen3-VL のキャプショナー／Danbooru API からのタグ取得を、
@@ -21,10 +21,10 @@
 - **整理用タグ（出力されないラベル）。** アンダースコア始まりの手動タグ
   (`_foo`) はデータに残りタググループ分類にも使われますが、書き出しには
   含まれません。「確認済みだがどれでもない」を「未確認」と区別できます。
-- **タググループ + カンバン表示。** `anima-tagger.toml` で排他的なタグの組
+- **タググループ + カンバン表示。** `fwaun-tagger.toml` で排他的なタグの組
   （例: 衣装の種類）を宣言すると、GUI ではタグごとの列にサムネイルが
   振り分けられ、ドラッグ&ドロップで切り替えられます。
-- **データセット単位の設定 (`anima-tagger.toml`)。** タガーモデル、
+- **データセット単位の設定 (`fwaun-tagger.toml`)。** タガーモデル、
   キャプショナー、エクスポートプロファイル、しきい値などをディレクトリごとに切り替え可能。
 - **2つの書き出しモード。** `export` は `<image>.txt` を画像ごとに出力
   （sd-scripts の DreamBooth / LoRA caption-file モード）。
@@ -37,22 +37,22 @@
 ### macOS (Apple Silicon) / Linux (x64 / arm64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh
 ```
 
 ### Windows (x64)
 
 ```powershell
-irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1 | iex
 ```
 
 どちらのスクリプトも、最新のGitHubリリースをダウンロードし、SHA256を検証したうえで、CLI と GUI のバイナリを並べて配置します:
 
 | プラットフォーム | CLI                                  | GUI                                          |
 | ---------------- | ------------------------------------ | -------------------------------------------- |
-| macOS            | `~/.local/bin/anima-tagger`          | `~/.local/bin/anima-tagger-gui`              |
-| Linux            | `~/.local/bin/anima-tagger`          | `~/.local/bin/anima-tagger-gui`              |
-| Windows          | `%USERPROFILE%\bin\anima-tagger.exe` | `%USERPROFILE%\bin\anima-tagger-gui.exe`     |
+| macOS            | `~/.local/bin/fwaun-tagger`          | `~/.local/bin/fwaun-tagger-gui`              |
+| Linux            | `~/.local/bin/fwaun-tagger`          | `~/.local/bin/fwaun-tagger-gui`              |
+| Windows          | `%USERPROFILE%\bin\fwaun-tagger.exe` | `%USERPROFILE%\bin\fwaun-tagger-gui.exe`     |
 
 特定のバージョンを指定したい場合は `--version v0.2.1` （PowerShellなら `-Version v0.2.1`）を付けてください。
 
@@ -65,7 +65,7 @@ Linux では標準的な X11 / Wayland ライブラリ
 macOS のバイナリは **公証 (notarize) されていません**。
 インストーラ側で `com.apple.quarantine` 属性は除去しますが、
 Finder からの起動を Gatekeeper がブロックする場合は、
-ターミナルから一度だけ `~/.local/bin/anima-tagger-gui` を実行してください。
+ターミナルから一度だけ `~/.local/bin/fwaun-tagger-gui` を実行してください。
 
 [egui]: https://github.com/emilk/egui
 
@@ -93,17 +93,17 @@ Linux では GUI のビルドに標準的な X11 / Wayland 開発ヘッダ
 が必要です。
 
 ```sh
-git clone https://github.com/fwaunstp/anima-tagger
-cd anima-tagger
-cargo build --release -p anima-tagger-cli
-cargo build --release -p anima-tagger-gui
+git clone https://github.com/fwaunstp/fwaun-tagger
+cd fwaun-tagger
+cargo build --release -p fwaun-tagger-cli
+cargo build --release -p fwaun-tagger-gui
 ```
 
 ## クイックスタート
 
-1. `anima-tagger-gui` を起動します（CLI を直接使うこともできます。下のCLIコマンド参照）。
+1. `fwaun-tagger-gui` を起動します（CLI を直接使うこともできます。下のCLIコマンド参照）。
 2. **フォルダを開く…** から画像のあるディレクトリを選びます。
-3. （任意）**設定…** で `anima-tagger.toml` を編集します。
+3. （任意）**設定…** で `fwaun-tagger.toml` を編集します。
    何も設定しなくても妥当なデフォルトで動作します。
 4. 画像を選択し、**タガーを実行** / **キャプショナーを実行** / **Booru取得**
    を押します。初回実行時に必要な ONNX モデルが
@@ -115,16 +115,16 @@ cargo build --release -p anima-tagger-gui
 6. ディスクに書き出します:
 
    ```sh
-   anima-tagger export <dir>          # 画像ごとに .txt を出力
-   anima-tagger metadata <dir>        # 1つの meta.json にまとめて出力
+   fwaun-tagger export <dir>          # 画像ごとに .txt を出力
+   fwaun-tagger metadata <dir>        # 1つの meta.json にまとめて出力
    ```
 
 ## 設定ファイルの概要
 
-`anima-tagger.toml` はデータセットのディレクトリに置きます。
+`fwaun-tagger.toml` はデータセットのディレクトリに置きます。
 書かなくても動きます（デフォルトが使われます）。
 注釈付きのフルスキーマは
-[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example) を参照してください。
+[`crates/core/fwaun-tagger.toml.example`](crates/core/fwaun-tagger.toml.example) を参照してください。
 主な項目は以下のとおりです。
 
 ```toml
@@ -151,14 +151,14 @@ prompt = "Describe this image in detail."
 ## CLI コマンド
 
 ```
-anima-tagger tag <dir>      [--model NAME] [--threshold X] [--force]
-anima-tagger caption <dir>  [--model NAME] [--force]
-anima-tagger booru <dir>    [--source danbooru] [--force]
-anima-tagger export <dir>   [--profile NAME] [--threshold X]
-anima-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-anima-tagger status <dir>
-anima-tagger tokens <dir>
-anima-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
+fwaun-tagger tag <dir>      [--model NAME] [--threshold X] [--force]
+fwaun-tagger caption <dir>  [--model NAME] [--force]
+fwaun-tagger booru <dir>    [--source danbooru] [--force]
+fwaun-tagger export <dir>   [--profile NAME] [--threshold X]
+fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tagger status <dir>
+fwaun-tagger tokens <dir>
+fwaun-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
 ## タググループ
@@ -206,7 +206,7 @@ tags = ["character_a", "character_b", "_no_character"]
 キャプションに漏れることなく「確認済み」として記録されます。
 
 ```sh
-anima-tagger validate-tag-group ./dataset --group official_costumes
+fwaun-tagger validate-tag-group ./dataset --group official_costumes
 ```
 
 ## ドキュメント
@@ -214,7 +214,7 @@ anima-tagger validate-tag-group ./dataset --group official_costumes
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** （英語のみ） — 内部アーキテクチャ、
   クレート構成、ONNX セッションの形状、ort バージョン関連の注意点など。
   コードに手を入れる前に一読することを推奨します。
-- **[crates/core/anima-tagger.toml.example](crates/core/anima-tagger.toml.example)** —
+- **[crates/core/fwaun-tagger.toml.example](crates/core/fwaun-tagger.toml.example)** —
   注釈付きの設定ファイル例。
 
 ## ライセンス

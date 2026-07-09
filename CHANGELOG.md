@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   give the latter its own Kanban column. The GUI colours such chips
   distinctly. (Suppression markers remain `-foo`.)
 - **Tag groups for mutually-exclusive tag classification.** Declare
-  named groups in `anima-tagger.toml` (e.g.
+  named groups in `fwaun-tagger.toml` (e.g.
   `[tag_group.official_costumes] tags = ["official_school_uniform",
   "official_lounge_wear"]`); each image is bucketed as one of the
   group's tags, "unset", or "violation" (multiple group tags coexist —
@@ -33,6 +33,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag, `-X` suppression on previously-present sibling tags). The
   violation column is read-only — to create a multi-tag image
   intentionally, use the detail panel.
+
+### Changed
+
+- **Project renamed `anima-tagger` → `fwaun-tagger`.** All crates are now
+  `fwaun-tagger-*`, the binaries are `fwaun-tagger` / `fwaun-tagger-gui`,
+  and the per-directory config file is `fwaun-tagger.toml` (user config:
+  `fwaun-tagger/config.toml`). The old `anima-tagger.toml` /
+  `anima-tagger/config.toml` are still read as a fallback and print a
+  deprecation warning; rename yours to the new name, as the fallback will
+  be removed in a future release. The `anima` export-profile name and
+  ANIMA-model conventions are unrelated to the project name and unchanged.
 
 ## [0.2.1] — 2026-05-07
 
@@ -200,7 +211,7 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.1
-[0.2.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.0
-[0.1.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.1.0
+[Unreleased]: https://github.com/fwaunstp/fwaun-tagger/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.1
+[0.2.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.0
+[0.1.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.1.0

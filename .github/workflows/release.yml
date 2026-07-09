@@ -71,8 +71,8 @@ jobs:
 
       - name: build CLI + GUI
         run: |
-          cargo build --release -p anima-tagger-cli
-          cargo build --release -p anima-tagger-gui
+          cargo build --release -p fwaun-tagger-cli
+          cargo build --release -p fwaun-tagger-gui
 
       - name: stage artifacts
         shell: bash
@@ -91,15 +91,15 @@ jobs:
 
           # Per-platform binary suffix
           if [ "$OS" = "windows" ]; then
-            CLI_BIN="target/release/anima-tagger.exe"
-            GUI_BIN="target/release/anima-tagger-gui.exe"
+            CLI_BIN="target/release/fwaun-tagger.exe"
+            GUI_BIN="target/release/fwaun-tagger-gui.exe"
           else
-            CLI_BIN="target/release/anima-tagger"
-            GUI_BIN="target/release/anima-tagger-gui"
+            CLI_BIN="target/release/fwaun-tagger"
+            GUI_BIN="target/release/fwaun-tagger-gui"
           fi
 
           # CLI archive (always single-binary).
-          CLI_NAME="anima-tagger-cli-${VERSION}-${TARGET_NAME}"
+          CLI_NAME="fwaun-tagger-cli-${VERSION}-${TARGET_NAME}"
           if [ "$ARCHIVE_EXT" = "zip" ]; then
             ( cd "$(dirname "$CLI_BIN")" && 7z a "${GITHUB_WORKSPACE}/staging/${CLI_NAME}.zip" "$(basename "$CLI_BIN")" )
           else
@@ -108,16 +108,16 @@ jobs:
 
           # GUI artifact (same shape on every OS — a single archive
           # holding both binaries plus the LICENSE files).
-          PKG_DIR="dist/anima-tagger-${VERSION}-${TARGET_NAME}"
+          PKG_DIR="dist/fwaun-tagger-${VERSION}-${TARGET_NAME}"
           rm -rf "$PKG_DIR"
           mkdir -p "$PKG_DIR"
           cp "$GUI_BIN" "$PKG_DIR/$(basename "$GUI_BIN")"
           cp "$CLI_BIN" "$PKG_DIR/$(basename "$CLI_BIN")"
           cp LICENSE-MIT LICENSE-APACHE "$PKG_DIR/"
           if [ "$ARCHIVE_EXT" = "zip" ]; then
-            ( cd dist && 7z a "${GITHUB_WORKSPACE}/staging/anima-tagger-${VERSION}-${TARGET_NAME}.zip" "$(basename "$PKG_DIR")" )
+            ( cd dist && 7z a "${GITHUB_WORKSPACE}/staging/fwaun-tagger-${VERSION}-${TARGET_NAME}.zip" "$(basename "$PKG_DIR")" )
           else
-            ( cd dist && tar czf "${GITHUB_WORKSPACE}/staging/anima-tagger-${VERSION}-${TARGET_NAME}.tar.gz" "$(basename "$PKG_DIR")" )
+            ( cd dist && tar czf "${GITHUB_WORKSPACE}/staging/fwaun-tagger-${VERSION}-${TARGET_NAME}.tar.gz" "$(basename "$PKG_DIR")" )
           fi
 
           ls -la staging

@@ -1,6 +1,6 @@
 //! GUI internationalization. The app supports English and Japanese; default
 //! is the host locale. The user's choice persists in
-//! `$XDG_CONFIG_HOME/anima-tagger/gui-prefs.toml` (or the `$HOME/.config`
+//! `$XDG_CONFIG_HOME/fwaun-tagger/gui-prefs.toml` (or the `$HOME/.config`
 //! fallback).
 
 use std::fs;
@@ -61,8 +61,8 @@ impl T {
     }
     pub fn config_button_title(self) -> &'static str {
         self.pair(
-            "Edit anima-tagger.toml for the current dataset folder",
-            "現在のデータセットフォルダの anima-tagger.toml を編集します",
+            "Edit fwaun-tagger.toml for the current dataset folder",
+            "現在のデータセットフォルダの fwaun-tagger.toml を編集します",
         )
     }
     pub fn no_folder(self) -> &'static str {
@@ -126,8 +126,8 @@ impl T {
     }
     pub fn kanban_no_groups_hint(self) -> &'static str {
         self.pair(
-            "Define [tag_group.<name>] in anima-tagger.toml to enable Kanban views.",
-            "カンバン表示を使うには anima-tagger.toml で [tag_group.<name>] を定義してください。",
+            "Define [tag_group.<name>] in fwaun-tagger.toml to enable Kanban views.",
+            "カンバン表示を使うには fwaun-tagger.toml で [tag_group.<name>] を定義してください。",
         )
     }
     pub fn kanban_unset_column(self) -> &'static str {
@@ -604,7 +604,7 @@ fn prefs_path() -> Option<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
         return Some(
             PathBuf::from(xdg)
-                .join("anima-tagger")
+                .join("fwaun-tagger")
                 .join("gui-prefs.toml"),
         );
     }
@@ -613,7 +613,7 @@ fn prefs_path() -> Option<PathBuf> {
         .map(|home| {
             PathBuf::from(home)
                 .join(".config")
-                .join("anima-tagger")
+                .join("fwaun-tagger")
                 .join("gui-prefs.toml")
         })
 }

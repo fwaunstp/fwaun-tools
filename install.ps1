@@ -1,10 +1,10 @@
-# anima-tagger installer for Windows (x64).
+# fwaun-tagger installer for Windows (x64).
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1 | iex
 #
 # With arguments:
-#   $script = irm https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.ps1
+#   $script = irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1
 #   & ([scriptblock]::Create($script)) -Version v0.2.1 -CliOnly
 #
 # Parameters:
@@ -24,14 +24,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "fwaunstp/anima-tagger"
+$Repo = "fwaunstp/fwaun-tagger"
 
 function Info($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Fail($msg) { Write-Error $msg; exit 1 }
 
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($arch -ne "AMD64") {
-    Fail "Windows on $arch is not supported by prebuilt binaries. Build from source: cargo install --git https://github.com/$Repo anima-tagger-cli"
+    Fail "Windows on $arch is not supported by prebuilt binaries. Build from source: cargo install --git https://github.com/$Repo fwaun-tagger-cli"
 }
 $Target = "windows-x64"
 Info "platform: $Target"
@@ -51,7 +51,7 @@ $Ver = $Tag.TrimStart('v')
 Info "version: $Tag"
 
 $BaseUrl = "https://github.com/$Repo/releases/download/$Tag"
-$TmpDir  = Join-Path $env:TEMP "anima-tagger-install-$([guid]::NewGuid())"
+$TmpDir  = Join-Path $env:TEMP "fwaun-tagger-install-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Force -Path $TmpDir | Out-Null
 try {
 
@@ -92,23 +92,23 @@ New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
 
 # CLI install — single-binary zip.
 if (-not $GuiOnly) {
-    $cliName = "anima-tagger-cli-$Ver-$Target.zip"
+    $cliName = "fwaun-tagger-cli-$Ver-$Target.zip"
     $cliZip  = Download-And-Verify $cliName
     Expand-Archive -Force -Path $cliZip -DestinationPath $Prefix
-    Info "installed CLI: $Prefix\anima-tagger.exe"
+    Info "installed CLI: $Prefix\fwaun-tagger.exe"
 }
 
 # GUI install — zip with both binaries inside a folder.
 if (-not $CliOnly) {
-    $guiName = "anima-tagger-$Ver-$Target.zip"
+    $guiName = "fwaun-tagger-$Ver-$Target.zip"
     $guiZip  = Download-And-Verify $guiName
     $extract = Join-Path $TmpDir "extract"
     New-Item -ItemType Directory -Force -Path $extract | Out-Null
     Expand-Archive -Force -Path $guiZip -DestinationPath $extract
     $inner = Get-ChildItem -Directory $extract | Select-Object -First 1
     if (-not $inner) { Fail "GUI archive layout unexpected" }
-    Copy-Item -Force -Path (Join-Path $inner.FullName "anima-tagger-gui.exe") -Destination $Prefix
-    Info "installed GUI: $Prefix\anima-tagger-gui.exe"
+    Copy-Item -Force -Path (Join-Path $inner.FullName "fwaun-tagger-gui.exe") -Destination $Prefix
+    Info "installed GUI: $Prefix\fwaun-tagger-gui.exe"
 }
 
 # Suggest PATH update

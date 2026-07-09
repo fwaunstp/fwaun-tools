@@ -5,19 +5,30 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const CONFIG_FILE: &str = "anima-tagger.toml";
+pub const CONFIG_FILE: &str = "fwaun-tagger.toml";
+
+/// Former per-directory config filename, from when the project was called
+/// `anima-tagger`. Still read (with a deprecation warning) when no
+/// [`CONFIG_FILE`] is present, so existing datasets keep working. Support
+/// for this fallback will be removed in a future release.
+pub const LEGACY_CONFIG_FILE: &str = "anima-tagger.toml";
 
 /// Annotated TOML template covering every supported profile field.
 /// Shipped alongside the crate so consumers (e.g. the GUI's "Config…"
 /// modal) can show users a starting point without having to maintain
 /// a separate copy.
-pub const CONFIG_EXAMPLE: &str = include_str!("../anima-tagger.toml.example");
+pub const CONFIG_EXAMPLE: &str = include_str!("../fwaun-tagger.toml.example");
 /// Per-user config file relative to `$XDG_CONFIG_HOME` (defaulting to
 /// `~/.config`). Provides shared defaults for `[captioner.*]` /
 /// `[tagger.*]` / `[export.*]` profiles so each dataset directory
-/// doesn't need its own copy. Per-directory `anima-tagger.toml` still
+/// doesn't need its own copy. Per-directory `fwaun-tagger.toml` still
 /// wins on key collision.
-pub const USER_CONFIG_RELATIVE: &str = "anima-tagger/config.toml";
+pub const USER_CONFIG_RELATIVE: &str = "fwaun-tagger/config.toml";
+
+/// Former per-user config path, from the `anima-tagger` days. Read (with a
+/// deprecation warning) only when [`USER_CONFIG_RELATIVE`] is absent.
+pub const LEGACY_USER_CONFIG_RELATIVE: &str = "anima-tagger/config.toml";
+
 pub const DEFAULT_PROFILE_NAME: &str = "anima";
 
 /// Built-in tagger profile name + repo, used when nothing is configured.
@@ -32,6 +43,19 @@ pub const BUILT_IN_CAPTIONER_REPO: &str = "onnx-community/Qwen3-4B-VL-ONNX";
 /// is the 4B vision-fp32 / text-int4 build, the only prebuilt 4B variant
 /// published.
 pub const BUILT_IN_CAPTIONER_SUBDIR: &str = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu";
+
+/// Warn (once per resolved file) that a config is being loaded from a
+/// deprecated `anima-tagger`-era location. The fallback keeps existing
+/// datasets working through the rename but will be removed later.
+fn warn_legacy_config(legacy: &Path) {
+    eprintln!(
+        "warning: loaded deprecated config `{}`. The project was renamed \
+         from `anima-tagger` to `fwaun-tagger`; rename this file to the \
+         `fwaun-tagger` equivalent — the legacy fallback will be removed in \
+         a future release.",
+        legacy.display(),
+    );
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectConfig {
@@ -438,16 +462,40 @@ pub enum ConfigError {
 }
 
 impl ProjectConfig {
-    /// Resolve `$XDG_CONFIG_HOME/anima-tagger/config.toml`, falling back to
-    /// `$HOME/.config/anima-tagger/config.toml`. Returns `None` if neither
-    /// env var is set (no usable home).
-    pub fn user_config_path() -> Option<PathBuf> {
+    /// Base config directory: `$XDG_CONFIG_HOME`, falling back to
+    /// `$HOME/.config`. `None` if neither env var is set (no usable home).
+    fn user_config_base() -> Option<PathBuf> {
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
-            return Some(PathBuf::from(xdg).join(USER_CONFIG_RELATIVE));
+            return Some(PathBuf::from(xdg));
         }
         std::env::var_os("HOME")
             .filter(|s| !s.is_empty())
-            .map(|home| PathBuf::from(home).join(".config").join(USER_CONFIG_RELATIVE))
+            .map(|home| PathBuf::from(home).join(".config"))
+    }
+
+    /// Resolve `$XDG_CONFIG_HOME/fwaun-tagger/config.toml`, falling back to
+    /// `$HOME/.config/fwaun-tagger/config.toml`. Returns `None` if neither
+    /// env var is set (no usable home). This always points at the current
+    /// location — it's the path the GUI writes and displays.
+    pub fn user_config_path() -> Option<PathBuf> {
+        Self::user_config_base().map(|base| base.join(USER_CONFIG_RELATIVE))
+    }
+
+    /// Path to load the user config from: the current location if it exists,
+    /// otherwise the legacy `anima-tagger/config.toml` (with a deprecation
+    /// warning), otherwise the current location (which simply won't exist).
+    fn user_config_load_path() -> Option<PathBuf> {
+        let base = Self::user_config_base()?;
+        let primary = base.join(USER_CONFIG_RELATIVE);
+        if primary.exists() {
+            return Some(primary);
+        }
+        let legacy = base.join(LEGACY_USER_CONFIG_RELATIVE);
+        if legacy.exists() {
+            warn_legacy_config(&legacy);
+            return Some(legacy);
+        }
+        Some(primary)
     }
 
     fn load_path(path: &Path) -> Result<Option<Self>, ConfigError> {
@@ -465,20 +513,31 @@ impl ProjectConfig {
         Ok(Some(cfg))
     }
 
-    /// Walk up from `start` looking for an `anima-tagger.toml`. Returns the
-    /// first matching file (analogous to how `git` finds `.git`). This lets
-    /// users keep a single config at the dataset root while operating on
-    /// subdirectories.
+    /// Walk up from `start` looking for a project config. Returns the first
+    /// matching file (analogous to how `git` finds `.git`). This lets users
+    /// keep a single config at the dataset root while operating on
+    /// subdirectories. At each level the current [`CONFIG_FILE`] name wins;
+    /// a legacy [`LEGACY_CONFIG_FILE`] is accepted as a fallback and triggers
+    /// a deprecation warning.
     pub fn find_project_config(start: &Path) -> Option<PathBuf> {
         let abs = start
             .canonicalize()
             .unwrap_or_else(|_| start.to_path_buf());
-        abs.ancestors()
-            .map(|d| d.join(CONFIG_FILE))
-            .find(|p| p.is_file())
+        for dir in abs.ancestors() {
+            let primary = dir.join(CONFIG_FILE);
+            if primary.is_file() {
+                return Some(primary);
+            }
+            let legacy = dir.join(LEGACY_CONFIG_FILE);
+            if legacy.is_file() {
+                warn_legacy_config(&legacy);
+                return Some(legacy);
+            }
+        }
+        None
     }
 
-    /// Load the project `anima-tagger.toml`, searching `dir` and its
+    /// Load the project `fwaun-tagger.toml`, searching `dir` and its
     /// ancestors. Ignores the user config. Returns `None` if no project
     /// config exists anywhere up the tree.
     pub fn load(dir: &Path) -> Result<Option<Self>, ConfigError> {
@@ -490,7 +549,7 @@ impl ProjectConfig {
 
     /// User-level config (no merge with project).
     pub fn load_user() -> Result<Option<Self>, ConfigError> {
-        match Self::user_config_path() {
+        match Self::user_config_load_path() {
             Some(p) => Self::load_path(&p),
             None => Ok(None),
         }
@@ -623,7 +682,7 @@ mod tests {
     impl TempDir {
         fn new(tag: &str) -> Self {
             let p = std::env::temp_dir().join(format!(
-                "anima-tagger-test-{tag}-{}-{}",
+                "fwaun-tagger-test-{tag}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -672,6 +731,39 @@ mod tests {
 
         let cfg = ProjectConfig::load(&leaf).unwrap().unwrap();
         assert_eq!(cfg.default_profile.as_deref(), Some("mid"));
+    }
+
+    #[test]
+    fn find_project_config_falls_back_to_legacy_name() {
+        let root = TempDir::new("legacy");
+        let nested = root.path().join("a").join("b");
+        fs::create_dir_all(&nested).unwrap();
+        let legacy_path = root.path().join(LEGACY_CONFIG_FILE);
+        fs::write(&legacy_path, "default_profile = \"legacy\"\n").unwrap();
+
+        let found = ProjectConfig::find_project_config(&nested)
+            .expect("should fall back to the legacy config name");
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            legacy_path.canonicalize().unwrap()
+        );
+
+        let cfg = ProjectConfig::load(&nested).unwrap().unwrap();
+        assert_eq!(cfg.default_profile.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn current_config_name_wins_over_legacy_in_same_dir() {
+        let root = TempDir::new("both-names");
+        fs::write(root.path().join(CONFIG_FILE), "default_profile = \"new\"\n").unwrap();
+        fs::write(
+            root.path().join(LEGACY_CONFIG_FILE),
+            "default_profile = \"old\"\n",
+        )
+        .unwrap();
+
+        let cfg = ProjectConfig::load(root.path()).unwrap().unwrap();
+        assert_eq!(cfg.default_profile.as_deref(), Some("new"));
     }
 
     #[test]
@@ -799,7 +891,7 @@ mod tests {
     }
 
     /// Guard: when a field is added to any of the profile structs, the
-    /// shipped example (`crates/core/anima-tagger.toml.example`) has to grow alongside
+    /// shipped example (`crates/core/fwaun-tagger.toml.example`) has to grow alongside
     /// it. The test serializes a fully-populated synthetic instance of each
     /// profile, then asserts that at least one profile of the matching kind
     /// in the example covers every produced key.
@@ -812,9 +904,9 @@ mod tests {
 
         let example_str = CONFIG_EXAMPLE;
         let cfg: ProjectConfig = toml::from_str(example_str)
-            .expect("anima-tagger.toml.example must parse as ProjectConfig");
+            .expect("fwaun-tagger.toml.example must parse as ProjectConfig");
         let raw: toml::Value = toml::from_str(example_str)
-            .expect("anima-tagger.toml.example must parse as toml::Value");
+            .expect("fwaun-tagger.toml.example must parse as toml::Value");
         let raw_table = raw.as_table().expect("example must be a top-level table");
 
         for k in [
@@ -941,7 +1033,7 @@ mod tests {
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
         {
             panic!(
-                "no [export.*] profile in crates/core/anima-tagger.toml.example covers every \
+                "no [export.*] profile in crates/core/fwaun-tagger.toml.example covers every \
                  ExportProfile field; closest match is missing {missing:?}"
             );
         }
@@ -949,7 +1041,7 @@ mod tests {
             missing_from_best_match(raw_table.get("tagger"), &expected_tagger, |_| true)
         {
             panic!(
-                "no [tagger.*] profile in crates/core/anima-tagger.toml.example covers every \
+                "no [tagger.*] profile in crates/core/fwaun-tagger.toml.example covers every \
                  TaggerProfile field; closest match is missing {missing:?}"
             );
         }
@@ -960,7 +1052,7 @@ mod tests {
         ) {
             panic!(
                 "no [captioner.*] profile with `kind = \"onnx\"` in \
-                 crates/core/anima-tagger.toml.example covers every OnnxCaptionerProfile field; \
+                 crates/core/fwaun-tagger.toml.example covers every OnnxCaptionerProfile field; \
                  closest match is missing {missing:?}"
             );
         }
@@ -971,7 +1063,7 @@ mod tests {
         ) {
             panic!(
                 "no [captioner.*] profile with `kind = \"openai\"` in \
-                 crates/core/anima-tagger.toml.example covers every OpenAiCaptionerProfile field; \
+                 crates/core/fwaun-tagger.toml.example covers every OpenAiCaptionerProfile field; \
                  closest match is missing {missing:?}"
             );
         }
@@ -979,7 +1071,7 @@ mod tests {
             missing_from_best_match(raw_table.get("tag_group"), &expected_tag_group, |_| true)
         {
             panic!(
-                "no [tag_group.*] entry in crates/core/anima-tagger.toml.example covers every \
+                "no [tag_group.*] entry in crates/core/fwaun-tagger.toml.example covers every \
                  TagGroup field; closest match is missing {missing:?}"
             );
         }

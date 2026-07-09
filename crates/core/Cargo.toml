@@ -1,6 +1,6 @@
 [package]
-name = "anima-tagger-core"
-description = "Data model, project config, and sidecar I/O for anima-tagger — a tag/caption editor for local Stable Diffusion LoRA datasets."
+name = "fwaun-tagger-core"
+description = "Data model, project config, and sidecar I/O for fwaun-tagger — a tag/caption editor for local Stable Diffusion LoRA datasets."
 categories = ["data-structures", "filesystem"]
 version.workspace = true
 edition.workspace = true

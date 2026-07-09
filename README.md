@@ -1,4 +1,4 @@
-# anima-tagger
+# fwaun-tagger
 
 Tag and caption editor for local Stable Diffusion LoRA datasets. Combines
 manual edits, an automatic WD14-family tagger, Qwen3-VL captioning, and
@@ -25,9 +25,9 @@ model and export profiles are not ANIMA-specific.
   tag-group sorting but never exported — so you can mark "reviewed,
   none of these" distinctly from "not yet reviewed".
 - **Tag groups + Kanban view.** Declare mutually-exclusive tag sets
-  (e.g. costume variants) in `anima-tagger.toml`; the GUI shows one
+  (e.g. costume variants) in `fwaun-tagger.toml`; the GUI shows one
   column per tag with drag-and-drop to switch.
-- **Per-folder configuration via `anima-tagger.toml`.** Pick the tagger
+- **Per-folder configuration via `fwaun-tagger.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
 - **Two output modes.** `export` writes one `<image>.txt` per image
   (sd-scripts DreamBooth/LoRA caption-file mode); `metadata` writes a
@@ -54,9 +54,9 @@ drop both binaries side-by-side:
 
 | Platform | CLI                                        | GUI                                                |
 | -------- | ------------------------------------------ | -------------------------------------------------- |
-| macOS    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui`                    |
-| Linux    | `~/.local/bin/anima-tagger`                | `~/.local/bin/anima-tagger-gui`                    |
-| Windows  | `%USERPROFILE%\bin\anima-tagger.exe`       | `%USERPROFILE%\bin\anima-tagger-gui.exe`           |
+| macOS    | `~/.local/bin/fwaun-tagger`                | `~/.local/bin/fwaun-tagger-gui`                    |
+| Linux    | `~/.local/bin/fwaun-tagger`                | `~/.local/bin/fwaun-tagger-gui`                    |
+| Windows  | `%USERPROFILE%\bin\fwaun-tagger.exe`       | `%USERPROFILE%\bin\fwaun-tagger-gui.exe`           |
 
 Pin a specific version with `--version v0.2.1` (or `-Version v0.2.1` on
 PowerShell).
@@ -69,7 +69,7 @@ distribution, but no extra runtime install is required.
 On macOS the binary is **not notarized**. The installer clears the
 `com.apple.quarantine` attribute, but if Gatekeeper still blocks it
 when launched from Finder, run it from Terminal once
-(`~/.local/bin/anima-tagger-gui`).
+(`~/.local/bin/fwaun-tagger-gui`).
 
 [egui]: https://github.com/emilk/egui
 
@@ -97,15 +97,15 @@ the GUI:
 ```sh
 git clone https://github.com/fwaunstp/fwaun-tagger
 cd fwaun-tagger
-cargo build --release -p anima-tagger-cli
-cargo build --release -p anima-tagger-gui
+cargo build --release -p fwaun-tagger-cli
+cargo build --release -p fwaun-tagger-gui
 ```
 
 ## Quick start
 
-1. Launch `anima-tagger-gui` (or run the CLI directly — see below).
+1. Launch `fwaun-tagger-gui` (or run the CLI directly — see below).
 2. **Open folder…** → pick a directory of images.
-3. (Optional) **Config…** → write `anima-tagger.toml` for the dataset.
+3. (Optional) **Config…** → write `fwaun-tagger.toml` for the dataset.
    Sensible defaults apply if you skip this.
 4. Select images, then click **Run tagger** / **Run captioner** /
    **Fetch booru**. The first run downloads the relevant ONNX models
@@ -117,15 +117,15 @@ cargo build --release -p anima-tagger-gui
 6. Export to disk:
 
    ```sh
-   anima-tagger export <dir>          # one .txt per image
-   anima-tagger metadata <dir>        # single meta.json
+   fwaun-tagger export <dir>          # one .txt per image
+   fwaun-tagger metadata <dir>        # single meta.json
    ```
 
 ## Configuration overview
 
-`anima-tagger.toml` lives in the dataset directory. Everything is
+`fwaun-tagger.toml` lives in the dataset directory. Everything is
 optional — without it, defaults kick in. See
-[`crates/core/anima-tagger.toml.example`](crates/core/anima-tagger.toml.example) for the
+[`crates/core/fwaun-tagger.toml.example`](crates/core/fwaun-tagger.toml.example) for the
 annotated full schema. Highlights:
 
 ```toml
@@ -152,14 +152,14 @@ prompt = "Describe this image in detail."
 ## CLI commands
 
 ```
-anima-tagger tag <dir>      [--model NAME] [--threshold X] [--force]
-anima-tagger caption <dir>  [--model NAME] [--force]
-anima-tagger booru <dir>    [--source danbooru] [--force]
-anima-tagger export <dir>   [--profile NAME] [--threshold X]
-anima-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-anima-tagger status <dir>
-anima-tagger tokens <dir>
-anima-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
+fwaun-tagger tag <dir>      [--model NAME] [--threshold X] [--force]
+fwaun-tagger caption <dir>  [--model NAME] [--force]
+fwaun-tagger booru <dir>    [--source danbooru] [--force]
+fwaun-tagger export <dir>   [--profile NAME] [--threshold X]
+fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tagger status <dir>
+fwaun-tagger tokens <dir>
+fwaun-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
 ## Tag groups
@@ -208,7 +208,7 @@ Images you drag into `_no_character` are marked reviewed without the
 underscore tag ever leaking into the training caption.
 
 ```sh
-anima-tagger validate-tag-group ./dataset --group official_costumes
+fwaun-tagger validate-tag-group ./dataset --group official_costumes
 ```
 
 ## Documentation
@@ -216,7 +216,7 @@ anima-tagger validate-tag-group ./dataset --group official_costumes
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — architecture, crate layout,
   ONNX session shapes, ort version notes. Read this before
   contributing.
-- **[crates/core/anima-tagger.toml.example](crates/core/anima-tagger.toml.example)** —
+- **[crates/core/fwaun-tagger.toml.example](crates/core/fwaun-tagger.toml.example)** —
   annotated configuration example.
 
 ## License

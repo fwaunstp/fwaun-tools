@@ -8,8 +8,8 @@ mod openai;
 
 use std::path::Path;
 
-use anima_tagger_core::config::CaptionerProfile;
-use anima_tagger_core::hub;
+use fwaun_tagger_core::config::CaptionerProfile;
+use fwaun_tagger_core::hub;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

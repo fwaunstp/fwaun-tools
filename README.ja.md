@@ -108,6 +108,8 @@ cargo build --release -p anima-tagger-gui
 4. 画像を選択し、**タガーを実行** / **キャプショナーを実行** / **Booru取得**
    を押します。初回実行時に必要な ONNX モデルが
    HuggingFace のキャッシュ (`~/.cache/huggingface/hub`) にダウンロードされます。
+   キャッシュ場所は `HF_HOME` で変更できます。`huggingface.co` に直接アクセスできない
+   場合は `HF_ENDPOINT`（例: `https://hf-mirror.com`）でミラーを指定できます。
 5. キュレーション作業: 手動タグの追加、不要な自動/Booru タグを `×` で非表示化（取り消し線で表示）、
    キャプションの編集など。
 6. ディスクに書き出します:

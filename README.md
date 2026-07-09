@@ -109,7 +109,9 @@ cargo build --release -p anima-tagger-gui
    Sensible defaults apply if you skip this.
 4. Select images, then click **Run tagger** / **Run captioner** /
    **Fetch booru**. The first run downloads the relevant ONNX models
-   into the HuggingFace cache (`~/.cache/huggingface/hub`).
+   into the HuggingFace cache (`~/.cache/huggingface/hub`). Set `HF_HOME`
+   to relocate the cache, or `HF_ENDPOINT` (e.g.
+   `https://hf-mirror.com`) if you cannot reach `huggingface.co` directly.
 5. Curate: add manual tags, suppress unwanted auto/booru tags
    (`×` strikes them through), edit captions.
 6. Export to disk:

@@ -127,6 +127,24 @@ enum Command {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Move images (and their `.ron` sidecars) carrying given tag(s) into
+    /// another directory. Matching uses the effective tag set
+    /// (manual ∪ auto ∪ booru minus `-` suppressions), same as
+    /// `validate-tag-group`. Sub-paths relative to `dir` are preserved
+    /// under `dest`. The GUI has no folder concept, so this is CLI-only.
+    Mv {
+        /// Source directory to scan (recursively).
+        dir: PathBuf,
+        /// Destination directory. Created if missing.
+        dest: PathBuf,
+        /// Tag(s) to match, comma-separated or repeated. An image must
+        /// carry *all* of them (AND). Case-insensitive.
+        #[arg(long, value_delimiter = ',', required = true)]
+        tags: Vec<String>,
+        /// List what would move without touching the filesystem.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
     /// Classify images against a `[tag_group.<name>]` from
@@ -192,6 +210,12 @@ fn main() -> Result<()> {
             format,
             output,
         } => cmd_metadata(dir, profile, threshold, format, output),
+        Command::Mv {
+            dir,
+            dest,
+            tags,
+            dry_run,
+        } => cmd_mv(dir, dest, tags, dry_run),
         Command::Status { dir } => cmd_status(dir),
         Command::ValidateTagGroup {
             dir,
@@ -547,6 +571,116 @@ fn metadata_image_key(image: &std::path::Path) -> String {
         .canonicalize()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| image.display().to_string())
+}
+
+fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
+    use anima_tagger_core::sidecar::sidecar_path_for;
+    use anima_tagger_core::tag_group::effective_tag_set;
+
+    // Normalize query tags the same way the effective tag set is keyed:
+    // trimmed + lowercased. Empty entries (e.g. from a trailing comma) are
+    // dropped so they don't silently match everything.
+    let wanted: Vec<String> = tags
+        .iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if wanted.is_empty() {
+        anyhow::bail!("--tags must contain at least one non-empty tag");
+    }
+
+    // Collect all matches *before* moving anything. `dest` is allowed to
+    // live inside `dir` (e.g. splitting `src/` into `src/<style>/`); moving
+    // during the walk would let WalkDir descend into a freshly-created
+    // destination subdir and re-encounter already-moved files.
+    let mut matches: Vec<PathBuf> = Vec::new();
+    for image in iter_images(&dir) {
+        // No sidecar → no tags → can't match, so load_or_default is fine
+        // (an empty effective set never contains a wanted tag).
+        let sc = Sidecar::load_or_default(&image)?;
+        let eff = effective_tag_set(&sc);
+        if wanted.iter().all(|t| eff.contains(t)) {
+            matches.push(image);
+        }
+    }
+    let matched = matches.len();
+
+    let mut moved = 0usize;
+    let mut skipped_exists = 0usize;
+    for image in matches {
+        // Preserve the sub-path relative to `dir` so recursive sources
+        // don't collide when flattened into `dest`.
+        let rel = image.strip_prefix(&dir).unwrap_or(&image);
+        let target_image = dest.join(rel);
+        let target_dir = target_image
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dest.clone());
+
+        let sidecar = sidecar_path_for(&image);
+        let has_sidecar = sidecar.exists();
+        let target_sidecar = sidecar_path_for(&target_image);
+
+        // Never overwrite an existing file at the destination; report and
+        // skip the whole pair so image and sidecar stay together.
+        if target_image.exists() || (has_sidecar && target_sidecar.exists()) {
+            eprintln!("skip (exists at dest): {}", rel.display());
+            skipped_exists += 1;
+            continue;
+        }
+
+        if dry_run {
+            println!(
+                "would move {}{}",
+                rel.display(),
+                if has_sidecar { " (+ sidecar)" } else { "" }
+            );
+            continue;
+        }
+
+        std::fs::create_dir_all(&target_dir)
+            .with_context(|| format!("creating {}", target_dir.display()))?;
+        move_file(&image, &target_image)?;
+        if has_sidecar {
+            move_file(&sidecar, &target_sidecar)?;
+        }
+        moved += 1;
+        println!(
+            "moved {} → {}",
+            rel.display(),
+            target_image.display()
+        );
+    }
+
+    if dry_run {
+        println!("dry run: {matched} would move (run without --dry-run to apply)");
+    } else {
+        println!("done: {moved} moved, {skipped_exists} skipped (already at dest)");
+    }
+    Ok(())
+}
+
+/// Move a file, falling back to copy+remove when `rename` fails because
+/// source and destination are on different filesystems (`EXDEV`).
+fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(libc_exdev()) => {
+            std::fs::copy(from, to)
+                .with_context(|| format!("copying {} → {}", from.display(), to.display()))?;
+            std::fs::remove_file(from)
+                .with_context(|| format!("removing {} after copy", from.display()))?;
+            Ok(())
+        }
+        Err(e) => {
+            Err(e).with_context(|| format!("moving {} → {}", from.display(), to.display()))
+        }
+    }
+}
+
+/// `EXDEV` errno ("cross-device link"). 18 on Linux and macOS/BSD alike.
+fn libc_exdev() -> i32 {
+    18
 }
 
 fn cmd_status(dir: PathBuf) -> Result<()> {

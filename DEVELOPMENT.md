@@ -163,6 +163,14 @@ Models are fetched via [`hf-hub`][hf-hub] into the same cache directory the
 Python `huggingface_hub` / sd-scripts / diffusers use, so any models already
 downloaded by other tools are reused for free.
 
+The standard HuggingFace environment variables are honored:
+
+- `HF_HOME` — override the cache location (defaults to `~/.cache/huggingface`;
+  models land in `$HF_HOME/hub`).
+- `HF_ENDPOINT` — override the base URL. Users who cannot reach
+  `huggingface.co` directly can point at a mirror, e.g.
+  `export HF_ENDPOINT=https://hf-mirror.com`.
+
 Key idea: model-specific quirks (ANIMA's `@artist`, alternate trainers'
 prefixes) are encoded as **export profiles**, not hardcoded.
 

@@ -5,6 +5,11 @@
 //! Cache location follows hf-hub's defaults (`$HF_HOME/hub` or
 //! `~/.cache/huggingface/hub`), shared with `huggingface_hub` / sd-scripts /
 //! diffusers. Already-downloaded models are reused for free.
+//!
+//! We build the API via [`ApiBuilder::from_env`] so the standard HuggingFace
+//! environment variables are honored: `HF_HOME` (cache location) and
+//! `HF_ENDPOINT` (base URL, e.g. `https://hf-mirror.com` for users who cannot
+//! reach `huggingface.co` directly).
 
 use std::path::PathBuf;
 
@@ -31,7 +36,7 @@ pub fn fetch_files(
     revision: Option<&str>,
     files: &[&str],
 ) -> Result<Vec<PathBuf>, HubError> {
-    let api = ApiBuilder::new().with_progress(true).build()?;
+    let api = ApiBuilder::from_env().with_progress(true).build()?;
     let repo_handle = match revision {
         Some(rev) => api.repo(Repo::with_revision(
             repo.to_string(),

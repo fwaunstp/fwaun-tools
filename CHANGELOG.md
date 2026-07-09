@@ -200,7 +200,7 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/anima-tagger/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.1
-[0.2.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.2.0
-[0.1.0]: https://github.com/fwaunstp/anima-tagger/releases/tag/v0.1.0
+[Unreleased]: https://github.com/fwaunstp/fwaun-tagger/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.1
+[0.2.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.0
+[0.1.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.1.0

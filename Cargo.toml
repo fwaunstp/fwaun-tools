@@ -8,8 +8,8 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["fwaunstp <fwaunstp@proton.me>"]
-repository = "https://github.com/fwaunstp/anima-tagger"
-homepage = "https://github.com/fwaunstp/anima-tagger"
+repository = "https://github.com/fwaunstp/fwaun-tagger"
+homepage = "https://github.com/fwaunstp/fwaun-tagger"
 readme = "README.md"
 keywords = ["stable-diffusion", "lora", "tagging", "captioning", "dataset"]
 

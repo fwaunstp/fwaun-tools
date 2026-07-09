@@ -2,9 +2,9 @@
 # anima-tagger installer for macOS and Linux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh -s -- --version v0.2.1
-#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/anima-tagger/main/install.sh | sh -s -- --cli-only
+#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh -s -- --version v0.2.1
+#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh -s -- --cli-only
 #
 # Flags:
 #   --version <tag>   release tag to install (default: latest)
@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-REPO="fwaunstp/anima-tagger"
+REPO="fwaunstp/fwaun-tagger"
 VERSION="latest"
 PREFIX="${HOME}/.local"
 INSTALL_CLI=1

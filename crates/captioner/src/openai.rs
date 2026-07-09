@@ -11,7 +11,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
-use anima_tagger_core::config::OpenAiCaptionerProfile;
+use fwaun_tagger_core::config::OpenAiCaptionerProfile;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 

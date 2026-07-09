@@ -1,4 +1,4 @@
-//! Form-based editor for `anima-tagger.toml`.
+//! Form-based editor for `fwaun-tagger.toml`.
 //!
 //! Mirrors `ProjectConfig` as a `ConfigDraft` so the modal can mutate
 //! it in-place across frames. Maps become ordered `Vec<(String, T)>`
@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anima_tagger_core::config::{
+use fwaun_tagger_core::config::{
     BUILT_IN_CAPTIONER_REPO, BUILT_IN_CAPTIONER_SUBDIR, BUILT_IN_TAGGER_REPO, CaptionerProfile,
     ExportProfile, OnnxCaptionerProfile, OpenAiCaptionerProfile, ProjectConfig, TagGroup,
     TaggerProfile,

@@ -9,15 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
-use anima_tagger_booru::{BooruClient, BooruError};
-use anima_tagger_captioner::Captioner;
-use anima_tagger_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
-use anima_tagger_core::sidecar::{
+use fwaun_tagger_booru::{BooruClient, BooruError};
+use fwaun_tagger_captioner::Captioner;
+use fwaun_tagger_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
+use fwaun_tagger_core::sidecar::{
     AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, is_organizational, sidecar_path_for,
 };
-use anima_tagger_core::tag_group::{self, Classification, DropTarget};
-use anima_tagger_core::walk::iter_images;
-use anima_tagger_tagger::Tagger;
+use fwaun_tagger_core::tag_group::{self, Classification, DropTarget};
+use fwaun_tagger_core::walk::iter_images;
+use fwaun_tagger_tagger::Tagger;
 use chrono::{DateTime, Utc};
 use eframe::egui;
 use egui::{ColorImage, Key, TextureHandle};
@@ -41,7 +41,7 @@ const THUMB_DRAW_PX: f32 = 160.0;
 
 fn main() -> eframe::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("anima-tagger")
+        .with_title("fwaun-tagger")
         .with_inner_size([1200.0, 800.0]);
     if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON_PNG) {
         viewport = viewport.with_icon(icon);
@@ -51,7 +51,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "anima-tagger",
+        "fwaun-tagger",
         options,
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
@@ -200,7 +200,7 @@ struct AnimaTaggerApp {
     config_tab: ConfigTab,
     config_error: Option<String>,
     // Resolved target for the config modal: an ancestor's
-    // `anima-tagger.toml` if one exists, otherwise the path where a new
+    // `fwaun-tagger.toml` if one exists, otherwise the path where a new
     // file would be created in the current folder. `None` while the
     // modal is closed or no folder is loaded.
     config_path: Option<PathBuf>,
@@ -420,7 +420,7 @@ impl AnimaTaggerApp {
                 .on_hover_text(t.config_button_title());
             if cfg_btn.clicked() {
                 // Walk up from the loaded folder to find the nearest
-                // existing `anima-tagger.toml` so a config kept at the
+                // existing `fwaun-tagger.toml` so a config kept at the
                 // dataset root is edited in place rather than getting
                 // shadowed by a new sibling file in a subdirectory.
                 // Falls back to the current folder when nothing exists
@@ -1657,7 +1657,7 @@ impl AnimaTaggerApp {
             return;
         }
         // Skip images that already have auto-tags — matches the CLI's
-        // default behavior (`anima-tagger tag` without --force).
+        // default behavior (`fwaun-tagger tag` without --force).
         let already: std::collections::HashSet<PathBuf> = self
             .images
             .iter()
@@ -1766,7 +1766,7 @@ impl AnimaTaggerApp {
         }
         // Skip per (image, prompt-key) pair: only ship images that have
         // at least one prompt-key not already present in the sidecar.
-        // Mirrors the CLI's default behavior (`anima-tagger caption`
+        // Mirrors the CLI's default behavior (`fwaun-tagger caption`
         // without --force).
         let prompt_keys: Vec<String> =
             prompts.iter().map(|(n, _)| format!("{model_name}.{n}")).collect();
@@ -1883,7 +1883,7 @@ impl AnimaTaggerApp {
             return;
         }
         // Skip images that already have booru data — matches the CLI's
-        // default behavior (`anima-tagger booru` without --force).
+        // default behavior (`fwaun-tagger booru` without --force).
         let already: HashSet<PathBuf> = self
             .images
             .iter()
@@ -2042,7 +2042,7 @@ impl AnimaTaggerApp {
         } else {
             (p.current as f32) / (p.total as f32)
         };
-        egui::Window::new("anima-tagger-progress")
+        egui::Window::new("fwaun-tagger-progress")
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .collapsible(false)
             .resizable(false)

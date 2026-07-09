@@ -14,10 +14,10 @@ readme = "README.md"
 keywords = ["stable-diffusion", "lora", "tagging", "captioning", "dataset"]
 
 [workspace.dependencies]
-anima-tagger-core = { path = "crates/core", version = "0.2.1" }
-anima-tagger-tagger = { path = "crates/tagger", version = "0.2.1" }
-anima-tagger-captioner = { path = "crates/captioner", version = "0.2.1" }
-anima-tagger-booru = { path = "crates/booru", version = "0.2.1" }
+fwaun-tagger-core = { path = "crates/core", version = "0.2.1" }
+fwaun-tagger-tagger = { path = "crates/tagger", version = "0.2.1" }
+fwaun-tagger-captioner = { path = "crates/captioner", version = "0.2.1" }
+fwaun-tagger-booru = { path = "crates/booru", version = "0.2.1" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ureq = { version = "2", features = ["json"] }
 md5 = "0.7"

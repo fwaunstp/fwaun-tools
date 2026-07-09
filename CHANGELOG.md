@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-09
+
 ### Added
 
 - **Curation-only organizational tags.** A positive manual tag starting
@@ -33,6 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag, `-X` suppression on previously-present sibling tags). The
   violation column is read-only — to create a multi-tag image
   intentionally, use the detail panel.
+- **CLI: `mv` subcommand.** `fwaun-tagger mv <dir> <dest> --tags
+  <TAG>[,...]` moves every image whose effective tag set (the same set
+  `validate-tag-group` uses) contains all requested tags, together with
+  its `.ron` sidecar. Sub-paths are preserved under `dest`, existing
+  destination files are never overwritten, cross-filesystem moves fall
+  back to copy+remove, and `--dry-run` previews. Matches are collected
+  before any move, so a `dest` nested inside `dir` is safe.
+- **musubi-tuner caption output.** `metadata --format musubi` writes a
+  caption-only `meta.jsonl` (`{"image_path","caption"}` per line) for
+  kohya-ss/musubi-tuner's `image_jsonl_file`; `--format sd-scripts`
+  (default) still emits the tags+captions `meta.json`.
+- **Tag-driven caption prefixes and suffixes.**
+  `[export.<p>.caption_prefixes]` / `caption_suffixes` map a curation tag
+  to a literal string prepended / appended to the caption (case-
+  insensitive match, leading organizational `_` ignored, key order).
+  Lets tags like `realistic` or a Krea-2 trailing trigger word drive a
+  deterministic head/tail token instead of relying on the captioner's
+  prose. Empty maps are a no-op. Both surfaced in the GUI config editor.
+- **CLI: `--promote-to-manual=always`.** New mode that copies the
+  resolved prompt's caption into `manual_caption` unconditionally,
+  overwriting an already-promoted caption (previously only `never` /
+  `if-empty`).
+- **HuggingFace `HF_ENDPOINT` / `HF_HOME` support.** Model downloads now
+  honor these environment variables, so a mirror (e.g.
+  `HF_ENDPOINT=https://hf-mirror.com`) or a relocated cache works.
+  (#9)
 
 ### Changed
 
@@ -44,6 +72,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deprecation warning; rename yours to the new name, as the fallback will
   be removed in a future release. The `anima` export-profile name and
   ANIMA-model conventions are unrelated to the project name and unchanged.
+- **GUI: structured settings editor.** The Config… modal is now a tabbed
+  form (General / Tagger / Captioner / Prompts / Export / Tag groups)
+  instead of a raw TOML text area, with in-place key renaming and
+  save-time validation of duplicate / empty names.
+
+### Fixed
+
+- **OpenAI-compatible captioner retries transient failures.** HTTP 5xx
+  and transport errors are retried with exponential backoff (1/2/4s,
+  capped at 30s) up to a new `max_retries` profile field (default 3);
+  4xx client errors are not retried. Previously a single 500 aborted the
+  whole run.
 
 ## [0.2.1] — 2026-05-07
 
@@ -211,7 +251,8 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/fwaun-tagger/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/fwaunstp/fwaun-tagger/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fwaunstp/fwaun-tagger/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.1
 [0.2.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.2.0
 [0.1.0]: https://github.com/fwaunstp/fwaun-tagger/releases/tag/v0.1.0

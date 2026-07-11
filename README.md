@@ -157,10 +157,20 @@ fwaun-tagger caption <dir>  [--model NAME] [--force]
 fwaun-tagger booru <dir>    [--source danbooru] [--force]
 fwaun-tagger export <dir>   [--profile NAME] [--threshold X]
 fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tagger add-tag <dir>    --tags TAG[,...] [--dry-run]
+fwaun-tagger remove-tag <dir> --tags TAG[,...] [--dry-run]
+fwaun-tagger mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tagger status <dir>
 fwaun-tagger tokens <dir>
 fwaun-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
+
+`add-tag` / `remove-tag` bulk-edit the manual tag layer across a
+directory: `add-tag` appends each tag verbatim (`foo` positive, `-foo`
+suppression marker), `remove-tag` deletes matching manual entries
+case-insensitively (pass `--tags=-foo` to drop a suppression marker).
+Together they perform a directory-wide tag rename
+(`remove-tag <dir> --tags old` then `add-tag <dir> --tags new`).
 
 ## Tag groups
 

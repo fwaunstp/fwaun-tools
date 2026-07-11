@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CLI: `add-tag` / `remove-tag` subcommands.** Bulk-edit the manual tag
+  layer across a directory. `add-tag <dir> --tags <TAG>[,...]` appends each
+  tag verbatim to every image's sidecar (`foo` positive, `-foo`
+  suppression marker), creating a sidecar where none exists and skipping
+  entries already present. `remove-tag <dir> --tags <TAG>[,...]` deletes
+  matching manual entries case-insensitively — including `-foo` markers
+  when `-foo` is passed — without adding any suppression marker or touching
+  auto/booru tags. Together they cover a directory-wide tag rename
+  (`remove-tag old` + `add-tag new`). Both support `--dry-run`; pass a
+  leading-`-` tag after `=` (`--tags=-foo`) so it isn't parsed as a flag.
+
 ## [0.3.0] — 2026-07-09
 
 ### Added

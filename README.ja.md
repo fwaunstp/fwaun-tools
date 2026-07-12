@@ -156,10 +156,21 @@ fwaun-tagger caption <dir>  [--model NAME] [--force]
 fwaun-tagger booru <dir>    [--source danbooru] [--force]
 fwaun-tagger export <dir>   [--profile NAME] [--threshold X]
 fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tagger add-tag <dir>    --tags TAG[,...] [--dry-run]
+fwaun-tagger remove-tag <dir> --tags TAG[,...] [--dry-run]
+fwaun-tagger mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tagger status <dir>
 fwaun-tagger tokens <dir>
 fwaun-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
+
+`add-tag` / `remove-tag` はディレクトリ内のマニュアルタグをまとめて編集
+します。`add-tag` は各タグをそのまま追加し（`foo` はポジティブ、`-foo`
+はサプレッションマーカー）、`remove-tag` は一致するマニュアルタグを
+大文字小文字を無視して削除します（サプレッションマーカーを消すには
+`--tags=-foo` のように渡します）。この2つを組み合わせると、ディレクトリ
+全体でのタグのリネームになります（`remove-tag <dir> --tags 旧タグ` の
+あとに `add-tag <dir> --tags 新タグ`）。
 
 ## タググループ
 

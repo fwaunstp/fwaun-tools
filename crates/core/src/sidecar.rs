@@ -397,6 +397,26 @@ impl Sidecar {
         before != self.manual_tags.len()
     }
 
+    /// Remove every manual entry whose trimmed, lowercased form equals
+    /// `tag` (also trimmed+lowercased) — the case-insensitive counterpart
+    /// to [`remove_manual_tag`], used by the CLI `remove-tag` bulk pass.
+    ///
+    /// This deletes the existing manual slot only. It never adds a `-foo`
+    /// suppression marker (that's [`suppress`](Self::suppress)) and never
+    /// touches auto/booru tags. The leading `-` of a suppression marker is
+    /// part of the compared string, so removing `foo` never removes
+    /// `-foo`; to drop a suppression marker, pass `-foo` explicitly.
+    /// Returns the number of entries removed.
+    pub fn remove_manual_tag_ci(&mut self, tag: &str) -> usize {
+        let key = tag.trim().to_lowercase();
+        if key.is_empty() {
+            return 0;
+        }
+        let before = self.manual_tags.len();
+        self.manual_tags.retain(|m| m.trim().to_lowercase() != key);
+        before - self.manual_tags.len()
+    }
+
     /// Add `-tag` as a suppression marker if not already present.
     pub fn suppress(&mut self, tag: &str) -> bool {
         let trimmed = tag.trim();
@@ -548,6 +568,46 @@ mod tests {
         let sc: Sidecar = ron::de::from_str(ron_text).unwrap();
         assert!(sc.caption_hint.is_none());
         assert_eq!(sc.manual_tags, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn remove_manual_tag_ci_matches_case_insensitively() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("Short_Hair".into());
+        sc.manual_tags.push("keep".into());
+        assert_eq!(sc.remove_manual_tag_ci("short_hair"), 1);
+        assert_eq!(sc.manual_tags, vec!["keep".to_string()]);
+    }
+
+    #[test]
+    fn remove_manual_tag_ci_removes_suppression_marker_but_not_positive() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("-watermark".into());
+        sc.manual_tags.push("watermark".into());
+        // Removing the positive form leaves the `-` marker intact …
+        assert_eq!(sc.remove_manual_tag_ci("watermark"), 1);
+        assert_eq!(sc.manual_tags, vec!["-watermark".to_string()]);
+        // … and the marker is only removed when passed with its `-`.
+        assert_eq!(sc.remove_manual_tag_ci("-watermark"), 1);
+        assert!(sc.manual_tags.is_empty());
+    }
+
+    #[test]
+    fn remove_manual_tag_ci_removes_all_duplicates_and_counts_them() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("dup".into());
+        sc.manual_tags.push("DUP".into());
+        sc.manual_tags.push("other".into());
+        assert_eq!(sc.remove_manual_tag_ci("dup"), 2);
+        assert_eq!(sc.manual_tags, vec!["other".to_string()]);
+    }
+
+    #[test]
+    fn remove_manual_tag_ci_empty_key_is_noop() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("x".into());
+        assert_eq!(sc.remove_manual_tag_ci("   "), 0);
+        assert_eq!(sc.manual_tags, vec!["x".to_string()]);
     }
 
     #[test]

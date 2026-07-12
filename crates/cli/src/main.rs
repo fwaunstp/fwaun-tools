@@ -145,6 +145,41 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Append manual tag(s) to every image's sidecar in a directory.
+    /// Tags are added verbatim to the manual layer: `foo` is a positive
+    /// tag, `-foo` a suppression marker (removes a matching auto/booru tag
+    /// from the export). Entries already present are left as-is; a sidecar
+    /// is created for images that don't have one. Pass `-foo` after `=`
+    /// (`--tags=-foo`) so it isn't parsed as a flag. Paired with
+    /// `remove-tag`, this covers a directory-wide tag rename
+    /// (`remove-tag old` + `add-tag new`).
+    AddTag {
+        /// Directory to scan (recursively).
+        dir: PathBuf,
+        /// Tag(s) to add, comma-separated or repeated. Case preserved.
+        #[arg(long, value_delimiter = ',', required = true, allow_hyphen_values = true)]
+        tags: Vec<String>,
+        /// List what would change without writing any sidecar.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove manual tag(s) from every image's sidecar in a directory.
+    /// Deletes the existing manual entry only (case-insensitive match),
+    /// including `-foo` suppression markers when `-foo` is passed. It never
+    /// adds a suppression marker and never touches auto/booru tags — to
+    /// hide a model-produced tag, add `-foo` with `add-tag` instead. Images
+    /// without the tag are left unchanged; sidecars are never created.
+    RemoveTag {
+        /// Directory to scan (recursively).
+        dir: PathBuf,
+        /// Tag(s) to remove, comma-separated or repeated. Match the leading
+        /// `-` to drop a suppression marker (`--tags=-foo`).
+        #[arg(long, value_delimiter = ',', required = true, allow_hyphen_values = true)]
+        tags: Vec<String>,
+        /// List what would change without writing any sidecar.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
     /// Classify images against a `[tag_group.<name>]` from
@@ -216,6 +251,16 @@ fn main() -> Result<()> {
             tags,
             dry_run,
         } => cmd_mv(dir, dest, tags, dry_run),
+        Command::AddTag {
+            dir,
+            tags,
+            dry_run,
+        } => cmd_add_tag(dir, tags, dry_run),
+        Command::RemoveTag {
+            dir,
+            tags,
+            dry_run,
+        } => cmd_remove_tag(dir, tags, dry_run),
         Command::Status { dir } => cmd_status(dir),
         Command::ValidateTagGroup {
             dir,
@@ -681,6 +726,100 @@ fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
 /// `EXDEV` errno ("cross-device link"). 18 on Linux and macOS/BSD alike.
 fn libc_exdev() -> i32 {
     18
+}
+
+/// Normalize a `--tags` list: trim each entry and drop empties (e.g. from a
+/// trailing comma) so they don't silently no-op or match nothing. Order and
+/// case are preserved; a leading `-` (suppression marker) is kept intact.
+fn normalize_tag_args(tags: &[String]) -> Vec<String> {
+    tags.iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect()
+}
+
+fn cmd_add_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
+    let wanted = normalize_tag_args(&tags);
+    if wanted.is_empty() {
+        anyhow::bail!("--tags must contain at least one non-empty tag");
+    }
+
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    for image in iter_images(&dir) {
+        // load_or_default: a fresh sidecar is created for images that don't
+        // have one so a directory-wide tag lands on every image.
+        let mut sc = Sidecar::load_or_default(&image)?;
+        let added: Vec<&str> = wanted
+            .iter()
+            .filter(|t| sc.add_manual_tag((*t).clone()))
+            .map(|t| t.as_str())
+            .collect();
+        if added.is_empty() {
+            unchanged += 1;
+            continue;
+        }
+        if !dry_run {
+            sc.save(&image)?;
+        }
+        changed += 1;
+        println!(
+            "{} {} (+{})",
+            if dry_run { "would add" } else { "added" },
+            image.display(),
+            added.join(", "),
+        );
+    }
+
+    if dry_run {
+        println!("dry run: {changed} would change, {unchanged} already had the tag(s)");
+    } else {
+        println!("done: {changed} changed, {unchanged} unchanged");
+    }
+    Ok(())
+}
+
+fn cmd_remove_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
+    let wanted = normalize_tag_args(&tags);
+    if wanted.is_empty() {
+        anyhow::bail!("--tags must contain at least one non-empty tag");
+    }
+
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    for image in iter_images(&dir) {
+        // Only existing sidecars can carry a manual tag; skip the rest so
+        // remove-tag never creates a sidecar just to change nothing.
+        let Some(mut sc) = Sidecar::load(&image)? else {
+            continue;
+        };
+        let removed: Vec<&str> = wanted
+            .iter()
+            .filter(|t| sc.remove_manual_tag_ci(t) > 0)
+            .map(|t| t.as_str())
+            .collect();
+        if removed.is_empty() {
+            unchanged += 1;
+            continue;
+        }
+        if !dry_run {
+            sc.save(&image)?;
+        }
+        changed += 1;
+        println!(
+            "{} {} (-{})",
+            if dry_run { "would remove" } else { "removed" },
+            image.display(),
+            removed.join(", "),
+        );
+    }
+
+    if dry_run {
+        println!("dry run: {changed} would change, {unchanged} without the tag(s)");
+    } else {
+        println!("done: {changed} changed, {unchanged} unchanged");
+    }
+    Ok(())
 }
 
 fn cmd_status(dir: PathBuf) -> Result<()> {

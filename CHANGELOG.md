@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Installer auto-detects headless Linux.** `install.sh` now installs both
+  binaries by default but drops the GUI on a headless Linux host (no
+  `$DISPLAY` / `$WAYLAND_DISPLAY`), where it can't run anyway. Override with
+  `--both` / `--cli-only` / `--gui-only`. On an older-glibc system it warns and
+  points at the source-built light CLI (`cargo install --git … fwaun-tools-cli`).
+  Prebuilt releases remain full-only; the portable *light* build is
+  source-only (documented in the README).
 - **Renamed the project to `fwaun-tools`.** Binaries are now `fwaun-tools`
   (was `fwaun-tagger`) and `fwaun-tools-gui`; workspace crates are
   `fwaun-tools-*`. The project config file is now `fwaun-tools.toml`

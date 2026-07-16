@@ -37,13 +37,13 @@
 ### macOS (Apple Silicon) / Linux (x64 / arm64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh
 ```
 
 ### Windows (x64)
 
 ```powershell
-irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.ps1 | iex
 ```
 
 どちらのスクリプトも、最新のGitHubリリースをダウンロードし、SHA256を検証したうえで、CLI と GUI のバイナリを並べて配置します:
@@ -94,7 +94,7 @@ Linux では GUI のビルドに標準的な X11 / Wayland 開発ヘッダ
 が必要です。
 
 ```sh
-git clone https://github.com/fwaunstp/fwaun-tagger
+git clone https://github.com/fwaunstp/fwaun-tools
 cd fwaun-tagger
 # light ビルド（デフォルト）— ローカル ONNX 推論なし、どこでも動く
 cargo build --release -p fwaun-tagger-cli

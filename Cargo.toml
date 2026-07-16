@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui"]
+members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui", "crates/fwaun-model-tools"]
 
 [workspace.package]
 version = "0.3.0"

@@ -1,0 +1,13 @@
+[package]
+name = "fwaun-model-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+memmap2 = "0.9"
+serde_json = "1"
+half = "2"
+anyhow = "1"
+regex = "1"
+rayon = "1"

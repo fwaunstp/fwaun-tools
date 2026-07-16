@@ -32,8 +32,8 @@ use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use regex::Regex;
 
-use crate::merge::ModelArch;
-use crate::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
+use super::merge::ModelArch;
+use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// Parsed arguments for the `extract-lora` subcommand.
 pub struct ExtractArgs {

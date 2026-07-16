@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui", "crates/fwaun-model-tools"]
+members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui"]
 
 [workspace.package]
 version = "0.3.0"
@@ -14,10 +14,10 @@ readme = "README.md"
 keywords = ["stable-diffusion", "lora", "tagging", "captioning", "dataset"]
 
 [workspace.dependencies]
-fwaun-tagger-core = { path = "crates/core", version = "0.3.0" }
-fwaun-tagger-tagger = { path = "crates/tagger", version = "0.3.0" }
-fwaun-tagger-captioner = { path = "crates/captioner", version = "0.3.0" }
-fwaun-tagger-booru = { path = "crates/booru", version = "0.3.0" }
+fwaun-tools-core = { path = "crates/core", version = "0.3.0" }
+fwaun-tools-tagger = { path = "crates/tagger", version = "0.3.0" }
+fwaun-tools-captioner = { path = "crates/captioner", version = "0.3.0" }
+fwaun-tools-booru = { path = "crates/booru", version = "0.3.0" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ureq = { version = "2", features = ["json"] }
 md5 = "0.7"
@@ -37,6 +37,11 @@ csv = "1.3"
 ndarray = "0.16"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
+# Checkpoint (safetensors) tooling — used by fwaun-tools-core's `model` feature.
+memmap2 = "0.9"
+half = "2"
+rayon = "1"
+regex = "1"
 
 [profile.release]
 lto = "thin"

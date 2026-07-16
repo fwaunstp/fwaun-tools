@@ -17,7 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
-use crate::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
+use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// Which key-prefix conventions to normalize away when matching tensors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

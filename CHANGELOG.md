@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Renamed the project to `fwaun-tools`.** Binaries are now `fwaun-tools`
+  (was `fwaun-tagger`) and `fwaun-tools-gui`; workspace crates are
+  `fwaun-tools-*`. The project config file is now `fwaun-tools.toml`
+  (user-level `~/.config/fwaun-tools/config.toml`). The previous
+  `fwaun-tagger.toml` / `fwaun-tagger/config.toml` names — and the older
+  `anima-tagger` ones — are still read as a deprecated fallback with a
+  warning; rename to the new name to silence it.
+- **CLI subcommands are grouped under `dataset` and `model`.** Existing
+  dataset verbs move from `fwaun-tagger <verb>` to
+  `fwaun-tools dataset <verb>` (e.g. `fwaun-tools dataset tag <dir>`,
+  `fwaun-tools dataset export <dir>`).
+
 ### Added
 
+- **`fwaun-tools model` — diffusion-checkpoint tools.** `merge-diff`
+  (task-vector merge), `extract-lora` (SVD LoRA extraction), and `quant-int8`
+  (INT8 + ConvRot quantization) over safetensors files, merged in from the
+  standalone `fwaun-model-tools` project so both toolsets share one binary.
+  Pure-Rust/CPU with no ONNX Runtime dependency, so they ship in the portable
+  light build as well as full.
 - **CLI: `add-tag` / `remove-tag` subcommands.** Bulk-edit the manual tag
   layer across a directory. `add-tag <dir> --tags <TAG>[,...]` appends each
   tag verbatim to every image's sidecar (`foo` positive, `-foo`
@@ -32,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   give the latter its own Kanban column. The GUI colours such chips
   distinctly. (Suppression markers remain `-foo`.)
 - **Tag groups for mutually-exclusive tag classification.** Declare
-  named groups in `fwaun-tagger.toml` (e.g.
+  named groups in `fwaun-tools.toml` (e.g.
   `[tag_group.official_costumes] tags = ["official_school_uniform",
   "official_lounge_wear"]`); each image is bucketed as one of the
   group's tags, "unset", or "violation" (multiple group tags coexist —
@@ -48,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag, `-X` suppression on previously-present sibling tags). The
   violation column is read-only — to create a multi-tag image
   intentionally, use the detail panel.
-- **CLI: `mv` subcommand.** `fwaun-tagger mv <dir> <dest> --tags
+- **CLI: `mv` subcommand.** `fwaun-tools mv <dir> <dest> --tags
   <TAG>[,...]` moves every image whose effective tag set (the same set
   `validate-tag-group` uses) contains all requested tags, together with
   its `.ron` sidecar. Sub-paths are preserved under `dest`, existing
@@ -77,10 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Project renamed `anima-tagger` → `fwaun-tagger`.** All crates are now
-  `fwaun-tagger-*`, the binaries are `fwaun-tagger` / `fwaun-tagger-gui`,
-  and the per-directory config file is `fwaun-tagger.toml` (user config:
-  `fwaun-tagger/config.toml`). The old `anima-tagger.toml` /
+- **Project renamed `anima-tagger` → `fwaun-tools`.** All crates are now
+  `fwaun-tools-*`, the binaries are `fwaun-tools` / `fwaun-tools-gui`,
+  and the per-directory config file is `fwaun-tools.toml` (user config:
+  `fwaun-tools/config.toml`). The old `anima-tagger.toml` /
   `anima-tagger/config.toml` are still read as a fallback and print a
   deprecation warning; rename yours to the new name, as the fallback will
   be removed in a future release. The `anima` export-profile name and

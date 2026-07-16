@@ -69,14 +69,15 @@ Finder からの起動を Gatekeeper がブロックする場合は、
 
 [egui]: https://github.com/emilk/egui
 
-### Linux の glibc 要件
+### Linux の glibc 要件（full ビルドのみ）
 
-Linux 向けリリースバイナリは **Ubuntu 24.04 同梱の glibc 2.39** を前提に
-リンクされています。Ubuntu 22.04 や Debian 12 以前では起動しません。
-依存している ONNX Runtime のプリビルドバイナリが glibc 2.38 で
-追加された `__isoc23_*` シンボルを参照しているためです。
-古いディストリビューションを使う場合はソースからビルドするか、
-ディストリビューションをアップグレードしてください。
+Linux 向け**リリース**バイナリは *full* ビルド（[ビルドの種類](#ビルドの種類)参照）
+のため、**Ubuntu 24.04 同梱の glibc 2.39** を前提にリンクされています。
+Ubuntu 22.04 や Debian 12 以前では起動しません。依存しているローカルタガー /
+キャプショナー用の ONNX Runtime プリビルドバイナリが glibc 2.38 で追加された
+`__isoc23_*` シンボルを参照しているためです。ディストリビューションを
+アップグレードするか、*light* バイナリをソースからビルドしてください
+（ONNX Runtime を含まず glibc の下限もないため、これらの古い環境でも動きます）。
 
 ### Windows サポートについての注意
 
@@ -95,9 +96,35 @@ Linux では GUI のビルドに標準的な X11 / Wayland 開発ヘッダ
 ```sh
 git clone https://github.com/fwaunstp/fwaun-tagger
 cd fwaun-tagger
+# light ビルド（デフォルト）— ローカル ONNX 推論なし、どこでも動く
 cargo build --release -p fwaun-tagger-cli
 cargo build --release -p fwaun-tagger-gui
+# full ビルド — ローカル WD14 タガー + Qwen3-VL キャプショナーを追加（glibc 2.38+）
+cargo build --release -p fwaun-tagger-cli --features full
+cargo build --release -p fwaun-tagger-gui --features full
 ```
+
+### ビルドの種類
+
+`full` cargo feature で 2 種類のビルドを切り替えます:
+
+| | light（デフォルト） | full（`--features full`） |
+| --- | --- | --- |
+| ローカル WD14 タガー（`tag`） | ✗ | ✓ |
+| ローカル Qwen3-VL キャプショナー | ✗ | ✓ |
+| OpenAI 互換キャプショナー（`caption`） | ✓ | ✓ |
+| booru / export / metadata / 手動編集 / タググループ | ✓ | ✓ |
+| ONNX Runtime のリンク | なし | あり |
+| Linux の glibc 下限 | なし（古い環境でも動く） | 2.38+ |
+| CLI のおおよそのサイズ | 約 11 MB | 約 35 MB |
+
+公開している**リリース**バイナリは *full* です。*light* バイナリはローカル
+ONNX モデル 2 種（WD14 タグ付け・Qwen3-VL キャプション）を落としますが、
+それ以外はすべて残ります — OpenAI 互換エンドポイント（llama.cpp / Ollama /
+LM Studio / vLLM など）経由のキャプションも含みます。light ビルドで
+ローカル ONNX 専用コマンドを実行すると、full ビルドを入れるよう促す
+メッセージを出して即座に失敗します。API 経由でキャプションする場合や、
+glibc の古いホストで動かしたい場合は light を使ってください。
 
 ## クイックスタート
 

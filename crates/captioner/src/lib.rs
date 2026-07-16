@@ -3,6 +3,7 @@
 //! OpenAI-compatible HTTP client ([`openai`]) that talks to llama.cpp,
 //! koboldcpp, Ollama, LM Studio, vLLM, and friends.
 
+#[cfg(feature = "onnx")]
 mod onnx;
 mod openai;
 
@@ -32,8 +33,13 @@ pub enum CaptionerError {
     Http(String),
     #[error("api response: {0}")]
     Api(String),
+    #[error(
+        "this is a light build without the local ONNX captioner; configure an OpenAI-compatible captioner, or install the full build for local Qwen3-VL"
+    )]
+    Unsupported,
 }
 
+#[cfg(feature = "onnx")]
 impl<F> From<ort::Error<F>> for CaptionerError {
     fn from(e: ort::Error<F>) -> Self {
         CaptionerError::Ort(e.to_string())
@@ -41,6 +47,7 @@ impl<F> From<ort::Error<F>> for CaptionerError {
 }
 
 pub enum Captioner {
+    #[cfg(feature = "onnx")]
     Onnx(onnx::OnnxCaptioner),
     OpenAi(openai::OpenAiCaptioner),
 }
@@ -48,9 +55,12 @@ pub enum Captioner {
 impl Captioner {
     pub fn from_profile(profile: &CaptionerProfile) -> Result<Self, CaptionerError> {
         match profile {
+            #[cfg(feature = "onnx")]
             CaptionerProfile::Onnx(p) => {
                 Ok(Self::Onnx(onnx::OnnxCaptioner::from_profile(p)?))
             }
+            #[cfg(not(feature = "onnx"))]
+            CaptionerProfile::Onnx(_) => Err(CaptionerError::Unsupported),
             CaptionerProfile::Openai(p) => {
                 Ok(Self::OpenAi(openai::OpenAiCaptioner::from_profile(p)?))
             }
@@ -74,6 +84,7 @@ impl Captioner {
     ) -> Result<String, CaptionerError> {
         let context = context.map(str::trim).filter(|s| !s.is_empty());
         match self {
+            #[cfg(feature = "onnx")]
             Self::Onnx(c) => c.caption_image(image_path, prompt, context),
             Self::OpenAi(c) => c.caption_image(image_path, prompt, context),
         }

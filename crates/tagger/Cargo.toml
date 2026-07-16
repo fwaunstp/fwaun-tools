@@ -1,6 +1,6 @@
 [package]
-name = "fwaun-tagger-tagger"
-description = "WD14-family ONNX image tagger used by fwaun-tagger."
+name = "fwaun-tools-tagger"
+description = "WD14-family ONNX image tagger used by fwaun-tools."
 categories = ["computer-vision"]
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-fwaun-tagger-core = { workspace = true }
+fwaun-tools-core = { workspace = true }
 ort = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 image = { workspace = true }

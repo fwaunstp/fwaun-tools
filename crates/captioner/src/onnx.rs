@@ -1,6 +1,6 @@
 //! Qwen3-VL ONNX backend (default: `onnx-community/Qwen3-4B-VL-ONNX`,
 //! 4B vision-fp32 / text-int4 variant). Selected via
-//! `[captioner.<name>] kind = "onnx"` in `fwaun-tagger.toml`.
+//! `[captioner.<name>] kind = "onnx"` in `fwaun-tools.toml`.
 //!
 //! Three sessions:
 //! ```text
@@ -49,8 +49,8 @@
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
-use fwaun_tagger_core::config::OnnxCaptionerProfile;
-use fwaun_tagger_core::hub;
+use fwaun_tools_core::config::OnnxCaptionerProfile;
+use fwaun_tools_core::hub;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use ort::memory::Allocator;

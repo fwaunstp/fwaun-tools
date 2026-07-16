@@ -1,12 +1,18 @@
-# fwaun-tagger
+# fwaun-tools
 
-Tag and caption editor for local Stable Diffusion LoRA datasets. Combines
-manual edits, an automatic WD14-family tagger, Qwen3-VL captioning, and
-Danbooru API fetches under one editing surface so the user doesn't have to
-think about provenance while curating.
+Tooling for training the fwaun model family. Two command groups under one
+binary:
 
-Built primarily for [ANIMA preview][anima] LoRA training, but the data
-model and export profiles are not ANIMA-specific.
+- **`dataset`** — a tag and caption editor for local Stable Diffusion LoRA
+  datasets. Combines manual edits, an automatic WD14-family tagger, Qwen3-VL
+  captioning, and Danbooru API fetches under one editing surface so the user
+  doesn't have to think about provenance while curating.
+- **`model`** — diffusion-checkpoint utilities over safetensors files:
+  task-vector `merge-diff`, LoRA extraction (`extract-lora`), and INT8+ConvRot
+  quantization (`quant-int8`). Pure-Rust/CPU, available in every build.
+
+Built primarily for [ANIMA preview][anima] and Krea 2 LoRA training, but the
+data model and export profiles are not ANIMA-specific.
 
 > [日本語版 README](README.ja.md)
 
@@ -25,9 +31,9 @@ model and export profiles are not ANIMA-specific.
   tag-group sorting but never exported — so you can mark "reviewed,
   none of these" distinctly from "not yet reviewed".
 - **Tag groups + Kanban view.** Declare mutually-exclusive tag sets
-  (e.g. costume variants) in `fwaun-tagger.toml`; the GUI shows one
+  (e.g. costume variants) in `fwaun-tools.toml`; the GUI shows one
   column per tag with drag-and-drop to switch.
-- **Per-folder configuration via `fwaun-tagger.toml`.** Pick the tagger
+- **Per-folder configuration via `fwaun-tools.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
 - **Two output modes.** `export` writes one `<image>.txt` per image
   (sd-scripts DreamBooth/LoRA caption-file mode); `metadata` writes a
@@ -54,9 +60,9 @@ drop both binaries side-by-side:
 
 | Platform | CLI                                        | GUI                                                |
 | -------- | ------------------------------------------ | -------------------------------------------------- |
-| macOS    | `~/.local/bin/fwaun-tagger`                | `~/.local/bin/fwaun-tagger-gui`                    |
-| Linux    | `~/.local/bin/fwaun-tagger`                | `~/.local/bin/fwaun-tagger-gui`                    |
-| Windows  | `%USERPROFILE%\bin\fwaun-tagger.exe`       | `%USERPROFILE%\bin\fwaun-tagger-gui.exe`           |
+| macOS    | `~/.local/bin/fwaun-tools`                | `~/.local/bin/fwaun-tools-gui`                    |
+| Linux    | `~/.local/bin/fwaun-tools`                | `~/.local/bin/fwaun-tools-gui`                    |
+| Windows  | `%USERPROFILE%\bin\fwaun-tools.exe`       | `%USERPROFILE%\bin\fwaun-tools-gui.exe`           |
 
 Pin a specific version with `--version v0.2.1` (or `-Version v0.2.1` on
 PowerShell).
@@ -69,7 +75,7 @@ distribution, but no extra runtime install is required.
 On macOS the binary is **not notarized**. The installer clears the
 `com.apple.quarantine` attribute, but if Gatekeeper still blocks it
 when launched from Finder, run it from Terminal once
-(`~/.local/bin/fwaun-tagger-gui`).
+(`~/.local/bin/fwaun-tools-gui`).
 
 [egui]: https://github.com/emilk/egui
 
@@ -98,13 +104,13 @@ the GUI:
 
 ```sh
 git clone https://github.com/fwaunstp/fwaun-tools
-cd fwaun-tagger
+cd fwaun-tools
 # light build (default) — no local ONNX inference, runs anywhere
-cargo build --release -p fwaun-tagger-cli
-cargo build --release -p fwaun-tagger-gui
+cargo build --release -p fwaun-tools-cli
+cargo build --release -p fwaun-tools-gui
 # full build — adds the local WD14 tagger + Qwen3-VL captioner (glibc 2.38+)
-cargo build --release -p fwaun-tagger-cli --features full
-cargo build --release -p fwaun-tagger-gui --features full
+cargo build --release -p fwaun-tools-cli --features full
+cargo build --release -p fwaun-tools-gui --features full
 ```
 
 ### Build variants
@@ -131,9 +137,9 @@ older-glibc host.
 
 ## Quick start
 
-1. Launch `fwaun-tagger-gui` (or run the CLI directly — see below).
+1. Launch `fwaun-tools-gui` (or run the CLI directly — see below).
 2. **Open folder…** → pick a directory of images.
-3. (Optional) **Config…** → write `fwaun-tagger.toml` for the dataset.
+3. (Optional) **Config…** → write `fwaun-tools.toml` for the dataset.
    Sensible defaults apply if you skip this.
 4. Select images, then click **Run tagger** / **Run captioner** /
    **Fetch booru**. The first run downloads the relevant ONNX models
@@ -145,15 +151,15 @@ older-glibc host.
 6. Export to disk:
 
    ```sh
-   fwaun-tagger export <dir>          # one .txt per image
-   fwaun-tagger metadata <dir>        # single meta.json
+   fwaun-tools dataset export <dir>          # one .txt per image
+   fwaun-tools dataset metadata <dir>        # single meta.json
    ```
 
 ## Configuration overview
 
-`fwaun-tagger.toml` lives in the dataset directory. Everything is
+`fwaun-tools.toml` lives in the dataset directory. Everything is
 optional — without it, defaults kick in. See
-[`crates/core/fwaun-tagger.toml.example`](crates/core/fwaun-tagger.toml.example) for the
+[`crates/core/fwaun-tools.toml.example`](crates/core/fwaun-tools.toml.example) for the
 annotated full schema. Highlights:
 
 ```toml
@@ -179,19 +185,35 @@ prompt = "Describe this image in detail."
 
 ## CLI commands
 
+Dataset curation (`fwaun-tools dataset <verb>`):
+
 ```
-fwaun-tagger tag <dir>      [--model NAME] [--threshold X] [--force]
-fwaun-tagger caption <dir>  [--model NAME] [--force]
-fwaun-tagger booru <dir>    [--source danbooru] [--force]
-fwaun-tagger export <dir>   [--profile NAME] [--threshold X]
-fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-fwaun-tagger add-tag <dir>    --tags TAG[,...] [--dry-run]
-fwaun-tagger remove-tag <dir> --tags TAG[,...] [--dry-run]
-fwaun-tagger mv <dir> <dest>  --tags TAG[,...] [--dry-run]
-fwaun-tagger status <dir>
-fwaun-tagger tokens <dir>
-fwaun-tagger validate-tag-group <dir> --group NAME [--problems-only] [--json]
+fwaun-tools dataset tag <dir>      [--model NAME] [--threshold X] [--force]
+fwaun-tools dataset caption <dir>  [--model NAME] [--force]
+fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
+fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
+fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run]
+fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run]
+fwaun-tools dataset mv <dir> <dest>  --tags TAG[,...] [--dry-run]
+fwaun-tools dataset status <dir>
+fwaun-tools dataset tokens <dir>
+fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
+
+Checkpoint tools (`fwaun-tools model <verb>`) — operate on safetensors files,
+not a dataset directory:
+
+```
+fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32]
+fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
+fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
+```
+
+`merge-diff` transfers a full fine-tune delta (`tuned − base`) onto another
+checkpoint; `extract-lora` factorizes that delta into a kohya-ss/ComfyUI LoRA
+by SVD; `quant-int8` writes the comfy-kitchen `int8_tensorwise` + ConvRot
+layout. All three are CPU/f32 and stream key-by-key, so peak RAM stays small.
 
 `add-tag` / `remove-tag` bulk-edit the manual tag layer across a
 directory: `add-tag` appends each tag verbatim (`foo` positive, `-foo`
@@ -246,7 +268,7 @@ Images you drag into `_no_character` are marked reviewed without the
 underscore tag ever leaking into the training caption.
 
 ```sh
-fwaun-tagger validate-tag-group ./dataset --group official_costumes
+fwaun-tools dataset validate-tag-group ./dataset --group official_costumes
 ```
 
 ## Documentation
@@ -254,7 +276,7 @@ fwaun-tagger validate-tag-group ./dataset --group official_costumes
 - **[DEVELOPMENT.md](DEVELOPMENT.md)** — architecture, crate layout,
   ONNX session shapes, ort version notes. Read this before
   contributing.
-- **[crates/core/fwaun-tagger.toml.example](crates/core/fwaun-tagger.toml.example)** —
+- **[crates/core/fwaun-tools.toml.example](crates/core/fwaun-tools.toml.example)** —
   annotated configuration example.
 
 ## License

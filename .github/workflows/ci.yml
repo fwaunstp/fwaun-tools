@@ -48,7 +48,7 @@ jobs:
 
       # Full build (--features full): local ONNX tagger + captioner. Checked
       # explicitly so the ort-gated code paths don't bit-rot.
-      - run: cargo check -p fwaun-tagger-cli --all-targets --features full
-      - run: cargo check -p fwaun-tagger-gui --all-targets --features full
+      - run: cargo check -p fwaun-tools-cli --all-targets --features full
+      - run: cargo check -p fwaun-tools-gui --all-targets --features full
 
-      - run: cargo test -p fwaun-tagger-core
+      - run: cargo test -p fwaun-tools-core

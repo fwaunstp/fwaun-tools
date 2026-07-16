@@ -1,10 +1,10 @@
 # fwaun-tagger installer for Windows (x64).
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.ps1 | iex
 #
 # With arguments:
-#   $script = irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1
+#   $script = irm https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.ps1
 #   & ([scriptblock]::Create($script)) -Version v0.2.1 -CliOnly
 #
 # Parameters:
@@ -24,7 +24,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "fwaunstp/fwaun-tagger"
+$Repo = "fwaunstp/fwaun-tools"
 
 function Info($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Fail($msg) { Write-Error $msg; exit 1 }

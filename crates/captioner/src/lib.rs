@@ -9,8 +9,8 @@ mod openai;
 
 use std::path::Path;
 
-use fwaun_tagger_core::config::CaptionerProfile;
-use fwaun_tagger_core::hub;
+use fwaun_tools_core::config::CaptionerProfile;
+use fwaun_tools_core::hub;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

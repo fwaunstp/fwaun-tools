@@ -1,6 +1,6 @@
 [package]
-name = "fwaun-tagger-booru"
-description = "Danbooru-API tag fetcher used by fwaun-tagger to enrich sidecars with human-curated booru tags."
+name = "fwaun-tools-booru"
+description = "Danbooru-API tag fetcher used by fwaun-tools to enrich sidecars with human-curated booru tags."
 categories = ["api-bindings"]
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [dependencies]
-fwaun-tagger-core = { workspace = true }
+fwaun-tools-core = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }

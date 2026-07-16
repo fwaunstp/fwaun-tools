@@ -1,4 +1,4 @@
-# fwaun-tagger
+# fwaun-tools
 
 A Rust workspace for managing tags and captions on a local Stable Diffusion
 LoRA dataset. Combines three sources of tags — manual edits, an automatic
@@ -39,16 +39,23 @@ which drive every decision below:
 crates/
   core/        ── data model (Sidecar, ProjectConfig, ExportProfile),
                   RON sidecar I/O, export logic, image walker. No ML deps.
-  tagger/      ── WD14-family ONNX tagger via ort 2.0.0-rc.12.
-  captioner/   ── Florence-2 ONNX captioner (4-session pipeline).
+                  `model` feature adds the safetensors checkpoint tools
+                  (core::model::{merge,lora,quant,safetensors}).
+  tagger/      ── WD14-family ONNX tagger via ort 2.0.0-rc.12 (`onnx` feature).
+  captioner/   ── Qwen3-VL ONNX captioner + OpenAI-compatible HTTP backend
+                  (ONNX path behind the `onnx` feature).
   booru/       ── Danbooru md5-lookup tag fetcher (ureq + md5).
-  cli/         ── `fwaun-tagger` binary. Thin layer over the above.
-  gui/         ── `fwaun-tagger-gui` binary (egui / eframe).
+  cli/         ── `fwaun-tools` binary. `dataset <verb>` (tag/caption/booru/
+                  export/…) + `model <verb>` (merge-diff/extract-lora/quant-int8).
+  gui/         ── `fwaun-tools-gui` binary (egui / eframe).
 ```
 
 Each ML/network surface is its own crate so the GUI doesn't pull ort just to
 render a thumbnail grid, and so build times stay reasonable when iterating on
-one piece.
+one piece. ONNX inference is gated behind a per-crate `onnx` feature (surfaced
+as the CLI/GUI `full` feature); the default "light" build omits ort entirely.
+The checkpoint tools live in `core`'s `model` feature — pure-Rust/CPU, always
+compiled into the CLI (no glibc floor), and reusable from a future GUI tab.
 
 ---
 
@@ -117,7 +124,7 @@ scene context). On export the merged caption is `"{manual} {auto}"`.
 
 ---
 
-## Configuration: `fwaun-tagger.toml`
+## Configuration: `fwaun-tools.toml`
 
 Lives in the dataset directory. **Entirely optional** — with no config file at
 all, the CLI/GUI fall back to built-in tagger and captioner profiles
@@ -181,12 +188,12 @@ prefixes) are encoded as **export profiles**, not hardcoded.
 ## CLI commands
 
 ```
-fwaun-tagger tag <dir> [--model NAME] [--threshold X] [--force]
-fwaun-tagger caption <dir> [--model NAME] [--force]
-fwaun-tagger booru <dir> [--source danbooru] [--force]
-fwaun-tagger export <dir> [--profile NAME] [--threshold X]
-fwaun-tagger metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-fwaun-tagger status <dir>
+fwaun-tools dataset tag <dir> [--model NAME] [--threshold X] [--force]
+fwaun-tools dataset caption <dir> [--model NAME] [--force]
+fwaun-tools dataset booru <dir> [--source danbooru] [--force]
+fwaun-tools dataset export <dir> [--profile NAME] [--threshold X]
+fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
+fwaun-tools dataset status <dir>
 ```
 
 - `tag` / `caption` / `booru` — populate sidecars. Skip already-populated
@@ -203,7 +210,7 @@ fwaun-tagger status <dir>
 
 ## GUI
 
-`cargo run -p fwaun-tagger-gui --release`
+`cargo run -p fwaun-tools-gui --release`
 
 Toolbar: open folder, filter dropdown, Select visible / Clear sel., Run
 tagger / Run captioner / Fetch booru. The model loads lazily on first run
@@ -405,20 +412,20 @@ non-shuffled metadata file diffs cleanly across runs.
 ## Testing
 
 ```bash
-cargo test -p fwaun-tagger-core    # 9 unit tests covering export logic
+cargo test -p fwaun-tools-core    # 9 unit tests covering export logic
 cargo check --workspace            # everything compiles (~10s incremental)
-cargo build -p fwaun-tagger-cli    # binary builds (~40s first time, ort download)
-cargo build -p fwaun-tagger-gui    # GUI builds (egui + ort, ~1min first time)
+cargo build -p fwaun-tools-cli    # binary builds (~40s first time, ort download)
+cargo build -p fwaun-tools-gui    # GUI builds (egui + ort, ~1min first time)
 ```
 
 The captioner and tagger have no automated tests because they require model
-files. Manual testing is via `cargo run -p fwaun-tagger-cli -- caption <dir>`
+files. Manual testing is via `cargo run -p fwaun-tools-cli -- caption <dir>`
 on a small sample and inspecting the resulting `.ron` sidecars.
 
 The annotated config example used by both `core` (snapshot test) and
 `gui` (Config… modal default text) lives at
-[`crates/core/fwaun-tagger.toml.example`](crates/core/fwaun-tagger.toml.example).
-Re-exported as `fwaun_tagger_core::config::CONFIG_EXAMPLE`. Keep it
+[`crates/core/fwaun-tools.toml.example`](crates/core/fwaun-tools.toml.example).
+Re-exported as `fwaun_tools_core::config::CONFIG_EXAMPLE`. Keep it
 inside the core crate dir — `include_str!` paths must stay within the
 package on crates.io.
 

@@ -1,27 +1,17 @@
-//! fwaun-model-tools: utilities for merging diffusion model checkpoints.
-
-mod lora;
-mod merge;
-mod quant;
-mod safetensors;
+//! `fwaun-tools model <verb>` — diffusion-checkpoint subcommands. Thin clap
+//! layer over `fwaun_tools_core::model`; all the work happens in core.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Subcommand};
 
-use crate::lora::ExtractArgs;
-use crate::merge::{MergeArgs, ModelArch};
-use crate::quant::QuantArgs;
-use crate::safetensors::Dtype;
+use fwaun_tools_core::model::lora::{self, ExtractArgs};
+use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
+use fwaun_tools_core::model::quant::{self, QuantArgs};
+use fwaun_tools_core::model::safetensors::Dtype;
 
-#[derive(Parser)]
-#[command(name = "fwaun-model-tools", version, about = "Diffusion checkpoint tools")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
+/// Diffusion-checkpoint subcommands (`fwaun-tools model <verb>`).
 #[derive(Subcommand)]
-enum Command {
+pub enum ModelCommand {
     /// Task-vector merge: output = target + multiplier * (tuned - base).
     ///
     /// Transfers a full fine-tune delta (tuned - base) onto another checkpoint.
@@ -48,8 +38,8 @@ enum Command {
     ExtractLora(ExtractCommand),
 }
 
-#[derive(Parser)]
-struct ExtractCommand {
+#[derive(Args)]
+pub struct ExtractCommand {
     /// Original model the fine-tune started from (bf16/fp16/fp32).
     #[arg(long)]
     base: std::path::PathBuf,
@@ -96,8 +86,8 @@ struct ExtractCommand {
     oversample: usize,
 }
 
-#[derive(Parser)]
-struct QuantCommand {
+#[derive(Args)]
+pub struct QuantCommand {
     /// Source checkpoint (.safetensors, bf16/fp16/fp32; fp8_scaled is rejected).
     src: std::path::PathBuf,
 
@@ -133,8 +123,8 @@ struct QuantCommand {
     verify_report: Option<std::path::PathBuf>,
 }
 
-#[derive(Parser)]
-struct MergeCommand {
+#[derive(Args)]
+pub struct MergeCommand {
     /// Original model the fine-tune started from (e.g. krea2_raw_bf16.safetensors).
     #[arg(long)]
     base: std::path::PathBuf,
@@ -164,10 +154,9 @@ struct MergeCommand {
     model: String,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    match cli.command {
-        Command::MergeDiff(cmd) => {
+pub fn run(command: ModelCommand) -> Result<()> {
+    match command {
+        ModelCommand::MergeDiff(cmd) => {
             let save_dtype = cmd.save_dtype.as_deref().map(Dtype::parse_save_dtype).transpose()?;
             let arch = ModelArch::parse(&cmd.model)?;
             merge::run(MergeArgs {
@@ -180,7 +169,7 @@ fn main() -> Result<()> {
                 arch,
             })
         }
-        Command::QuantInt8(cmd) => quant::run(QuantArgs {
+        ModelCommand::QuantInt8(cmd) => quant::run(QuantArgs {
             src: cmd.src,
             dst: cmd.dst,
             dry_run: cmd.dry_run,
@@ -191,7 +180,7 @@ fn main() -> Result<()> {
             warn_thresh: cmd.warn_thresh,
             verify_report: cmd.verify_report,
         }),
-        Command::ExtractLora(cmd) => {
+        ModelCommand::ExtractLora(cmd) => {
             let save_dtype = Dtype::parse_save_dtype(&cmd.save_dtype)?;
             let arch = ModelArch::parse(&cmd.model)?;
             lora::run(ExtractArgs {

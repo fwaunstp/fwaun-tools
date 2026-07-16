@@ -40,13 +40,13 @@ model and export profiles are not ANIMA-specific.
 ### macOS (Apple Silicon) / Linux (x64 or arm64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh
 ```
 
 ### Windows (x64)
 
 ```powershell
-irm https://raw.githubusercontent.com/fwaunstp/fwaun-tagger/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.ps1 | iex
 ```
 
 Both installers download the latest GitHub release, verify SHA256, and
@@ -97,7 +97,7 @@ Wayland dev headers (`libx11-dev`, `libxcb1-dev`, `libxkbcommon-dev`,
 the GUI:
 
 ```sh
-git clone https://github.com/fwaunstp/fwaun-tagger
+git clone https://github.com/fwaunstp/fwaun-tools
 cd fwaun-tagger
 # light build (default) — no local ONNX inference, runs anywhere
 cargo build --release -p fwaun-tagger-cli

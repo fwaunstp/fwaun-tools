@@ -1,6 +1,6 @@
 [package]
-name = "fwaun-tagger-gui"
-description = "Desktop GUI for fwaun-tagger: curate Stable Diffusion LoRA datasets with an integrated tag/caption editor."
+name = "fwaun-tools-gui"
+description = "Desktop GUI for fwaun-tools: curate Stable Diffusion LoRA datasets with an integrated tag/caption editor."
 categories = ["gui"]
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,7 @@ readme.workspace = true
 keywords.workspace = true
 
 [[bin]]
-name = "fwaun-tagger-gui"
+name = "fwaun-tools-gui"
 path = "src/main.rs"
 
 [features]
@@ -21,13 +21,13 @@ default = []
 # Local ONNX inference (WD14 tagger + Qwen3-VL captioner). Off by default
 # (the portable "light" build). Enabling it pulls in ort's prebuilt ONNX
 # Runtime and raises the glibc floor to 2.38+.
-full = ["fwaun-tagger-tagger/onnx", "fwaun-tagger-captioner/onnx"]
+full = ["fwaun-tools-tagger/onnx", "fwaun-tools-captioner/onnx"]
 
 [dependencies]
-fwaun-tagger-core = { workspace = true }
-fwaun-tagger-tagger = { workspace = true }
-fwaun-tagger-captioner = { workspace = true }
-fwaun-tagger-booru = { workspace = true }
+fwaun-tools-core = { workspace = true }
+fwaun-tools-tagger = { workspace = true }
+fwaun-tools-captioner = { workspace = true }
+fwaun-tools-booru = { workspace = true }
 eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 egui = { version = "0.32" }
 egui_extras = { version = "0.32", features = ["image"] }

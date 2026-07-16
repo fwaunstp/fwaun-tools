@@ -29,7 +29,7 @@ use anyhow::{Result, bail};
 use rayon::prelude::*;
 use regex::Regex;
 
-use crate::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
+use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// ConvRot Hadamard sizes: powers of 4, largest preferred (matches the reference).
 const VALID_GS: [usize; 3] = [256, 64, 16];

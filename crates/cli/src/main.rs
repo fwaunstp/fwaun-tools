@@ -1,15 +1,17 @@
 use std::path::PathBuf;
 
-use fwaun_tagger_booru::{BooruClient, BooruError};
-use fwaun_tagger_captioner::Captioner;
-use fwaun_tagger_core::config::ProjectConfig;
-use fwaun_tagger_core::export;
-use fwaun_tagger_core::sidecar::{Sidecar, TaggerInfo};
-use fwaun_tagger_core::walk::iter_images;
-use fwaun_tagger_tagger::Tagger;
+use fwaun_tools_booru::{BooruClient, BooruError};
+use fwaun_tools_captioner::Captioner;
+use fwaun_tools_core::config::ProjectConfig;
+use fwaun_tools_core::export;
+use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
+use fwaun_tools_core::walk::iter_images;
+use fwaun_tools_tagger::Tagger;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
+
+mod model;
 
 /// Whether to copy the generated reference caption into `manual_caption`
 /// after captioning. Default depends on the resolved prompt count: a
@@ -45,20 +47,34 @@ enum MetadataFormat {
 
 #[derive(Parser)]
 #[command(
-    name = "fwaun-tagger",
-    about = "Manage manual + auto + booru tags and captions for ANIMA-style LoRA datasets"
+    name = "fwaun-tools",
+    about = "Tools for training fwaun models: LoRA dataset curation (`dataset`) and diffusion-checkpoint ops (`model`)"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
 
+/// Top-level command groups: `dataset <verb>` and `model <verb>`.
 #[derive(Subcommand)]
 enum Command {
+    /// Dataset curation — tag, caption, fetch booru, edit tags, and export
+    /// captions/metadata for training.
+    #[command(subcommand)]
+    Dataset(DatasetCommand),
+    /// Diffusion-checkpoint tools — task-vector merge, LoRA extraction, and
+    /// INT8 quantization over safetensors files.
+    #[command(subcommand)]
+    Model(model::ModelCommand),
+}
+
+/// Dataset-curation subcommands (`fwaun-tools dataset <verb>`).
+#[derive(Subcommand)]
+enum DatasetCommand {
     /// Run the automatic tagger over images in a directory.
     Tag {
         dir: PathBuf,
-        /// Name of a `[tagger.<name>]` profile in `fwaun-tagger.toml`.
+        /// Name of a `[tagger.<name>]` profile in `fwaun-tools.toml`.
         #[arg(long)]
         model: Option<String>,
         /// Re-tag images that already have an auto-tag record.
@@ -71,7 +87,7 @@ enum Command {
     /// Run the automatic captioner over images in a directory.
     Caption {
         dir: PathBuf,
-        /// Name of a `[captioner.<name>]` profile in `fwaun-tagger.toml`.
+        /// Name of a `[captioner.<name>]` profile in `fwaun-tools.toml`.
         #[arg(long)]
         model: Option<String>,
         /// Re-caption images that already have a caption record.
@@ -183,7 +199,7 @@ enum Command {
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
     /// Classify images against a `[tag_group.<name>]` from
-    /// `fwaun-tagger.toml`. Each image is bucketed as one of the group's
+    /// `fwaun-tools.toml`. Each image is bucketed as one of the group's
     /// tags, "unset" (no group tag present), or "violation" (multiple).
     /// Violations are informational, not errors.
     ValidateTagGroup {
@@ -219,56 +235,63 @@ enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Tag {
+        Command::Dataset(command) => run_dataset(command),
+        Command::Model(command) => model::run(command),
+    }
+}
+
+fn run_dataset(command: DatasetCommand) -> Result<()> {
+    match command {
+        DatasetCommand::Tag {
             dir,
             model,
             force,
             threshold,
         } => cmd_tag(dir, model, force, threshold),
-        Command::Caption {
+        DatasetCommand::Caption {
             dir,
             model,
             force,
             prompts,
             promote_to_manual,
         } => cmd_caption(dir, model, force, prompts, promote_to_manual),
-        Command::Booru { dir, source, force } => cmd_booru(dir, source, force),
-        Command::Export {
+        DatasetCommand::Booru { dir, source, force } => cmd_booru(dir, source, force),
+        DatasetCommand::Export {
             dir,
             profile,
             threshold,
         } => cmd_export(dir, profile, threshold),
-        Command::Metadata {
+        DatasetCommand::Metadata {
             dir,
             profile,
             threshold,
             format,
             output,
         } => cmd_metadata(dir, profile, threshold, format, output),
-        Command::Mv {
+        DatasetCommand::Mv {
             dir,
             dest,
             tags,
             dry_run,
         } => cmd_mv(dir, dest, tags, dry_run),
-        Command::AddTag {
+        DatasetCommand::AddTag {
             dir,
             tags,
             dry_run,
         } => cmd_add_tag(dir, tags, dry_run),
-        Command::RemoveTag {
+        DatasetCommand::RemoveTag {
             dir,
             tags,
             dry_run,
         } => cmd_remove_tag(dir, tags, dry_run),
-        Command::Status { dir } => cmd_status(dir),
-        Command::ValidateTagGroup {
+        DatasetCommand::Status { dir } => cmd_status(dir),
+        DatasetCommand::ValidateTagGroup {
             dir,
             group,
             problems_only,
             json,
         } => cmd_validate_tag_group(dir, group, problems_only, json),
-        Command::Tokens {
+        DatasetCommand::Tokens {
             dir,
             profile,
             threshold,
@@ -514,7 +537,7 @@ fn cmd_metadata(
 
 fn cmd_metadata_sd_scripts(
     dir: &std::path::Path,
-    profile: &fwaun_tagger_core::config::ExportProfile,
+    profile: &fwaun_tools_core::config::ExportProfile,
     output: Option<PathBuf>,
 ) -> Result<()> {
     use std::collections::BTreeMap;
@@ -564,7 +587,7 @@ fn cmd_metadata_sd_scripts(
 
 fn cmd_metadata_musubi(
     dir: &std::path::Path,
-    profile: &fwaun_tagger_core::config::ExportProfile,
+    profile: &fwaun_tools_core::config::ExportProfile,
     output: Option<PathBuf>,
 ) -> Result<()> {
     // (image_path, caption) pairs, sorted by path so the JSONL is stable
@@ -619,8 +642,8 @@ fn metadata_image_key(image: &std::path::Path) -> String {
 }
 
 fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
-    use fwaun_tagger_core::sidecar::sidecar_path_for;
-    use fwaun_tagger_core::tag_group::effective_tag_set;
+    use fwaun_tools_core::sidecar::sidecar_path_for;
+    use fwaun_tools_core::tag_group::effective_tag_set;
 
     // Normalize query tags the same way the effective tag set is keyed:
     // trimmed + lowercased. Empty entries (e.g. from a trailing comma) are
@@ -844,13 +867,13 @@ fn cmd_validate_tag_group(
     problems_only: bool,
     json: bool,
 ) -> Result<()> {
-    use fwaun_tagger_core::tag_group::{Classification, classify};
+    use fwaun_tools_core::tag_group::{Classification, classify};
 
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let group = cfg.tag_groups.get(&group_name).with_context(|| {
         format!(
-            "tag_group `{group_name}` is not defined in any fwaun-tagger.toml \
+            "tag_group `{group_name}` is not defined in any fwaun-tools.toml \
              (project or user). Add a [tag_group.{group_name}] section."
         )
     })?;
@@ -912,7 +935,7 @@ fn cmd_tokens(
     threshold: Option<f32>,
     limit: usize,
 ) -> Result<()> {
-    use fwaun_tagger_core::hub;
+    use fwaun_tools_core::hub;
     use tokenizers::Tokenizer;
 
     let cfg = ProjectConfig::load_or_default(&dir)
@@ -949,7 +972,7 @@ fn cmd_tokens(
             no_sidecar += 1;
             continue;
         };
-        let tags = fwaun_tagger_core::export::build_tags(&sidecar, &profile);
+        let tags = fwaun_tools_core::export::build_tags(&sidecar, &profile);
         let tags_text = tags
             .iter()
             .map(|t| t.replace('_', " "))

@@ -3,9 +3,9 @@
 
 use std::path::Path;
 
-use fwaun_tagger_core::config::TaggerProfile;
-use fwaun_tagger_core::hub;
-use fwaun_tagger_core::sidecar::AutoTag;
+use fwaun_tools_core::config::TaggerProfile;
+use fwaun_tools_core::hub;
+use fwaun_tools_core::sidecar::AutoTag;
 #[cfg(feature = "onnx")]
 use image::imageops::FilterType;
 #[cfg(feature = "onnx")]

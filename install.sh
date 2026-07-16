@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fwaun-tagger installer for macOS and Linux.
+# fwaun-tools installer for macOS and Linux.
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh
@@ -57,7 +57,7 @@ case "$ARCH_RAW" in
 esac
 
 if [ "$OS" = "macos" ] && [ "$ARCH" = "x64" ]; then
-    err "Intel macOS prebuilt binaries are not published. Build from source with: cargo install --git https://github.com/${REPO} fwaun-tagger-cli"
+    err "Intel macOS prebuilt binaries are not published. Build from source with: cargo install --git https://github.com/${REPO} fwaun-tools-cli"
 fi
 
 TARGET="${OS}-${ARCH}"
@@ -100,34 +100,34 @@ download() {
     verify "$name" || err "checksum verification failed for ${name}"
 }
 
-# CLI install — single binary tarball with fwaun-tagger at the root.
+# CLI install — single binary tarball with fwaun-tools at the root.
 if [ "$INSTALL_CLI" = "1" ]; then
-    CLI_NAME="fwaun-tagger-cli-${VER}-${TARGET}.tar.gz"
+    CLI_NAME="fwaun-tools-cli-${VER}-${TARGET}.tar.gz"
     download "$CLI_NAME"
     mkdir -p "${PREFIX}/bin"
     tar xzf "$TMPDIR/${CLI_NAME}" -C "${PREFIX}/bin"
-    chmod +x "${PREFIX}/bin/fwaun-tagger"
-    info "installed CLI: ${PREFIX}/bin/fwaun-tagger"
+    chmod +x "${PREFIX}/bin/fwaun-tools"
+    info "installed CLI: ${PREFIX}/bin/fwaun-tools"
 fi
 
 # GUI install — the GUI archive is a tar.gz of a directory containing
-# both binaries. We extract just the fwaun-tagger-gui binary alongside
+# both binaries. We extract just the fwaun-tools-gui binary alongside
 # the CLI in $PREFIX/bin (uniform across macOS and Linux now that the
 # macOS .app wrapper has been dropped).
 if [ "$INSTALL_GUI" = "1" ]; then
-    GUI_NAME="fwaun-tagger-${VER}-${TARGET}.tar.gz"
+    GUI_NAME="fwaun-tools-${VER}-${TARGET}.tar.gz"
     download "$GUI_NAME"
     EXTRACT_DIR="$TMPDIR/extract"
     mkdir -p "$EXTRACT_DIR" "${PREFIX}/bin"
     tar xzf "$TMPDIR/${GUI_NAME}" -C "$EXTRACT_DIR"
     INNER_DIR="$(find "$EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -n1)"
-    cp "$INNER_DIR/fwaun-tagger-gui" "${PREFIX}/bin/fwaun-tagger-gui"
-    chmod +x "${PREFIX}/bin/fwaun-tagger-gui"
+    cp "$INNER_DIR/fwaun-tools-gui" "${PREFIX}/bin/fwaun-tools-gui"
+    chmod +x "${PREFIX}/bin/fwaun-tools-gui"
     if [ "$OS" = "macos" ]; then
         # Strip the quarantine bit so Gatekeeper doesn't block first launch.
-        xattr -d com.apple.quarantine "${PREFIX}/bin/fwaun-tagger-gui" 2>/dev/null || true
+        xattr -d com.apple.quarantine "${PREFIX}/bin/fwaun-tools-gui" 2>/dev/null || true
     fi
-    info "installed GUI: ${PREFIX}/bin/fwaun-tagger-gui"
+    info "installed GUI: ${PREFIX}/bin/fwaun-tools-gui"
 fi
 
 case ":${PATH}:" in

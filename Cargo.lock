@@ -1434,24 +1434,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fwaun-model-tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "half",
- "memmap2",
- "rayon",
- "regex",
- "serde_json",
-]
-
-[[package]]
-name = "fwaun-tagger-booru"
+name = "fwaun-tools-booru"
 version = "0.3.0"
 dependencies = [
  "chrono",
- "fwaun-tagger-core",
+ "fwaun-tools-core",
  "md5",
  "serde",
  "thiserror 2.0.18",
@@ -1459,11 +1446,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fwaun-tagger-captioner"
+name = "fwaun-tools-captioner"
 version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
- "fwaun-tagger-core",
+ "fwaun-tools-core",
  "image",
  "ort",
  "serde",
@@ -1474,36 +1461,42 @@ dependencies = [
 ]
 
 [[package]]
-name = "fwaun-tagger-cli"
+name = "fwaun-tools-cli"
 version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "fwaun-tagger-booru",
- "fwaun-tagger-captioner",
- "fwaun-tagger-core",
- "fwaun-tagger-tagger",
+ "fwaun-tools-booru",
+ "fwaun-tools-captioner",
+ "fwaun-tools-core",
+ "fwaun-tools-tagger",
  "serde_json",
  "tokenizers",
 ]
 
 [[package]]
-name = "fwaun-tagger-core"
+name = "fwaun-tools-core"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "chrono",
+ "half",
  "hf-hub",
+ "memmap2",
  "rand 0.8.6",
+ "rayon",
+ "regex",
  "ron",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "toml",
  "walkdir",
 ]
 
 [[package]]
-name = "fwaun-tagger-gui"
+name = "fwaun-tools-gui"
 version = "0.3.0"
 dependencies = [
  "anyhow",
@@ -1511,10 +1504,10 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
- "fwaun-tagger-booru",
- "fwaun-tagger-captioner",
- "fwaun-tagger-core",
- "fwaun-tagger-tagger",
+ "fwaun-tools-booru",
+ "fwaun-tools-captioner",
+ "fwaun-tools-core",
+ "fwaun-tools-tagger",
  "image",
  "rfd",
  "serde",
@@ -1523,11 +1516,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "fwaun-tagger-tagger"
+name = "fwaun-tools-tagger"
 version = "0.3.0"
 dependencies = [
  "csv",
- "fwaun-tagger-core",
+ "fwaun-tools-core",
  "image",
  "ndarray 0.16.1",
  "ort",

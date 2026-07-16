@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-16
+
 ### Changed
 
 - **Installer auto-detects headless Linux.** `install.sh` now installs both
@@ -291,7 +293,8 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/fwaunstp/fwaun-tools/releases/tag/v0.2.1
 [0.2.0]: https://github.com/fwaunstp/fwaun-tools/releases/tag/v0.2.0

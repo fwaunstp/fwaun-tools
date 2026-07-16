@@ -3,14 +3,24 @@
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh
-#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh -s -- --version v0.2.1
+#   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh -s -- --both
 #   curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh -s -- --cli-only
+#
+# Installs FULL builds of the CLI (fwaun-tools) and GUI (fwaun-tools-gui).
+# On a headless Linux host (no $DISPLAY / $WAYLAND_DISPLAY) only the CLI is
+# installed; override the auto-detect with --both / --cli-only / --gui-only.
+#
+# The prebuilt binaries link ONNX Runtime and need glibc 2.38+ on Linux. On an
+# older distro (Debian 12, Ubuntu 22.04, …) build the portable light CLI from
+# source instead (no ONNX Runtime, no glibc floor):
+#   cargo install --git https://github.com/fwaunstp/fwaun-tools fwaun-tools-cli
 #
 # Flags:
 #   --version <tag>   release tag to install (default: latest)
 #   --prefix <dir>    install root for binaries (default: $HOME/.local)
-#   --cli-only        skip GUI install
-#   --gui-only        skip CLI install
+#   --both            install CLI + GUI (override headless auto-detect)
+#   --cli-only        install CLI only
+#   --gui-only        install GUI only
 #   --no-verify       skip SHA256 verification
 
 set -euo pipefail
@@ -18,8 +28,7 @@ set -euo pipefail
 REPO="fwaunstp/fwaun-tools"
 VERSION="latest"
 PREFIX="${HOME}/.local"
-INSTALL_CLI=1
-INSTALL_GUI=1
+MODE=auto            # auto | both | cli | gui — resolved after OS detection
 VERIFY=1
 
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -29,11 +38,12 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --version)    VERSION="$2"; shift 2 ;;
         --prefix)     PREFIX="$2"; shift 2 ;;
-        --cli-only)   INSTALL_GUI=0; shift ;;
-        --gui-only)   INSTALL_CLI=0; shift ;;
+        --both)       MODE=both; shift ;;
+        --cli-only)   MODE=cli; shift ;;
+        --gui-only)   MODE=gui; shift ;;
         --no-verify)  VERIFY=0; shift ;;
         -h|--help)
-            sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) err "unknown flag: $1" ;;
@@ -62,6 +72,39 @@ fi
 
 TARGET="${OS}-${ARCH}"
 info "platform: ${TARGET}"
+
+# Resolve which binaries to install. `auto` (the default) installs the GUI too
+# unless we're on a headless Linux host — the GUI needs a display at runtime,
+# so there's no point dropping it on a server. macOS is always desktop-capable.
+case "$MODE" in
+    both) INSTALL_CLI=1; INSTALL_GUI=1 ;;
+    cli)  INSTALL_CLI=1; INSTALL_GUI=0 ;;
+    gui)  INSTALL_CLI=0; INSTALL_GUI=1 ;;
+    auto)
+        INSTALL_CLI=1
+        if [ "$OS" = "macos" ] || [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+            INSTALL_GUI=1
+        else
+            INSTALL_GUI=0
+            info "headless Linux (no \$DISPLAY/\$WAYLAND_DISPLAY): installing CLI only — pass --both to include the GUI"
+        fi
+        ;;
+esac
+
+# Prebuilt binaries link ONNX Runtime, which needs glibc 2.38+. Best-effort
+# warn on older systems and point at the source-built light CLI.
+if [ "$OS" = "linux" ] && command -v ldd >/dev/null 2>&1; then
+    GLIBC_VER="$(ldd --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+' | head -n1 || true)"
+    if [ -n "$GLIBC_VER" ]; then
+        GLIBC_MAJOR="${GLIBC_VER%%.*}"
+        GLIBC_MINOR="${GLIBC_VER#*.}"
+        if [ "$GLIBC_MAJOR" = "2" ] && [ "$GLIBC_MINOR" -lt 38 ] 2>/dev/null; then
+            info "warning: system glibc ${GLIBC_VER} is older than 2.38 — the prebuilt binaries link ONNX Runtime and will fail to start."
+            info "         build the portable light CLI from source instead (no ONNX, runs anywhere):"
+            info "           cargo install --git https://github.com/${REPO} fwaun-tools-cli"
+        fi
+    fi
+fi
 
 if [ "$VERSION" = "latest" ]; then
     info "resolving latest release"

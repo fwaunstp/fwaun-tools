@@ -67,6 +67,18 @@ drop both binaries side-by-side:
 Pin a specific version with `--version v0.2.1` (or `-Version v0.2.1` on
 PowerShell).
 
+By default both binaries are installed, except on a **headless Linux** host
+(no `$DISPLAY` / `$WAYLAND_DISPLAY`), where only the CLI is installed — the GUI
+needs a display to run. Override the selection with `--both` / `--cli-only` /
+`--gui-only`:
+
+```sh
+# CLI only (e.g. a training box you only SSH into)
+curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh -s -- --cli-only
+# force both even on a headless host (you'll use a remote / forwarded display)
+curl -fsSL https://raw.githubusercontent.com/fwaunstp/fwaun-tools/main/install.sh | sh -s -- --both
+```
+
 The GUI is a single self-contained binary (built with [egui][egui]) —
 no `.app`, no AppImage, no MSI. On Linux it depends on the standard
 X11 / Wayland system libraries that ship with every desktop
@@ -85,9 +97,17 @@ The Linux **release** binaries are *full* builds (see [Build variants](#build-va
 so they link against the glibc shipped on **Ubuntu 24.04 (glibc 2.39)**.
 They will not run on Ubuntu 22.04, Debian 12, or earlier — the prebuilt
 ONNX Runtime that the local tagger / captioner depend on references
-`__isoc23_*` symbols introduced in glibc 2.38. Upgrade, or build a
-*light* binary from source (no ONNX Runtime, no glibc floor — it runs on
-those older distros).
+`__isoc23_*` symbols introduced in glibc 2.38. Upgrade, or install the
+*light* CLI from source — it links no ONNX Runtime and has no glibc floor,
+so it runs on those older distros:
+
+```sh
+cargo install --git https://github.com/fwaunstp/fwaun-tools fwaun-tools-cli
+```
+
+`cargo install` builds the default *light* variant (needs a Rust toolchain;
+no prebuilt light binaries are published — see [Build variants](#build-variants)).
+The `install.sh` script prints this same hint if it detects an older glibc.
 
 ### Windows support caveat
 

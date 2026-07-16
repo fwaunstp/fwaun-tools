@@ -6,12 +6,17 @@ use std::path::Path;
 use fwaun_tagger_core::config::TaggerProfile;
 use fwaun_tagger_core::hub;
 use fwaun_tagger_core::sidecar::AutoTag;
-use image::DynamicImage;
+#[cfg(feature = "onnx")]
 use image::imageops::FilterType;
-use image::{Rgb, RgbImage};
+#[cfg(feature = "onnx")]
+use image::{DynamicImage, Rgb, RgbImage};
+#[cfg(feature = "onnx")]
 use ndarray::Array4;
+#[cfg(feature = "onnx")]
 use ort::session::Session;
+#[cfg(feature = "onnx")]
 use ort::session::builder::GraphOptimizationLevel;
+#[cfg(feature = "onnx")]
 use ort::value::Tensor;
 use serde::Deserialize;
 use thiserror::Error;
@@ -22,6 +27,10 @@ pub enum TaggerError {
     Io(#[from] std::io::Error),
     #[error("ort: {0}")]
     Ort(String),
+    #[error(
+        "this is a light build without the local ONNX tagger; install the full build to run WD14 tagging"
+    )]
+    Unsupported,
     #[error("image: {0}")]
     Image(#[from] image::ImageError),
     #[error("csv parse on {path}: {source}")]
@@ -38,6 +47,7 @@ pub enum TaggerError {
     OutputMismatch { expected: usize, actual: usize },
 }
 
+#[cfg(feature = "onnx")]
 impl<F> From<ort::Error<F>> for TaggerError {
     fn from(e: ort::Error<F>) -> Self {
         TaggerError::Ort(e.to_string())
@@ -92,6 +102,7 @@ fn category_name(id: i32) -> String {
 }
 
 /// WD14-style preprocessing: pad to square (white), bicubic resize, BGR uint8 → f32 NHWC.
+#[cfg(feature = "onnx")]
 pub fn preprocess_wd14(img: &DynamicImage, size: u32) -> Array4<f32> {
     let rgb = img.to_rgb8();
     let (w, h) = rgb.dimensions();
@@ -114,12 +125,14 @@ pub fn preprocess_wd14(img: &DynamicImage, size: u32) -> Array4<f32> {
     arr
 }
 
+#[cfg(feature = "onnx")]
 pub struct Tagger {
     session: Session,
     tags: Vec<TagDef>,
     input_size: u32,
 }
 
+#[cfg(feature = "onnx")]
 impl Tagger {
     pub fn from_profile(profile: &TaggerProfile) -> Result<Self, TaggerError> {
         // SmilingWolf's WD14 repos lay out `model.onnx` and `selected_tags.csv`
@@ -189,5 +202,31 @@ impl Tagger {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         Ok(results)
+    }
+}
+
+/// Light-build stub: API-compatible with the real [`Tagger`] so callers
+/// (CLI/GUI) need no `cfg`, but every operation returns
+/// [`TaggerError::Unsupported`]. Local WD14 inference requires the `onnx`
+/// feature (the "full" build).
+#[cfg(not(feature = "onnx"))]
+pub struct Tagger(());
+
+#[cfg(not(feature = "onnx"))]
+impl Tagger {
+    pub fn from_profile(_profile: &TaggerProfile) -> Result<Self, TaggerError> {
+        Err(TaggerError::Unsupported)
+    }
+
+    pub fn num_tags(&self) -> usize {
+        0
+    }
+
+    pub fn tag_image(
+        &mut self,
+        _image_path: &Path,
+        _threshold: f32,
+    ) -> Result<Vec<AutoTag>, TaggerError> {
+        Err(TaggerError::Unsupported)
     }
 }

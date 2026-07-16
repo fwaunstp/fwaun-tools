@@ -14,9 +14,15 @@ keywords.workspace = true
 
 [dependencies]
 fwaun-tagger-core = { workspace = true }
-ort = { workspace = true }
-ndarray = { workspace = true }
+ort = { workspace = true, optional = true }
+ndarray = { workspace = true, optional = true }
 image = { workspace = true }
 csv = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+
+[features]
+default = []
+# Local WD14 ONNX inference. Off by default (the "light" build): pulls in
+# ort's prebuilt ONNX Runtime, which raises the glibc floor to 2.38+.
+onnx = ["dep:ort", "dep:ndarray"]

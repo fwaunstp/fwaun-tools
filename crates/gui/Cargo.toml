@@ -16,6 +16,13 @@ keywords.workspace = true
 name = "fwaun-tagger-gui"
 path = "src/main.rs"
 
+[features]
+default = []
+# Local ONNX inference (WD14 tagger + Qwen3-VL captioner). Off by default
+# (the portable "light" build). Enabling it pulls in ort's prebuilt ONNX
+# Runtime and raises the glibc floor to 2.38+.
+full = ["fwaun-tagger-tagger/onnx", "fwaun-tagger-captioner/onnx"]
+
 [dependencies]
 fwaun-tagger-core = { workspace = true }
 fwaun-tagger-tagger = { workspace = true }

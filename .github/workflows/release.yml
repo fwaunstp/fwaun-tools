@@ -69,10 +69,10 @@ jobs:
             libssl-dev \
             zip
 
-      - name: build CLI + GUI
+      - name: build CLI + GUI (full — includes local ONNX tagger/captioner)
         run: |
-          cargo build --release -p fwaun-tagger-cli
-          cargo build --release -p fwaun-tagger-gui
+          cargo build --release -p fwaun-tagger-cli --features full
+          cargo build --release -p fwaun-tagger-gui --features full
 
       - name: stage artifacts
         shell: bash

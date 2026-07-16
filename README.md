@@ -73,13 +73,15 @@ when launched from Finder, run it from Terminal once
 
 [egui]: https://github.com/emilk/egui
 
-### Linux glibc requirement
+### Linux glibc requirement (full build only)
 
-The Linux release binaries link against the glibc shipped on
-**Ubuntu 24.04 (glibc 2.39)**. They will not run on Ubuntu 22.04, Debian
-12, or earlier — the prebuilt ONNX Runtime that the tagger / captioner
-depend on references `__isoc23_*` symbols introduced in glibc 2.38.
-Build from source on older distros, or upgrade.
+The Linux **release** binaries are *full* builds (see [Build variants](#build-variants)),
+so they link against the glibc shipped on **Ubuntu 24.04 (glibc 2.39)**.
+They will not run on Ubuntu 22.04, Debian 12, or earlier — the prebuilt
+ONNX Runtime that the local tagger / captioner depend on references
+`__isoc23_*` symbols introduced in glibc 2.38. Upgrade, or build a
+*light* binary from source (no ONNX Runtime, no glibc floor — it runs on
+those older distros).
 
 ### Windows support caveat
 
@@ -97,9 +99,35 @@ the GUI:
 ```sh
 git clone https://github.com/fwaunstp/fwaun-tagger
 cd fwaun-tagger
+# light build (default) — no local ONNX inference, runs anywhere
 cargo build --release -p fwaun-tagger-cli
 cargo build --release -p fwaun-tagger-gui
+# full build — adds the local WD14 tagger + Qwen3-VL captioner (glibc 2.38+)
+cargo build --release -p fwaun-tagger-cli --features full
+cargo build --release -p fwaun-tagger-gui --features full
 ```
+
+### Build variants
+
+Two build flavors, selected with the `full` cargo feature:
+
+| | light (default) | full (`--features full`) |
+| --- | --- | --- |
+| Local WD14 tagger (`tag`) | ✗ | ✓ |
+| Local Qwen3-VL captioner | ✗ | ✓ |
+| OpenAI-compatible captioner (`caption`) | ✓ | ✓ |
+| booru / export / metadata / tag / manual editing / tag groups | ✓ | ✓ |
+| ONNX Runtime linked | no | yes |
+| Linux glibc floor | none (runs on old distros) | 2.38+ |
+| Approx. CLI size | ~11 MB | ~35 MB |
+
+The published **release** binaries are *full*. A *light* binary drops the
+two local ONNX models (WD14 tagging, Qwen3-VL captioning) but keeps
+everything else — including captioning via any OpenAI-compatible endpoint
+(llama.cpp, Ollama, LM Studio, vLLM, …). Running a local-ONNX-only command
+in a light build fails fast with a message telling you to install the full
+build. Use light when you caption over an API and/or need to run on an
+older-glibc host.
 
 ## Quick start
 

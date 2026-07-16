@@ -42,6 +42,13 @@ jobs:
             build-essential \
             libssl-dev
 
+      # Light build (default features): no ort, portable. This is what
+      # `cargo check --workspace` exercises.
       - run: cargo check --workspace --all-targets
+
+      # Full build (--features full): local ONNX tagger + captioner. Checked
+      # explicitly so the ort-gated code paths don't bit-rot.
+      - run: cargo check -p fwaun-tagger-cli --all-targets --features full
+      - run: cargo check -p fwaun-tagger-gui --all-targets --features full
 
       - run: cargo test -p fwaun-tagger-core

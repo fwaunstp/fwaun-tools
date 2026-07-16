@@ -1434,6 +1434,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fwaun-model-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "half",
+ "memmap2",
+ "rayon",
+ "regex",
+ "serde_json",
+]
+
+[[package]]
 name = "fwaun-tagger-booru"
 version = "0.3.0"
 dependencies = [

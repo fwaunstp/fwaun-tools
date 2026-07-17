@@ -5,9 +5,9 @@
 //! header is computed and written first, then each tensor's bytes are appended
 //! in order, so peak RAM stays at a few tensors rather than a whole model.
 //!
-//! The on-disk layout matches `safetensors` (and musubi-tuner's
-//! `mem_eff_save_file`): an 8-byte little-endian header length, the header JSON
-//! padded with spaces to a 256-byte boundary, then the tensor data blob.
+//! The on-disk layout is the standard `safetensors` format: an 8-byte
+//! little-endian header length, the header JSON padded with spaces to a
+//! 256-byte boundary, then the tensor data blob.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -19,7 +19,7 @@ use half::{bf16, f16};
 use memmap2::Mmap;
 use serde_json::Value;
 
-/// Alignment used for the header JSON padding, matching musubi-tuner's writer.
+/// Alignment used for the header JSON padding, per the safetensors format.
 const HEADER_ALIGN: usize = 256;
 
 /// Tensor element type, mirroring the safetensors dtype tags.

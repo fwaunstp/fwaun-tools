@@ -6,11 +6,11 @@
 //! output[k] = target[k] + multiplier * (tuned[k] - base[k])
 //! ```
 //!
-//! This is a Rust port of musubi-tuner's `krea2_merge_diff.py`, generalized to
-//! also cover Anima checkpoints (which namespace their DiT tensors under `net.`
-//! rather than `model.diffusion_model.`). The math is architecture-agnostic; the
-//! only model-specific piece is how keys are normalized so that base/tuned deltas
-//! line up with a differently-prefixed target.
+//! The math is architecture-agnostic; the only model-specific piece is how keys
+//! are normalized so that base/tuned deltas line up with a differently-prefixed
+//! target. Covers Krea 2 checkpoints (ComfyUI/Civitai `model.diffusion_model.`)
+//! and Anima checkpoints (which namespace their DiT tensors under `net.` rather
+//! than `model.diffusion_model.`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

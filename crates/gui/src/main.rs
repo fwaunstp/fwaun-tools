@@ -2,6 +2,7 @@
 
 mod config_ui;
 mod i18n;
+mod model_ui;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -24,6 +25,7 @@ use egui::{ColorImage, Key, TextureHandle};
 
 use crate::config_ui::{ConfigAction, ConfigDraft, ConfigTab, show_config_modal};
 use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
+use crate::model_ui::ModelApp;
 
 /// Bundled CJK font so Japanese labels render out of the box without a
 /// system font fallback. Subset OTF, ~4.5 MB. If a third script
@@ -56,7 +58,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            Ok(Box::new(AnimaTaggerApp::new()))
+            Ok(Box::new(App::new()))
         }),
     )
 }
@@ -347,8 +349,75 @@ impl AnimaTaggerApp {
     }
 }
 
-impl eframe::App for AnimaTaggerApp {
+/// Which top-level screen is showing. The two are fully independent: the
+/// dataset editor and the model-checkpoint tools share no state.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppMode {
+    Dataset,
+    Model,
+}
+
+/// Top-level app: a mode tab bar (plus the shared language toggle) over two
+/// otherwise-independent screens. The language preference lives on the
+/// dataset app (its historical owner) and is passed down to the model tab.
+struct App {
+    mode: AppMode,
+    dataset: AnimaTaggerApp,
+    model: ModelApp,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            mode: AppMode::Dataset,
+            dataset: AnimaTaggerApp::new(),
+            model: ModelApp::new(),
+        }
+    }
+}
+
+impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let t = T::new(self.dataset.lang);
+        egui::TopBottomPanel::top("mode_bar").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.mode, AppMode::Dataset, t.mode_dataset());
+                ui.selectable_value(&mut self.mode, AppMode::Model, t.mode_model());
+
+                // Language selector, pinned to the right so it's reachable
+                // from either mode.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let lang_label = match self.dataset.lang {
+                        Lang::En => "English",
+                        Lang::Ja => "日本語",
+                    };
+                    egui::ComboBox::from_id_salt("lang_combo")
+                        .selected_text(lang_label)
+                        .width(96.0)
+                        .show_ui(ui, |ui| {
+                            let mut new_lang = self.dataset.lang;
+                            ui.selectable_value(&mut new_lang, Lang::En, "English");
+                            ui.selectable_value(&mut new_lang, Lang::Ja, "日本語");
+                            if new_lang != self.dataset.lang {
+                                self.dataset.lang = new_lang;
+                                save_pref(new_lang);
+                            }
+                        });
+                });
+            });
+            ui.add_space(2.0);
+        });
+
+        match self.mode {
+            AppMode::Dataset => self.dataset.ui(ctx),
+            AppMode::Model => self.model.ui(ctx, self.dataset.lang),
+        }
+    }
+}
+
+impl AnimaTaggerApp {
+    fn ui(&mut self, ctx: &egui::Context) {
         self.poll_worker();
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.ui_toolbar(ui, ctx));
         if let Some(err) = self.error_msg.clone() {
@@ -577,24 +646,6 @@ impl AnimaTaggerApp {
             }
 
             ui.separator();
-
-            // Language selector
-            let lang_label = match self.lang {
-                Lang::En => "English",
-                Lang::Ja => "日本語",
-            };
-            egui::ComboBox::from_id_salt("lang_combo")
-                .selected_text(lang_label)
-                .width(96.0)
-                .show_ui(ui, |ui| {
-                    let mut new_lang = self.lang;
-                    ui.selectable_value(&mut new_lang, Lang::En, "English");
-                    ui.selectable_value(&mut new_lang, Lang::Ja, "日本語");
-                    if new_lang != self.lang {
-                        self.lang = new_lang;
-                        save_pref(new_lang);
-                    }
-                });
 
             if self.loading {
                 ui.label(t.working());

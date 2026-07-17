@@ -14,9 +14,17 @@ binary:
 Built primarily for [ANIMA preview][anima] and Krea 2 LoRA training, but the
 data model and export profiles are not ANIMA-specific.
 
+The `dataset` commands are designed around the input formats consumed by
+[kohya-ss/musubi-tuner][musubi] and [kohya-ss/sd-scripts][sd-scripts], and the
+`model` commands around [ComfyUI][comfyui]. Use with other trainers or inference
+stacks is not tested.
+
 > [日本語版 README](README.ja.md)
 
 [anima]: https://civitai.com/models/anima-preview
+[musubi]: https://github.com/kohya-ss/musubi-tuner
+[sd-scripts]: https://github.com/kohya-ss/sd-scripts
+[comfyui]: https://github.com/Comfy-Org/ComfyUI
 
 ## Features
 
@@ -235,6 +243,11 @@ checkpoint; `extract-lora` factorizes that delta into a kohya-ss/ComfyUI LoRA
 by SVD; `quant-int8` writes the comfy-kitchen `int8_tensorwise` + ConvRot
 layout. All three are CPU/f32 and stream key-by-key, so peak RAM stays small.
 
+`quant-int8` follows the INT8+ConvRot scheme from Comfy-Org's
+[`quant_int8_convrot.py`][quant-ref].
+
+[quant-ref]: https://github.com/Comfy-Org/comfy-model-tools/blob/main/quant_int8_convrot.py
+
 `add-tag` / `remove-tag` bulk-edit the manual tag layer across a
 directory: `add-tag` appends each tag verbatim (`foo` positive, `-foo`
 suppression marker), `remove-tag` deletes matching manual entries
@@ -298,6 +311,21 @@ fwaun-tools dataset validate-tag-group ./dataset --group official_costumes
   contributing.
 - **[crates/core/fwaun-tools.toml.example](crates/core/fwaun-tools.toml.example)** —
   annotated configuration example.
+
+## Project status & contributing
+
+This is a personal tool, developed to build the author's own models —
+[fwaun-anima][m-anima], [fwaun-krea2][m-krea2], and [fwaun-style][m-style] on
+Civitai. It is not extensively tested and likely still has plenty of bugs.
+
+New features aren't guaranteed: the author will add what they find necessary for
+their own work, but may not take on requests beyond that. Bug fixes to existing
+functionality, on the other hand, are actively welcome — issues and pull
+requests are appreciated.
+
+[m-anima]: https://civitai.red/models/2602206/fwaun-anima
+[m-krea2]: https://civitai.red/models/2757203/fwaun-krea2
+[m-style]: https://civitai.red/models/2593831/fwaun-style
 
 ## License
 

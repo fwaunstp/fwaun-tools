@@ -4,6 +4,7 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
+use fwaun_tools_core::model::StreamProgress;
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -159,43 +160,52 @@ pub fn run(command: ModelCommand) -> Result<()> {
         ModelCommand::MergeDiff(cmd) => {
             let save_dtype = cmd.save_dtype.as_deref().map(Dtype::parse_save_dtype).transpose()?;
             let arch = ModelArch::parse(&cmd.model)?;
-            merge::run(MergeArgs {
-                base: cmd.base,
-                tuned: cmd.tuned,
-                target: cmd.target,
-                output: cmd.output,
-                multiplier: cmd.multiplier,
-                save_dtype,
-                arch,
-            })
+            merge::run(
+                MergeArgs {
+                    base: cmd.base,
+                    tuned: cmd.tuned,
+                    target: cmd.target,
+                    output: cmd.output,
+                    multiplier: cmd.multiplier,
+                    save_dtype,
+                    arch,
+                },
+                &mut StreamProgress::stderr(),
+            )
         }
-        ModelCommand::QuantInt8(cmd) => quant::run(QuantArgs {
-            src: cmd.src,
-            dst: cmd.dst,
-            dry_run: cmd.dry_run,
-            exclude: cmd.exclude,
-            include: cmd.include,
-            min_gemm: cmd.min_gemm,
-            downcast_fp32: cmd.downcast_fp32,
-            warn_thresh: cmd.warn_thresh,
-            verify_report: cmd.verify_report,
-        }),
+        ModelCommand::QuantInt8(cmd) => quant::run(
+            QuantArgs {
+                src: cmd.src,
+                dst: cmd.dst,
+                dry_run: cmd.dry_run,
+                exclude: cmd.exclude,
+                include: cmd.include,
+                min_gemm: cmd.min_gemm,
+                downcast_fp32: cmd.downcast_fp32,
+                warn_thresh: cmd.warn_thresh,
+                verify_report: cmd.verify_report,
+            },
+            &mut StreamProgress::stdout(),
+        ),
         ModelCommand::ExtractLora(cmd) => {
             let save_dtype = Dtype::parse_save_dtype(&cmd.save_dtype)?;
             let arch = ModelArch::parse(&cmd.model)?;
-            lora::run(ExtractArgs {
-                base: cmd.base,
-                tuned: cmd.tuned,
-                output: cmd.output,
-                rank: cmd.rank,
-                alpha: cmd.alpha,
-                save_dtype,
-                arch,
-                include: cmd.include,
-                exclude: cmd.exclude,
-                niter: cmd.niter,
-                oversample: cmd.oversample,
-            })
+            lora::run(
+                ExtractArgs {
+                    base: cmd.base,
+                    tuned: cmd.tuned,
+                    output: cmd.output,
+                    rank: cmd.rank,
+                    alpha: cmd.alpha,
+                    save_dtype,
+                    arch,
+                    include: cmd.include,
+                    exclude: cmd.exclude,
+                    niter: cmd.niter,
+                    oversample: cmd.oversample,
+                },
+                &mut StreamProgress::stderr(),
+            )
         }
     }
 }

@@ -9,10 +9,11 @@
 //! repainting and the button re-enables when the job finishes.
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
 use eframe::egui;
+use fwaun_tools_core::model::ProgressSink;
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -182,8 +183,28 @@ impl Default for QuantForm {
 
 /// Message from the worker thread back to the UI.
 enum ModelMsg {
+    /// One log line from the core operation.
+    Log(String),
+    /// Coarse progress: `done` of `total` units.
+    Tick { done: usize, total: usize },
     /// Job finished. `Ok` on success, `Err(message)` on failure.
     Done(Result<(), String>),
+}
+
+/// A [`ProgressSink`] that forwards the core op's log lines and progress ticks
+/// to the UI over the worker channel. Sends are best-effort — if the receiver
+/// is gone (window closed), the op just keeps running to completion.
+struct ChannelProgress {
+    tx: Sender<ModelMsg>,
+}
+
+impl ProgressSink for ChannelProgress {
+    fn log(&mut self, line: &str) {
+        let _ = self.tx.send(ModelMsg::Log(line.to_string()));
+    }
+    fn tick(&mut self, done: usize, total: usize) {
+        let _ = self.tx.send(ModelMsg::Tick { done, total });
+    }
 }
 
 pub struct ModelApp {
@@ -194,6 +215,9 @@ pub struct ModelApp {
     /// `Some` while a job is in flight — the single source of truth for
     /// "running", used to disable the Run button.
     worker_rx: Option<Receiver<ModelMsg>>,
+    /// Latest `(done, total)` progress tick of the running job, for the bar.
+    /// Cleared when the job finishes.
+    progress: Option<(usize, usize)>,
     /// Scrolling log of what has been run this session.
     log: Vec<String>,
 }
@@ -206,6 +230,7 @@ impl ModelApp {
             extract: ExtractForm::default(),
             quant: QuantForm::default(),
             worker_rx: None,
+            progress: None,
             log: Vec::new(),
         }
     }
@@ -214,19 +239,44 @@ impl ModelApp {
         self.worker_rx.is_some()
     }
 
-    /// Drain the worker channel; when `Done` lands, clear the running flag and
-    /// append the outcome to the log.
+    /// Drain the worker channel: append log lines, track the latest progress
+    /// tick, and on `Done` clear the running state and append the outcome.
+    /// The receiver is taken out for the duration so the loop can freely push
+    /// to `self.log` (an in-place `&self.worker_rx` borrow would conflict).
     fn poll_worker(&mut self, lang: Lang) {
+        let Some(rx) = self.worker_rx.take() else {
+            return;
+        };
         let t = T::new(lang);
         let op_name = self.op.label(t).to_string();
-        if let Some(rx) = &self.worker_rx {
-            if let Ok(msg) = rx.try_recv() {
-                match msg {
-                    ModelMsg::Done(Ok(())) => self.log.push(t.model_log_ok(&op_name)),
-                    ModelMsg::Done(Err(e)) => self.log.push(t.model_log_err(&op_name, &e)),
+        let mut finished = false;
+        loop {
+            match rx.try_recv() {
+                Ok(ModelMsg::Log(line)) => self.log.push(line),
+                Ok(ModelMsg::Tick { done, total }) => self.progress = Some((done, total)),
+                Ok(ModelMsg::Done(Ok(()))) => {
+                    self.log.push(t.model_log_ok(&op_name));
+                    finished = true;
+                    break;
                 }
-                self.worker_rx = None;
+                Ok(ModelMsg::Done(Err(e))) => {
+                    self.log.push(t.model_log_err(&op_name, &e));
+                    finished = true;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    // Worker died without a Done (shouldn't happen); stop
+                    // treating the job as running.
+                    finished = true;
+                    break;
+                }
             }
+        }
+        if finished {
+            self.progress = None;
+        } else {
+            self.worker_rx = Some(rx);
         }
     }
 
@@ -313,7 +363,7 @@ impl ModelApp {
                 save_dtype,
                 arch: m.arch,
             };
-            Ok(Box::new(move || merge::run(args)))
+            Ok(Box::new(move |p| merge::run(args, p)))
         });
     }
 
@@ -369,7 +419,7 @@ impl ModelApp {
                 niter: e.niter,
                 oversample: e.oversample,
             };
-            Ok(Box::new(move || lora::run(args)))
+            Ok(Box::new(move |p| lora::run(args, p)))
         });
     }
 
@@ -409,7 +459,7 @@ impl ModelApp {
                 warn_thresh: q.warn_thresh,
                 verify_report: None,
             };
-            Ok(Box::new(move || quant::run(args)))
+            Ok(Box::new(move |p| quant::run(args, p)))
         });
     }
 
@@ -419,7 +469,10 @@ impl ModelApp {
     /// validation error is reported immediately without touching the worker.
     fn run_row<F>(&mut self, ui: &mut egui::Ui, t: T, running: bool, ready: bool, build: F)
     where
-        F: FnOnce(&Self) -> Result<Box<dyn FnOnce() -> anyhow::Result<()> + Send>, String>,
+        F: FnOnce(
+            &Self,
+        )
+            -> Result<Box<dyn FnOnce(&mut dyn ProgressSink) -> anyhow::Result<()> + Send>, String>,
     {
         ui.horizontal(|ui| {
             let clicked = ui
@@ -436,10 +489,12 @@ impl ModelApp {
                     Ok(job) => {
                         let op_name = self.op.label(t).to_string();
                         self.log.push(t.model_log_start(&op_name));
+                        self.progress = None;
                         let (tx, rx) = channel();
                         self.worker_rx = Some(rx);
                         thread::spawn(move || {
-                            let res = job().map_err(|e| format!("{e:#}"));
+                            let mut progress = ChannelProgress { tx: tx.clone() };
+                            let res = job(&mut progress).map_err(|e| format!("{e:#}"));
                             let _ = tx.send(ModelMsg::Done(res));
                         });
                     }
@@ -447,6 +502,15 @@ impl ModelApp {
                 }
             }
         });
+        // Progress bar under the button row while a job reports ticks.
+        if running {
+            if let Some((done, total)) = self.progress {
+                if total > 0 {
+                    let frac = done as f32 / total as f32;
+                    ui.add(egui::ProgressBar::new(frac).text(format!("{done}/{total}")));
+                }
+            }
+        }
     }
 }
 

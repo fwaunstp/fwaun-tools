@@ -17,6 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
+use super::progress::ProgressSink;
 use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// Which key-prefix conventions to normalize away when matching tensors.
@@ -86,13 +87,13 @@ fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
     })
 }
 
-pub fn run(args: MergeArgs) -> Result<()> {
-    eprintln!("base   (org)  : {}", args.base.display());
-    eprintln!("tuned  (ft)   : {}", args.tuned.display());
-    eprintln!("target (recv) : {}", args.target.display());
-    eprintln!("output        : {}", args.output.display());
-    eprintln!("multiplier    : {}", args.multiplier);
-    eprintln!("model         : {:?}", args.arch);
+pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
+    p.log(&format!("base   (org)  : {}", args.base.display()));
+    p.log(&format!("tuned  (ft)   : {}", args.tuned.display()));
+    p.log(&format!("target (recv) : {}", args.target.display()));
+    p.log(&format!("output        : {}", args.output.display()));
+    p.log(&format!("multiplier    : {}", args.multiplier));
+    p.log(&format!("model         : {:?}", args.arch));
 
     let base = SafeTensorsFile::open(&args.base)?;
     let tuned = SafeTensorsFile::open(&args.tuned)?;
@@ -120,18 +121,18 @@ pub fn run(args: MergeArgs) -> Result<()> {
     let only_tuned: Vec<&str> = tuned_bare.difference(&base_bare).copied().collect();
     let only_base: Vec<&str> = base_bare.difference(&tuned_bare).copied().collect();
     if !only_tuned.is_empty() {
-        eprintln!(
+        p.log(&format!(
             "warning: {} keys only in tuned (ignored), e.g. {:?}",
             only_tuned.len(),
             &only_tuned[..only_tuned.len().min(3)]
-        );
+        ));
     }
     if !only_base.is_empty() {
-        eprintln!(
+        p.log(&format!(
             "warning: {} keys only in base (ignored), e.g. {:?}",
             only_base.len(),
             &only_base[..only_base.len().min(3)]
-        );
+        ));
     }
 
     // Decide, per target key, whether it receives a delta and what dtype it gets.
@@ -163,10 +164,10 @@ pub fn run(args: MergeArgs) -> Result<()> {
                 has_delta = true;
                 delta_bare_seen.insert(bare);
             } else {
-                eprintln!(
+                p.log(&format!(
                     "warning: shape mismatch on {key}: base={:?} tuned={:?} target={:?} -> copying target unchanged",
                     binfo.shape, uinfo.shape, tinfo.shape
-                );
+                ));
             }
         }
 
@@ -194,10 +195,10 @@ pub fn run(args: MergeArgs) -> Result<()> {
         }
     }
     if missing_in_target > 0 {
-        eprintln!(
+        p.log(&format!(
             "warning: {missing_in_target} delta keys are absent (or shape-mismatched) in target and were skipped. \
              Are base/target the same architecture?"
-        );
+        ));
     }
 
     // Carry the target's metadata (keeps modelspec.architecture etc.) plus notes.
@@ -216,7 +217,9 @@ pub fn run(args: MergeArgs) -> Result<()> {
     let mut max_abs = 0.0f32;
     let mut sum_mean_abs = 0.0f64;
 
-    for plan in &plans {
+    let total = plans.len();
+    for (i, plan) in plans.iter().enumerate() {
+        p.tick(i + 1, total);
         let key = &plan.key;
         if !plan.has_delta {
             // Pass-through: copy the target's raw bytes unchanged (dtype preserved).
@@ -254,15 +257,109 @@ pub fn run(args: MergeArgs) -> Result<()> {
 
     writer.finish()?;
 
-    eprintln!("applied delta to {applied} keys; carried {carried} target keys unchanged");
-    eprintln!("delta magnitude: max|Δ|={max_abs:.3e}, sum of per-key mean|Δ|={sum_mean_abs:.3e}");
+    p.log(&format!(
+        "applied delta to {applied} keys; carried {carried} target keys unchanged"
+    ));
+    p.log(&format!(
+        "delta magnitude: max|Δ|={max_abs:.3e}, sum of per-key mean|Δ|={sum_mean_abs:.3e}"
+    ));
     if max_abs < 1e-4 {
-        eprintln!(
+        p.log(
             "warning: delta is nearly zero — the fine-tune barely changed the weights. \
-             The merged model will be ~identical to the target."
+             The merged model will be ~identical to the target.",
         );
     }
-    eprintln!("wrote {} tensors to {}", plans.len(), args.output.display());
-    eprintln!("done.");
+    p.log(&format!(
+        "wrote {} tensors to {}",
+        plans.len(),
+        args.output.display()
+    ));
+    p.log("done.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::progress::ProgressSink;
+    use crate::model::safetensors::{OutputTensor, StreamWriter, f32_to_bytes};
+    use std::collections::BTreeMap;
+
+    /// A sink that records every log line and progress tick, for assertions.
+    #[derive(Default)]
+    struct Capture {
+        logs: Vec<String>,
+        last_tick: Option<(usize, usize)>,
+        ticks: usize,
+    }
+    impl ProgressSink for Capture {
+        fn log(&mut self, line: &str) {
+            self.logs.push(line.to_string());
+        }
+        fn tick(&mut self, done: usize, total: usize) {
+            self.last_tick = Some((done, total));
+            self.ticks += 1;
+        }
+    }
+
+    /// Write a one-tensor f32 safetensors file with the given key and values.
+    fn write_one(path: &std::path::Path, key: &str, shape: Vec<usize>, vals: &[f32]) {
+        let dtype = Dtype::parse_save_dtype("fp32").unwrap();
+        let nbytes = vals.len() * dtype.element_size();
+        let plan = vec![OutputTensor {
+            key: key.to_string(),
+            dtype,
+            shape,
+            nbytes,
+        }];
+        let mut w = StreamWriter::begin(path, plan, &BTreeMap::new()).unwrap();
+        w.write_tensor(key, &f32_to_bytes(vals, dtype).unwrap()).unwrap();
+        w.finish().unwrap();
+    }
+
+    #[test]
+    fn merge_reports_progress_and_writes_output() {
+        // Isolated temp dir (no external tempfile dep; unique per process).
+        let dir = std::env::temp_dir().join(format!("fwaun-merge-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // One shared DiT weight; target carries it under a different namespace
+        // so prefix-stripping has to line them up. delta = tuned - base = 1.0.
+        let key_bt = "net.block.0.weight";
+        let key_target = "model.diffusion_model.block.0.weight";
+        let base = dir.join("base.safetensors");
+        let tuned = dir.join("tuned.safetensors");
+        let target = dir.join("target.safetensors");
+        let out = dir.join("out.safetensors");
+        write_one(&base, key_bt, vec![2, 2], &[0.0, 0.0, 0.0, 0.0]);
+        write_one(&tuned, key_bt, vec![2, 2], &[1.0, 1.0, 1.0, 1.0]);
+        write_one(&target, key_target, vec![2, 2], &[5.0, 5.0, 5.0, 5.0]);
+
+        let mut cap = Capture::default();
+        run(
+            MergeArgs {
+                base,
+                tuned,
+                target,
+                output: out.clone(),
+                multiplier: 1.0,
+                save_dtype: None,
+                arch: ModelArch::Auto,
+            },
+            &mut cap,
+        )
+        .unwrap();
+
+        // Output written, and the delta landed: 5.0 + 1.0*(1.0-0.0) = 6.0.
+        let merged = SafeTensorsFile::open(&out).unwrap();
+        let vals = merged.to_f32(key_target).unwrap();
+        assert_eq!(vals, vec![6.0, 6.0, 6.0, 6.0]);
+
+        // Progress reached completion (target has one key -> tick (1, 1)).
+        assert!(cap.ticks >= 1, "expected at least one progress tick");
+        assert_eq!(cap.last_tick, Some((1, 1)));
+        assert_eq!(cap.logs.last().map(String::as_str), Some("done."));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

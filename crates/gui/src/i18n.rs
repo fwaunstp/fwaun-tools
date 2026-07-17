@@ -596,6 +596,131 @@ impl T {
     pub fn err_open_folder_first(self) -> String {
         self.pair("Open a folder first.", "先にフォルダを開いてください。").to_string()
     }
+
+    // ───────── Top-level mode tabs ─────────
+    pub fn mode_dataset(self) -> &'static str {
+        self.pair("Dataset", "データセット")
+    }
+    pub fn mode_model(self) -> &'static str {
+        self.pair("Model tools", "モデルツール")
+    }
+
+    // ───────── Model tools tab ─────────
+    pub fn model_op_merge(self) -> &'static str {
+        self.pair("Merge diff", "差分マージ")
+    }
+    pub fn model_op_extract(self) -> &'static str {
+        self.pair("Extract LoRA", "LoRA抽出")
+    }
+    pub fn model_op_quant(self) -> &'static str {
+        self.pair("Quantize int8", "int8量子化")
+    }
+    pub fn model_op_merge_desc(self) -> &'static str {
+        self.pair(
+            "output = target + multiplier × (tuned − base). Transfers a full \
+             fine-tune delta onto another checkpoint.",
+            "output = target + multiplier ×（tuned − base）。フル微調整の差分を別の\
+             チェックポイントへ転写します。",
+        )
+    }
+    pub fn model_op_extract_desc(self) -> &'static str {
+        self.pair(
+            "SVD of (tuned − base) into a low-rank kohya/ComfyUI LoRA.",
+            "（tuned − base）をSVDして低ランクの kohya/ComfyUI LoRA にします。",
+        )
+    }
+    pub fn model_op_quant_desc(self) -> &'static str {
+        self.pair(
+            "Quantize a bf16/fp16 checkpoint to int8 + ConvRot (comfy-kitchen layout).",
+            "bf16/fp16 チェックポイントを int8 + ConvRot（comfy-kitchen 形式）へ量子化します。",
+        )
+    }
+    // Field labels
+    pub fn model_field_base(self) -> &'static str {
+        self.pair("Base (original)", "ベース（元モデル）")
+    }
+    pub fn model_field_tuned(self) -> &'static str {
+        self.pair("Tuned (fine-tune)", "微調整後モデル")
+    }
+    pub fn model_field_target(self) -> &'static str {
+        self.pair("Target (receiver)", "ターゲット（適用先）")
+    }
+    pub fn model_field_output(self) -> &'static str {
+        self.pair("Output", "出力先")
+    }
+    pub fn model_field_src(self) -> &'static str {
+        self.pair("Source checkpoint", "入力チェックポイント")
+    }
+    pub fn model_field_dst(self) -> &'static str {
+        self.pair("Output (optional)", "出力先（任意）")
+    }
+    pub fn model_field_multiplier(self) -> &'static str {
+        self.pair("Multiplier", "係数")
+    }
+    pub fn model_field_arch(self) -> &'static str {
+        self.pair("Key convention", "キー規約")
+    }
+    pub fn model_field_save_dtype(self) -> &'static str {
+        self.pair("Save dtype", "保存dtype")
+    }
+    pub fn model_field_rank(self) -> &'static str {
+        self.pair("Rank", "ランク")
+    }
+    pub fn model_field_alpha(self) -> &'static str {
+        self.pair("Alpha (override)", "Alpha（上書き）")
+    }
+    pub fn model_field_include(self) -> &'static str {
+        self.pair("Include regex (optional)", "含める正規表現（任意）")
+    }
+    pub fn model_field_exclude(self) -> &'static str {
+        self.pair("Exclude regex (optional)", "除外する正規表現（任意）")
+    }
+    pub fn model_field_dry_run(self) -> &'static str {
+        self.pair("Dry run (report only)", "ドライラン（計画のみ）")
+    }
+    pub fn model_field_min_gemm(self) -> &'static str {
+        self.pair("Min GEMM", "最小GEMM")
+    }
+    pub fn model_field_warn_thresh(self) -> &'static str {
+        self.pair("Warn threshold (relerr %)", "警告しきい値（相対誤差 %）")
+    }
+    pub fn model_dtype_keep(self) -> &'static str {
+        self.pair("keep target's", "ターゲットのまま")
+    }
+    pub fn model_browse(self) -> &'static str {
+        self.pair("Browse…", "参照…")
+    }
+    pub fn model_run(self) -> &'static str {
+        self.pair("Run", "実行")
+    }
+    pub fn model_running(self) -> &'static str {
+        self.pair("Running… (this can take a while)", "実行中…（時間がかかることがあります）")
+    }
+    pub fn model_err_need_paths(self) -> String {
+        self.pair(
+            "Fill in all required file paths first.",
+            "先に必須のファイルパスをすべて入力してください。",
+        )
+        .to_string()
+    }
+    pub fn model_log_start(self, op: &str) -> String {
+        match self.lang {
+            Lang::En => format!("▶ {op} started…"),
+            Lang::Ja => format!("▶ {op} を開始しました…"),
+        }
+    }
+    pub fn model_log_ok(self, op: &str) -> String {
+        match self.lang {
+            Lang::En => format!("✔ {op} finished."),
+            Lang::Ja => format!("✔ {op} が完了しました。"),
+        }
+    }
+    pub fn model_log_err(self, op: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("✖ {op} failed: {err}"),
+            Lang::Ja => format!("✖ {op} が失敗しました: {err}"),
+        }
+    }
 }
 
 // ───────── persistence ─────────

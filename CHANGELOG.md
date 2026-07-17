@@ -13,9 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Dataset / Model tools) so the checkpoint utilities are usable without the
   CLI. The Model tools screen is a plain launcher — pick the operation
   (merge-diff / extract-lora / quant-int8) on the left, fill in file paths and
-  parameters, hit Run — with a live status log. Each job runs on a background
-  thread so the window stays responsive. Shares no state with the dataset
-  editor; the language toggle now lives in the shared top bar.
+  parameters, hit Run — with a live status log and progress bar. Each job runs
+  on a background thread so the window stays responsive. Shares no state with
+  the dataset editor; the language toggle now lives in the shared top bar.
+
+### Changed
+
+- **`model` operations report through a `ProgressSink`.** `merge-diff` /
+  `extract-lora` / `quant-int8` no longer hard-code `eprintln!`/`println!`;
+  each `run` takes a sink so the CLI keeps its exact stderr/stdout lines while
+  the GUI streams the same lines plus structured progress ticks into its log
+  and progress bar (#26).
 
 ## [0.4.0] - 2026-07-16
 

@@ -29,6 +29,7 @@ use anyhow::{Result, bail};
 use rayon::prelude::*;
 use regex::Regex;
 
+use super::progress::ProgressSink;
 use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// ConvRot Hadamard sizes: powers of 4, largest preferred (matches the reference).
@@ -250,7 +251,7 @@ enum Action {
     Quantize { key: String, base: String, out: usize, in_: usize, gs: usize },
 }
 
-pub fn run(args: QuantArgs) -> Result<()> {
+pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
     let src = SafeTensorsFile::open(&args.src)?;
     if looks_fp8_scaled(&src) {
         bail!(
@@ -261,7 +262,7 @@ pub fn run(args: QuantArgs) -> Result<()> {
 
     let dst = args.dst.clone().unwrap_or_else(|| derive_dst(&args.src));
     if args.dst.is_none() && !args.dry_run {
-        println!("auto dst -> {}", dst.display());
+        p.log(&format!("auto dst -> {}", dst.display()));
     }
 
     let deny = exclude_seg();
@@ -381,26 +382,26 @@ pub fn run(args: QuantArgs) -> Result<()> {
 
     // ---- report ----
     let n_quant = actions.iter().filter(|a| matches!(a, Action::Quantize { .. })).count();
-    println!("SRC {}", args.src.display());
-    println!("compute/passthrough dtype: {}", target.tag());
-    println!("\nQUANTIZE {n_quant} layers (int8+convrot, absmax):");
+    p.log(&format!("SRC {}", args.src.display()));
+    p.log(&format!("compute/passthrough dtype: {}", target.tag()));
+    p.log(&format!("\nQUANTIZE {n_quant} layers (int8+convrot, absmax):"));
     for (pat, (c, shape, gs)) in &by_pat {
-        println!("  x{c:<4} gs{gs:<3} {:<16} {pat}", format!("{shape:?}"));
+        p.log(&format!("  x{c:<4} gs{gs:<3} {:<16} {pat}", format!("{shape:?}")));
     }
-    println!(
+    p.log(&format!(
         "  groupsizes: {gsdist:?}   quantized params: {:.2}B (~{:.1} GB int8)",
         qparams as f64 / 1e9,
         qparams as f64 / 1e9,
-    );
+    ));
     let n_skip: usize = skip.values().sum();
-    println!("\nLEAVE AS-IS ({n_skip} weights):");
+    p.log(&format!("\nLEAVE AS-IS ({n_skip} weights):"));
     let mut skip_sorted: Vec<_> = skip.iter().collect();
     skip_sorted.sort_by(|a, b| b.1.cmp(a.1));
     for (reason, c) in skip_sorted {
-        println!("  x{c:<4} {reason}");
+        p.log(&format!("  x{c:<4} {reason}"));
     }
     if args.dry_run {
-        println!("\n[dry-run] nothing written.");
+        p.log("\n[dry-run] nothing written.");
         return Ok(());
     }
 
@@ -435,7 +436,9 @@ pub fn run(args: QuantArgs) -> Result<()> {
                     );
                 }
                 if relerr > args.warn_thresh as f64 {
-                    println!("  WARN high error: {base} gs={gs} relerr={relerr:.2}% cos={cos:.5}");
+                    p.log(&format!(
+                        "  WARN high error: {base} gs={gs} relerr={relerr:.2}% cos={cos:.5}"
+                    ));
                 }
                 errs.push((relerr, cos, *gs, base.clone()));
 
@@ -445,14 +448,17 @@ pub fn run(args: QuantArgs) -> Result<()> {
                 writer.write_tensor(&format!("{base}.comfy_quant"), &comfy_quant_json(*gs))?;
 
                 nq += 1;
+                p.tick(nq, n_quant);
                 if nq.is_multiple_of(100) {
-                    println!("  {nq}/{n_quant} ... {base} gs={gs} relerr={relerr:.2}% cos={cos:.5}");
+                    p.log(&format!(
+                        "  {nq}/{n_quant} ... {base} gs={gs} relerr={relerr:.2}% cos={cos:.5}"
+                    ));
                 }
             }
         }
     }
     writer.finish()?;
-    println!("DONE: quantized {nq} layers -> {}", dst.display());
+    p.log(&format!("DONE: quantized {nq} layers -> {}", dst.display()));
 
     // ---- per-layer error report ----
     if !errs.is_empty() {
@@ -467,8 +473,11 @@ pub fn run(args: QuantArgs) -> Result<()> {
         for (r, _, gs, _) in &errs {
             per_gs.entry(*gs).or_default().push(*r);
         }
-        println!("\n=== quant error (relerr = ||dequant-source|| / ||source||) ===");
-        println!("  mean {mean:.3}%   min {min:.3}%   max {max:.3}%   layers {}", errs.len());
+        p.log("\n=== quant error (relerr = ||dequant-source|| / ||source||) ===");
+        p.log(&format!(
+            "  mean {mean:.3}%   min {min:.3}%   max {max:.3}%   layers {}",
+            errs.len()
+        ));
         let per_gs_str: Vec<String> = per_gs
             .iter()
             .map(|(gs, v)| {
@@ -477,14 +486,17 @@ pub fn run(args: QuantArgs) -> Result<()> {
                 format!("gs{gs}: mean {m:.3}% max {mx:.3}% (x{})", v.len())
             })
             .collect();
-        println!("  per groupsize: {}", per_gs_str.join("  "));
-        println!("  worst 8 layers:");
+        p.log(&format!("  per groupsize: {}", per_gs_str.join("  ")));
+        p.log("  worst 8 layers:");
         for (r, c, gs, b) in errs.iter().take(8) {
-            println!("    {r:6.3}%  cos {c:.5}  gs{gs:<3} {b}");
+            p.log(&format!("    {r:6.3}%  cos {c:.5}  gs{gs:<3} {b}"));
         }
         let over = errs.iter().filter(|e| e.0 > args.warn_thresh as f64).count();
         if over > 0 {
-            println!("  !! {over} layer(s) over --warn-thresh ({}%) — review above", args.warn_thresh);
+            p.log(&format!(
+                "  !! {over} layer(s) over --warn-thresh ({}%) — review above",
+                args.warn_thresh
+            ));
         }
         if let Some(path) = &args.verify_report {
             use std::io::Write;
@@ -493,7 +505,7 @@ pub fn run(args: QuantArgs) -> Result<()> {
             for (r, c, gs, b) in &errs {
                 writeln!(f, "{r:.4}\t{c:.6}\t{gs}\t{b}")?;
             }
-            println!("  full per-layer table -> {}", path.display());
+            p.log(&format!("  full per-layer table -> {}", path.display()));
         }
     }
     Ok(())

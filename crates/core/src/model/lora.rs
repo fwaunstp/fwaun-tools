@@ -33,6 +33,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use super::merge::ModelArch;
+use super::progress::ProgressSink;
 use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// Parsed arguments for the `extract-lora` subcommand.
@@ -80,17 +81,17 @@ fn kohya_name(bare_weight_key: &str) -> String {
     format!("lora_unet_{}", module.replace('.', "_"))
 }
 
-pub fn run(args: ExtractArgs) -> Result<()> {
-    eprintln!("base   (org) : {}", args.base.display());
-    eprintln!("tuned  (ft)  : {}", args.tuned.display());
-    eprintln!("output       : {}", args.output.display());
-    eprintln!("rank         : {}", args.rank);
-    eprintln!(
+pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
+    p.log(&format!("base   (org) : {}", args.base.display()));
+    p.log(&format!("tuned  (ft)  : {}", args.tuned.display()));
+    p.log(&format!("output       : {}", args.output.display()));
+    p.log(&format!("rank         : {}", args.rank));
+    p.log(&format!(
         "alpha        : {}",
         args.alpha.map(|a| a.to_string()).unwrap_or_else(|| "per-module (= rank)".into())
-    );
-    eprintln!("save dtype   : {}", args.save_dtype.tag());
-    eprintln!("model        : {:?}", args.arch);
+    ));
+    p.log(&format!("save dtype   : {}", args.save_dtype.tag()));
+    p.log(&format!("model        : {:?}", args.arch));
 
     if args.rank == 0 {
         bail!("--rank must be >= 1");
@@ -160,9 +161,14 @@ pub fn run(args: ExtractArgs) -> Result<()> {
         bail!("no matching 2D weight tensors found in both base and tuned (check --model / --include)");
     }
     if skipped_shape > 0 {
-        eprintln!("warning: {skipped_shape} shared 2D weights had mismatched shapes and were skipped.");
+        p.log(&format!(
+            "warning: {skipped_shape} shared 2D weights had mismatched shapes and were skipped."
+        ));
     }
-    eprintln!("selected {} linear modules for extraction", modules.len());
+    p.log(&format!(
+        "selected {} linear modules for extraction",
+        modules.len()
+    ));
 
     // Plan the output: three tensors per module (down, up, alpha), in a fixed order.
     let mut plan: Vec<OutputTensor> = Vec::with_capacity(modules.len() * 3);
@@ -254,29 +260,34 @@ pub fn run(args: ExtractArgs) -> Result<()> {
             &f32_to_bytes(&[alpha_val], args.save_dtype)?,
         )?;
 
+        p.tick(idx + 1, modules.len());
         if (idx + 1) % 32 == 0 || idx + 1 == modules.len() {
-            eprintln!("  extracted {}/{} modules", idx + 1, modules.len());
+            p.log(&format!("  extracted {}/{} modules", idx + 1, modules.len()));
         }
     }
 
     writer.finish()?;
 
     let mean_energy = sum_energy / modules.len() as f64;
-    eprintln!(
+    p.log(&format!(
         "energy captured: mean {:.1}%, min {:.1}% ({})",
         mean_energy * 100.0,
         min_energy * 100.0,
         worst_name
-    );
+    ));
     if min_energy < 0.90 {
-        eprintln!(
+        p.log(&format!(
             "note: some modules capture <90% of their delta at rank {}. Raise --rank for a closer \
              match to the fine-tune (at the cost of a larger LoRA).",
             args.rank
-        );
+        ));
     }
-    eprintln!("wrote {} tensors to {}", modules.len() * 3, args.output.display());
-    eprintln!("done.");
+    p.log(&format!(
+        "wrote {} tensors to {}",
+        modules.len() * 3,
+        args.output.display()
+    ));
+    p.log("done.");
     Ok(())
 }
 

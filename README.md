@@ -47,7 +47,10 @@ stacks is not tested.
   (sd-scripts DreamBooth/LoRA caption-file mode); `metadata` writes a
   single `meta.json` (sd-scripts fine-tune mode).
 - **Bilingual GUI.** English / 日本語 toggle, defaults to host locale.
-- **CLI for batch operations**, GUI for curation.
+- **CLI for batch operations**, GUI for curation. The GUI also has a
+  **Model tools** tab (Dataset / Model tools mode switch) that front-ends
+  the `merge-diff` / `extract-lora` / `quant-int8` checkpoint utilities
+  for people who'd rather not use the CLI.
 
 ## Install
 
@@ -242,6 +245,9 @@ fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude R
 checkpoint; `extract-lora` factorizes that delta into a kohya-ss/ComfyUI LoRA
 by SVD; `quant-int8` writes the comfy-kitchen `int8_tensorwise` + ConvRot
 layout. All three are CPU/f32 and stream key-by-key, so peak RAM stays small.
+
+These three are also available in the GUI's **Model tools** tab (switch modes
+at the top of the window), for the same operations without the command line.
 
 `quant-int8` follows the INT8+ConvRot scheme from Comfy-Org's
 [`quant_int8_convrot.py`][quant-ref].

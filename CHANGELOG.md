@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-18
+
 ### Added
 
 - **GUI "Model tools" tab.** The desktop app now has a top-level mode switcher
@@ -16,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameters, hit Run — with a live status log and progress bar. Each job runs
   on a background thread so the window stays responsive. Shares no state with
   the dataset editor; the language toggle now lives in the shared top bar.
+- **Real GUI window icon.** The 256×256 solid-color placeholder is replaced
+  with a 1024×1024 RGBA icon (transparent, background-removed subject). eframe
+  loads it via `from_png_bytes`; winit downscales for the taskbar and `dx
+  bundle` derives per-platform icons from this single source. Icon requirements
+  (RGBA, square, ≥512 px) are documented in the assets README (#30).
 
 ### Changed
 
@@ -24,6 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each `run` takes a sink so the CLI keeps its exact stderr/stdout lines while
   the GUI streams the same lines plus structured progress ticks into its log
   and progress bar (#26).
+
+### Fixed
+
+- **GUI language preference now persists on Windows/macOS.** The setting was
+  written under `$XDG_CONFIG_HOME`/`$HOME`, which are typically unset on
+  Windows, so the choice was silently dropped and every launch fell back to
+  host-locale detection. The preference now goes through `dirs::config_dir()`
+  (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS,
+  `$XDG_CONFIG_HOME`/`~/.config` on Linux); Linux behavior is unchanged (#29).
+
+### Documentation
+
+- Clarified the tool integrations and provenance in the README: dataset
+  commands target musubi-tuner / sd-scripts input formats and model commands
+  target ComfyUI (other environments untested); credited Comfy-Org's
+  `quant_int8_convrot.py` as the `quant-int8` reference; added a
+  personal-project status / contributing note. Dropped inaccurate upstream
+  attributions from the model-tools code comments.
 
 ## [0.4.0] - 2026-07-16
 
@@ -311,7 +336,8 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/fwaunstp/fwaun-tools/releases/tag/v0.2.1

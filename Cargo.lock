@@ -1501,6 +1501,7 @@ version = "0.4.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs",
  "eframe",
  "egui",
  "egui_extras",

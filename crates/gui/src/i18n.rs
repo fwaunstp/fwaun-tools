@@ -1,7 +1,8 @@
 //! GUI internationalization. The app supports English and Japanese; default
-//! is the host locale. The user's choice persists in
-//! `$XDG_CONFIG_HOME/fwaun-tools/gui-prefs.toml` (or the `$HOME/.config`
-//! fallback).
+//! is the host locale. The user's choice persists in `gui-prefs.toml` under
+//! the platform config directory (`%APPDATA%` on Windows,
+//! `$XDG_CONFIG_HOME` / `~/.config` on Linux, `~/Library/Application Support`
+//! on macOS).
 
 use std::fs;
 use std::path::PathBuf;
@@ -726,21 +727,10 @@ impl T {
 // ───────── persistence ─────────
 
 fn prefs_path() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
-        return Some(
-            PathBuf::from(xdg)
-                .join("fwaun-tools")
-                .join("gui-prefs.toml"),
-        );
-    }
-    std::env::var_os("HOME")
-        .filter(|s| !s.is_empty())
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("fwaun-tools")
-                .join("gui-prefs.toml")
-        })
+    // `dirs::config_dir()` resolves the right per-platform location: `%APPDATA%`
+    // on Windows, `$XDG_CONFIG_HOME` (falling back to `~/.config`) on Linux, and
+    // `~/Library/Application Support` on macOS.
+    dirs::config_dir().map(|d| d.join("fwaun-tools").join("gui-prefs.toml"))
 }
 
 pub fn load_pref_or_detect() -> Lang {

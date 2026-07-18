@@ -40,3 +40,4 @@ rfd = "0.15"
 image = { workspace = true }
 toml = { workspace = true }
 sys-locale = "0.3"
+dirs = "6"

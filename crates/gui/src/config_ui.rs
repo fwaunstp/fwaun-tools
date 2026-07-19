@@ -26,6 +26,11 @@ pub struct ConfigDraft {
     pub captioner: Vec<(String, CaptionerProfile)>,
     pub captioner_prompts: Vec<(String, String)>,
     pub tag_groups: Vec<(String, TagGroup)>,
+    /// Upscaler config isn't editable in the GUI yet; carried verbatim so a
+    /// config save round-trips `default_upscaler` / `[upscaler.*]` untouched
+    /// instead of dropping them.
+    pub default_upscaler: Option<String>,
+    pub upscaler: std::collections::BTreeMap<String, fwaun_tools_core::config::UpscalerProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +71,8 @@ impl ConfigDraft {
             captioner: cfg.captioner.into_iter().collect(),
             captioner_prompts: cfg.captioner_prompts.into_iter().collect(),
             tag_groups: cfg.tag_groups.into_iter().collect(),
+            default_upscaler: cfg.default_upscaler,
+            upscaler: cfg.upscaler,
         }
     }
 
@@ -157,9 +164,14 @@ impl ConfigDraft {
                 .default_captioner
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
+            default_upscaler: self
+                .default_upscaler
+                .clone()
+                .filter(|s| !s.trim().is_empty()),
             export,
             tagger,
             captioner,
+            upscaler: self.upscaler.clone(),
             captioner_prompts,
             tag_groups,
         };

@@ -70,11 +70,15 @@ pub struct ProjectConfig {
     #[serde(default)]
     pub default_captioner: Option<String>,
     #[serde(default)]
+    pub default_upscaler: Option<String>,
+    #[serde(default)]
     pub export: BTreeMap<String, ExportProfile>,
     #[serde(default)]
     pub tagger: BTreeMap<String, TaggerProfile>,
     #[serde(default)]
     pub captioner: BTreeMap<String, CaptionerProfile>,
+    #[serde(default)]
+    pub upscaler: BTreeMap<String, UpscalerProfile>,
     /// Shared prompt library — define each prompt once here and reference
     /// it by name from any captioner profile's `prompts = [...]`. The
     /// built-in `default` is always available; redefining `default` here
@@ -249,6 +253,76 @@ fn default_openai_timeout_secs() -> u64 {
 
 fn default_openai_max_retries() -> u32 {
     3
+}
+
+/// Default ComfyUI server root — the stock local install listens here.
+pub const DEFAULT_COMFYUI_BASE_URL: &str = "http://127.0.0.1:8188";
+
+/// ComfyUI-backed upscaler profile. Each image is sent to an existing ComfyUI
+/// server over its HTTP API (`/upload/image` → `/prompt` → `/history` →
+/// `/view`) and the upscaled result pulled back — no per-image manual
+/// upload/download. Configure a model filename for the built-in ESRGAN-style
+/// workflow, or point at your own API-format workflow export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpscalerProfile {
+    /// ComfyUI server root, e.g. `"http://127.0.0.1:8188"`.
+    #[serde(default = "default_comfyui_base_url")]
+    pub base_url: String,
+    /// Upscale-model filename as it appears in ComfyUI's
+    /// `models/upscale_models/` dir, e.g. `"RealESRGAN_x4plus.pth"`. Used by
+    /// the built-in workflow; run `dataset upscale-models` to list what the
+    /// server offers. Ignored when `workflow_template` is set.
+    #[serde(default)]
+    pub upscale_model: Option<String>,
+    /// Path to an API-format workflow JSON exported from ComfyUI
+    /// (*Save (API Format)*). When set, this graph is used instead of the
+    /// built-in one; the single `LoadImage` node is fed each dataset image and
+    /// the `SaveImage` node's output is retrieved. Enables diffusion-based
+    /// upscalers (Ultimate SD Upscale, tiled img2img, …).
+    #[serde(default)]
+    pub workflow_template: Option<PathBuf>,
+    /// After upscaling, cap the longest edge to this many pixels (Lanczos3
+    /// downscale when exceeded). Model upscalers emit a fixed multiplier
+    /// (usually ×4); this keeps a dataset's resolutions bounded. `0` = keep the
+    /// model's native output size.
+    #[serde(default = "default_upscaler_max_edge")]
+    pub max_edge: u32,
+    /// Per-request / whole-job timeout in seconds. Diffusion-based workflows on
+    /// a busy server can take a while per image.
+    #[serde(default = "default_upscaler_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Pause between `/history` status polls, in milliseconds.
+    #[serde(default = "default_upscaler_poll_ms")]
+    pub poll_interval_ms: u64,
+}
+
+fn default_comfyui_base_url() -> String {
+    DEFAULT_COMFYUI_BASE_URL.to_string()
+}
+
+fn default_upscaler_max_edge() -> u32 {
+    2048
+}
+
+fn default_upscaler_timeout_secs() -> u64 {
+    600
+}
+
+fn default_upscaler_poll_ms() -> u64 {
+    750
+}
+
+impl Default for UpscalerProfile {
+    fn default() -> Self {
+        Self {
+            base_url: default_comfyui_base_url(),
+            upscale_model: None,
+            workflow_template: None,
+            max_edge: default_upscaler_max_edge(),
+            timeout_secs: default_upscaler_timeout_secs(),
+            poll_interval_ms: default_upscaler_poll_ms(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,9 +510,11 @@ impl Default for ProjectConfig {
             default_profile: Some(DEFAULT_PROFILE_NAME.to_string()),
             default_tagger: None,
             default_captioner: None,
+            default_upscaler: None,
             export,
             tagger: BTreeMap::new(),
             captioner: BTreeMap::new(),
+            upscaler: BTreeMap::new(),
             captioner_prompts: BTreeMap::new(),
             tag_groups: BTreeMap::new(),
         }
@@ -607,6 +683,9 @@ impl ProjectConfig {
         if other.default_captioner.is_some() {
             self.default_captioner = other.default_captioner;
         }
+        if other.default_upscaler.is_some() {
+            self.default_upscaler = other.default_upscaler;
+        }
         for (k, v) in other.export {
             self.export.insert(k, v);
         }
@@ -615,6 +694,9 @@ impl ProjectConfig {
         }
         for (k, v) in other.captioner {
             self.captioner.insert(k, v);
+        }
+        for (k, v) in other.upscaler {
+            self.upscaler.insert(k, v);
         }
         for (k, v) in other.captioner_prompts {
             self.captioner_prompts.insert(k, v);
@@ -677,6 +759,23 @@ impl ProjectConfig {
             BUILT_IN_CAPTIONER_NAME.to_string(),
             CaptionerProfile::built_in(),
         )
+    }
+
+    /// Resolve an upscaler profile. Order: explicit `name`, then
+    /// `default_upscaler`, then a built-in default pointing at the stock local
+    /// ComfyUI (`http://127.0.0.1:8188`) with no model preselected. The caller
+    /// still needs to supply an `upscale_model` or `workflow_template` (via the
+    /// profile or a CLI flag) before a run can start.
+    pub fn resolve_upscaler(&self, name: Option<&str>) -> (String, UpscalerProfile) {
+        let key = name
+            .map(str::to_string)
+            .or_else(|| self.default_upscaler.clone());
+        if let Some(k) = key
+            && let Some(profile) = self.upscaler.get(&k)
+        {
+            return (k, profile.clone());
+        }
+        ("comfyui".to_string(), UpscalerProfile::default())
     }
 }
 
@@ -947,6 +1046,12 @@ mod tests {
                 "default_captioner = {c:?} but no matching [captioner.{c}] in the example"
             );
         }
+        if let Some(u) = &cfg.default_upscaler {
+            assert!(
+                cfg.upscaler.contains_key(u),
+                "default_upscaler = {u:?} but no matching [upscaler.{u}] in the example"
+            );
+        }
 
         fn struct_keys<T: serde::Serialize>(v: T) -> BTreeSet<String> {
             #[derive(serde::Serialize)]
@@ -1030,12 +1135,21 @@ mod tests {
         let full_tag_group = TagGroup {
             tags: vec!["x".into()],
         };
+        let full_upscaler = UpscalerProfile {
+            base_url: "http://x".into(),
+            upscale_model: Some("m.pth".into()),
+            workflow_template: Some(PathBuf::from("wf.json")),
+            max_edge: default_upscaler_max_edge(),
+            timeout_secs: default_upscaler_timeout_secs(),
+            poll_interval_ms: default_upscaler_poll_ms(),
+        };
 
         let expected_export = struct_keys(full_export);
         let expected_tagger = struct_keys(full_tagger);
         let expected_onnx = struct_keys(full_onnx);
         let expected_openai = struct_keys(full_openai);
         let expected_tag_group = struct_keys(full_tag_group);
+        let expected_upscaler = struct_keys(full_upscaler);
 
         if let Err(missing) =
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
@@ -1081,6 +1195,14 @@ mod tests {
             panic!(
                 "no [tag_group.*] entry in crates/core/fwaun-tools.toml.example covers every \
                  TagGroup field; closest match is missing {missing:?}"
+            );
+        }
+        if let Err(missing) =
+            missing_from_best_match(raw_table.get("upscaler"), &expected_upscaler, |_| true)
+        {
+            panic!(
+                "no [upscaler.*] profile in crates/core/fwaun-tools.toml.example covers every \
+                 UpscalerProfile field; closest match is missing {missing:?}"
             );
         }
     }

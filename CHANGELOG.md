@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Batch image upscaling via ComfyUI.** A new `fwaun-tools dataset upscale
+  <dir>` command sends every image in a dataset to an existing ComfyUI server
+  over its HTTP API (`/upload/image` → `/prompt` → `/history` → `/view`) and
+  writes the upscaled results to a separate output directory (default: a
+  `<dir>_upscaled` sibling), copying each `.ron` sidecar alongside so the
+  output stays a ready-to-train dataset — no more uploading and downloading one
+  image at a time in the web UI. The built-in workflow is a model-based
+  (ESRGAN-style) `LoadImage → UpscaleModelLoader → ImageUpscaleWithModel →
+  SaveImage` graph; point `--workflow` at your own *Save (API Format)* export
+  to drive any workflow (e.g. Ultimate SD Upscale). `--max-edge` caps the
+  longest edge after upscaling so a dataset's resolutions stay bounded. A
+  companion `dataset upscale-models` command lists the upscale-model filenames
+  the server offers. Configure it per dataset or user-wide via an
+  `[upscaler.<name>]` profile. Backed by a new reusable `fwaun-tools-comfyui`
+  crate wrapping the ComfyUI API, so future ComfyUI-driven batch passes can
+  share the same client.
+
 ## [0.5.0] - 2026-07-18
 
 ### Added

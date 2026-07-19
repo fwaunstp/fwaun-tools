@@ -221,3 +221,51 @@ tags = ["official_school_uniform", "official_lounge_wear"]
 # Add such a tag as a group member to give "confirmed none" its own column:
 # [tag_group.character]
 # tags = ["character_a", "character_b", "_no_character"]
+
+# ---------------------------------------------------------------------------
+# Upscaler profiles — batch-upscale a dataset through an existing ComfyUI
+# server (`fwaun-tools dataset upscale <dir>`). Each image is uploaded over
+# ComfyUI's HTTP API, run through an upscale workflow, and the result written
+# to a separate output directory (default: a `<dir>_upscaled` sibling), with
+# each `.ron` sidecar copied alongside. Run `fwaun-tools dataset upscale-models`
+# to list the model filenames the server offers.
+#
+# Select one without `--profile` by setting `default_upscaler` at the top of
+# this file (left unset here so the built-in default — local ComfyUI, no model
+# — applies until you configure one).
+# ---------------------------------------------------------------------------
+
+# Model-based (ESRGAN-style) upscaler using the built-in workflow. This is the
+# fast, faithful default for datasets: no diffusion, just the upscale model.
+[upscaler.esrgan]
+# ComfyUI server root. Defaults to the stock local install if omitted.
+base_url = "http://127.0.0.1:8188"
+# Upscale-model filename as it appears in ComfyUI's models/upscale_models/.
+# Popular picks: RealESRGAN_x4plus.pth (photo/general), 4x-UltraSharp.pth
+# (sharp digital art), or an anime-tuned model for illustration linework.
+upscale_model = "RealESRGAN_x4plus.pth"
+# After upscaling, cap the longest edge to this many pixels (Lanczos3
+# downscale when exceeded). Model upscalers emit a fixed multiplier (usually
+# ×4); this keeps dataset resolutions bounded. 0 = keep the native output.
+max_edge = 2048
+# Per-request / whole-job timeout in seconds.
+timeout_secs = 600
+# Pause between /history status polls, in milliseconds.
+poll_interval_ms = 750
+# Advanced: use your own ComfyUI workflow instead of the built-in graph.
+# Export it via ComfyUI's "Save (API Format)" and point at the JSON here. The
+# single LoadImage node is fed each dataset image; the SaveImage node's output
+# is retrieved. Enables diffusion-based upscalers (Ultimate SD Upscale, tiled
+# img2img, …). When set, `upscale_model` is ignored.
+# workflow_template = "workflows/ultimate_sd_upscale_api.json"
+
+# Custom-workflow upscaler: drives your own API-format ComfyUI workflow (e.g.
+# a diffusion-based Ultimate SD Upscale graph). `workflow_template` takes
+# precedence over `upscale_model` when both are present.
+[upscaler.custom]
+base_url = "http://127.0.0.1:8188"
+upscale_model = "RealESRGAN_x4plus.pth"
+workflow_template = "workflows/ultimate_sd_upscale_api.json"
+max_edge = 2048
+timeout_secs = 900
+poll_interval_ms = 750

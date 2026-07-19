@@ -1469,10 +1469,22 @@ dependencies = [
  "clap",
  "fwaun-tools-booru",
  "fwaun-tools-captioner",
+ "fwaun-tools-comfyui",
  "fwaun-tools-core",
  "fwaun-tools-tagger",
  "serde_json",
  "tokenizers",
+]
+
+[[package]]
+name = "fwaun-tools-comfyui"
+version = "0.5.0"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "ureq 2.12.1",
 ]
 
 [[package]]

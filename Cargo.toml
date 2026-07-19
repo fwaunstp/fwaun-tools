@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/cli", "crates/gui"]
+members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "crates/comfyui", "crates/cli", "crates/gui"]
 
 [workspace.package]
 version = "0.5.0"
@@ -18,6 +18,7 @@ fwaun-tools-core = { path = "crates/core", version = "0.5.0" }
 fwaun-tools-tagger = { path = "crates/tagger", version = "0.5.0" }
 fwaun-tools-captioner = { path = "crates/captioner", version = "0.5.0" }
 fwaun-tools-booru = { path = "crates/booru", version = "0.5.0" }
+fwaun-tools-comfyui = { path = "crates/comfyui", version = "0.5.0" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ureq = { version = "2", features = ["json"] }
 md5 = "0.7"

@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::Captioner;
+use fwaun_tools_comfyui::Client as ComfyClient;
+use fwaun_tools_comfyui::upscale::{Options as UpscaleOptions, Upscaler};
 use fwaun_tools_core::config::ProjectConfig;
 use fwaun_tools_core::export;
 use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
@@ -115,6 +117,56 @@ enum DatasetCommand {
         /// Re-fetch images that already have booru data.
         #[arg(long)]
         force: bool,
+    },
+    /// Batch-upscale every image in a directory by sending it to an existing
+    /// ComfyUI server over its HTTP API, writing the results to a separate
+    /// output directory (default: a `<dir>_upscaled` sibling). Uses the
+    /// built-in ESRGAN-style workflow (set `--upscale-model` or the profile's
+    /// `upscale_model`), or your own API-format workflow via `--workflow`.
+    /// Each image's `.ron` sidecar is copied alongside so the output is a
+    /// ready-to-train dataset. Run `dataset upscale-models` first to see which
+    /// model filenames the server offers.
+    Upscale {
+        dir: PathBuf,
+        /// Name of an `[upscaler.<name>]` profile in `fwaun-tools.toml`.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Output directory. Relative sub-paths are preserved under it.
+        /// Default: a `<dir>_upscaled` sibling directory.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Upscale-model filename for the built-in workflow
+        /// (e.g. `RealESRGAN_x4plus.pth`). Overrides the profile.
+        #[arg(long)]
+        upscale_model: Option<String>,
+        /// API-format workflow JSON to use instead of the built-in graph.
+        /// Overrides the profile.
+        #[arg(long)]
+        workflow: Option<PathBuf>,
+        /// Cap the upscaled longest edge to this many pixels (0 = keep the
+        /// model's native output). Overrides the profile.
+        #[arg(long)]
+        max_edge: Option<u32>,
+        /// Re-upscale images whose output file already exists.
+        #[arg(long)]
+        force: bool,
+        /// List what would be upscaled without contacting ComfyUI.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// List the upscale-model filenames the ComfyUI server offers (read from
+    /// its `/object_info`). Use one of these as `--upscale-model` / the
+    /// profile's `upscale_model`.
+    UpscaleModels {
+        /// Name of an `[upscaler.<name>]` profile to read `base_url` from.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
+        #[arg(long)]
+        base_url: Option<String>,
     },
     /// Merge manual + auto + booru tags and write `<image>.txt` for training.
     Export {
@@ -256,6 +308,30 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             promote_to_manual,
         } => cmd_caption(dir, model, force, prompts, promote_to_manual),
         DatasetCommand::Booru { dir, source, force } => cmd_booru(dir, source, force),
+        DatasetCommand::Upscale {
+            dir,
+            profile,
+            output,
+            base_url,
+            upscale_model,
+            workflow,
+            max_edge,
+            force,
+            dry_run,
+        } => cmd_upscale(
+            dir,
+            profile,
+            output,
+            base_url,
+            upscale_model,
+            workflow,
+            max_edge,
+            force,
+            dry_run,
+        ),
+        DatasetCommand::UpscaleModels { profile, base_url } => {
+            cmd_upscale_models(profile, base_url)
+        }
         DatasetCommand::Export {
             dir,
             profile,
@@ -484,6 +560,161 @@ fn cmd_booru(dir: PathBuf, source: String, force: bool) -> Result<()> {
         }
     }
     println!("done: {fetched} fetched, {not_found} not found, {skipped} skipped");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_upscale(
+    dir: PathBuf,
+    profile_name: Option<String>,
+    output: Option<PathBuf>,
+    base_url: Option<String>,
+    upscale_model: Option<String>,
+    workflow: Option<PathBuf>,
+    max_edge: Option<u32>,
+    force: bool,
+    dry_run: bool,
+) -> Result<()> {
+    use fwaun_tools_core::sidecar::sidecar_path_for;
+
+    let cfg = ProjectConfig::load_or_default(&dir)
+        .with_context(|| format!("loading config in {}", dir.display()))?;
+    let (name, mut profile) = cfg.resolve_upscaler(profile_name.as_deref());
+
+    // CLI flags override the resolved profile.
+    if let Some(u) = base_url {
+        profile.base_url = u;
+    }
+    if let Some(m) = upscale_model {
+        profile.upscale_model = Some(m);
+    }
+    if let Some(w) = workflow {
+        profile.workflow_template = Some(w);
+    }
+    if let Some(e) = max_edge {
+        profile.max_edge = e;
+    }
+
+    // Default output: a `<dir>_upscaled` sibling so a re-run over `dir`
+    // doesn't re-scan the results.
+    let out_root = output.unwrap_or_else(|| match dir.file_name() {
+        Some(fname) => {
+            let mut n = fname.to_os_string();
+            n.push("_upscaled");
+            dir.with_file_name(n)
+        }
+        None => dir.join("upscaled"),
+    });
+
+    let upscaler = Upscaler::new(UpscaleOptions {
+        base_url: profile.base_url.clone(),
+        upscale_model: profile.upscale_model.clone(),
+        workflow_template: profile.workflow_template.clone(),
+        max_edge: profile.max_edge,
+        timeout_secs: profile.timeout_secs,
+        poll_interval_ms: profile.poll_interval_ms,
+    })
+    .context("configuring the ComfyUI upscaler")?;
+
+    let how = match (&profile.workflow_template, &profile.upscale_model) {
+        (Some(t), _) => format!("workflow template {}", t.display()),
+        (None, Some(m)) => format!("built-in ESRGAN workflow, model {m}"),
+        (None, None) => "built-in workflow".to_string(),
+    };
+    eprintln!(
+        "upscaling via ComfyUI at {} (profile `{name}`, {how}) → {}",
+        profile.base_url,
+        out_root.display(),
+    );
+
+    let mut done = 0usize;
+    let mut would = 0usize;
+    let mut skipped = 0usize;
+    let mut errors = 0usize;
+    for image in iter_images(&dir) {
+        // Never descend into our own output (matters when `out_root` sits
+        // inside `dir`, e.g. the no-file-name fallback).
+        if image.starts_with(&out_root) {
+            continue;
+        }
+        let rel = image.strip_prefix(&dir).unwrap_or(&image);
+        // ComfyUI hands back PNG bytes regardless of the source format, so the
+        // output always carries a `.png` extension. Sidecars are extension-
+        // independent (`foo.*` → `foo.ron`), so the copied sidecar still lines
+        // up with the renamed image.
+        let target = out_root.join(rel).with_extension("png");
+        if !force && target.exists() {
+            skipped += 1;
+            continue;
+        }
+        if dry_run {
+            would += 1;
+            println!("would upscale {} → {}", rel.display(), target.display());
+            continue;
+        }
+
+        match upscaler.upscale_file(&image) {
+            Ok(bytes) => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
+                std::fs::write(&target, bytes)
+                    .with_context(|| format!("writing {}", target.display()))?;
+
+                // Carry the sidecar over so the upscaled set stays a complete
+                // dataset (tags/captions travel with the image).
+                let src_side = sidecar_path_for(&image);
+                if src_side.exists() {
+                    let dst_side = sidecar_path_for(&target);
+                    std::fs::copy(&src_side, &dst_side).with_context(|| {
+                        format!("copying sidecar {} → {}", src_side.display(), dst_side.display())
+                    })?;
+                }
+                done += 1;
+                println!("upscaled {} → {}", rel.display(), target.display());
+            }
+            Err(e) => {
+                errors += 1;
+                eprintln!("error: {}: {e}", image.display());
+            }
+        }
+    }
+
+    if dry_run {
+        println!("dry run: {would} would upscale, {skipped} already present");
+    } else {
+        println!("done: {done} upscaled, {skipped} skipped (already present), {errors} errored");
+    }
+    Ok(())
+}
+
+fn cmd_upscale_models(profile_name: Option<String>, base_url: Option<String>) -> Result<()> {
+    use std::time::Duration;
+
+    // Resolve base_url from the profile if present; a flag overrides it. Fall
+    // back to the built-in default when there's no config at all.
+    let base = base_url.unwrap_or_else(|| {
+        let cfg = ProjectConfig::load_or_default(std::path::Path::new("."))
+            .unwrap_or_default();
+        let (_, profile) = cfg.resolve_upscaler(profile_name.as_deref());
+        profile.base_url
+    });
+
+    eprintln!("querying ComfyUI at {base} …");
+    let client = ComfyClient::new(&base, Duration::from_secs(30));
+    let models = client
+        .list_upscale_models()
+        .with_context(|| format!("listing upscale models from {base}"))?;
+
+    if models.is_empty() {
+        println!("(no upscale models found — check the server's models/upscale_models dir)");
+    } else {
+        for m in &models {
+            println!("{m}");
+        }
+        eprintln!("{} model(s)", models.len());
+    }
     Ok(())
 }
 

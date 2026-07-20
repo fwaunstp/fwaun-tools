@@ -109,7 +109,7 @@ impl Filter {
             Self::AutoTagged => item.sidecar.is_auto_tagged(),
             Self::NoManual => item.sidecar.manual_tags.is_empty(),
             Self::NoCaption => !item.sidecar.is_captioned(),
-            Self::NoHint => item.sidecar.caption_hint.is_none(),
+            Self::NoHint => item.sidecar.caption_hints.is_empty(),
             Self::NoBooru => !item.sidecar.has_booru(),
         }
     }
@@ -214,13 +214,11 @@ struct AnimaTaggerApp {
     // typing isn't clobbered every redraw. Re-initialized from the
     // sidecar when the selected image changes.
     manual_caption_buf: HashMap<PathBuf, String>,
-    caption_hint_buf: HashMap<PathBuf, String>,
     last_single: Option<PathBuf>,
 
-    // Bulk edit state — re-initialized when the selection signature
-    // changes.
-    bulk_hint_buf: String,
-    bulk_signature: u64,
+    // Shared "add caption hint" input, used by both the single- and
+    // bulk-detail panes (each adds to the current selection, like tags).
+    hint_input: String,
 
     // GPU texture handles for thumbnails.
     thumbnails: HashMap<PathBuf, TextureHandle>,
@@ -285,10 +283,8 @@ impl AnimaTaggerApp {
             config_path: None,
             lang: load_pref_or_detect(),
             manual_caption_buf: HashMap::new(),
-            caption_hint_buf: HashMap::new(),
             last_single: None,
-            bulk_hint_buf: String::new(),
-            bulk_signature: 0,
+            hint_input: String::new(),
             thumbnails: HashMap::new(),
             progress: None,
             worker_rx: None,
@@ -311,10 +307,8 @@ impl AnimaTaggerApp {
         self.tagger = None;
         self.captioner = None;
         self.manual_caption_buf.clear();
-        self.caption_hint_buf.clear();
         self.last_single = None;
-        self.bulk_hint_buf.clear();
-        self.bulk_signature = 0;
+        self.hint_input.clear();
         self.kanban_drag = None;
 
         // Best-effort config load. A broken TOML is reported in the
@@ -1030,7 +1024,7 @@ fn status_flags(s: &Sidecar) -> String {
     let c = if s.is_captioned() { 'C' } else { ' ' };
     let b = if s.has_booru() { 'B' } else { ' ' };
     let m = if !s.manual_tags.is_empty() { 'M' } else { ' ' };
-    let h = if s.caption_hint.is_some() { 'H' } else { ' ' };
+    let h = if !s.caption_hints.is_empty() { 'H' } else { ' ' };
     format!("{t}{c}{b}{m}{h}")
 }
 
@@ -1060,11 +1054,6 @@ impl AnimaTaggerApp {
                 });
         } else {
             self.last_single = None;
-            let signature = bulk_signature(&sel);
-            if self.bulk_signature != signature {
-                self.bulk_signature = signature;
-                self.bulk_hint_buf = canonical_bulk_hint(&self.images, &sel);
-            }
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
@@ -1080,10 +1069,6 @@ impl AnimaTaggerApp {
                 self.manual_caption_buf.insert(
                     path.to_path_buf(),
                     item.sidecar.manual_caption.clone().unwrap_or_default(),
-                );
-                self.caption_hint_buf.insert(
-                    path.to_path_buf(),
-                    item.sidecar.caption_hint.clone().unwrap_or_default(),
                 );
             }
         }
@@ -1119,6 +1104,44 @@ impl AnimaTaggerApp {
                 continue;
             }
             if img.sidecar.add_manual_tag(tag.to_string()) {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
+
+    /// The "add a caption hint" input, shared by the single- and bulk-detail
+    /// panes. Like the tag input, it appends to every selected image, so a
+    /// shared reference fact can be applied across a whole character in one go.
+    fn ui_caption_hint_add_input(&mut self, ui: &mut egui::Ui) {
+        let t = self.t();
+        ui.horizontal(|ui| {
+            let r = ui.add(
+                egui::TextEdit::singleline(&mut self.hint_input)
+                    .hint_text(t.add_hint_placeholder())
+                    .desired_width(ui.available_width() - 60.0),
+            );
+            let enter = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let click = ui.button(t.add_button()).clicked();
+            if enter || click {
+                let v = std::mem::take(&mut self.hint_input);
+                let trimmed = v.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.add_caption_hint_to_selected(&trimmed);
+                }
+                if enter {
+                    r.request_focus();
+                }
+            }
+        });
+    }
+
+    fn add_caption_hint_to_selected(&mut self, hint: &str) {
+        let sel = self.selected.clone();
+        for img in self.images.iter_mut() {
+            if !sel.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.add_caption_hint(hint.to_string()) {
                 let _ = img.sidecar.save(&img.path);
             }
         }
@@ -1196,25 +1219,26 @@ impl AnimaTaggerApp {
 
         ui.add_space(6.0);
         section_title(ui, t.section_caption_hint());
-        let path_owned = path.to_path_buf();
-        let avail = ui.available_width();
-        let buf = self
-            .caption_hint_buf
-            .entry(path_owned.clone())
-            .or_default();
-        let r = ui.add(
-            egui::TextEdit::multiline(buf)
-                .desired_width(avail)
-                .desired_rows(3)
-                .hint_text(t.caption_hint_placeholder()),
-        );
-        if r.lost_focus() {
-            let new_text = buf.clone();
-            self.save_caption_hint(path, &new_text);
+        if item.sidecar.caption_hints.is_empty() {
+            ui.weak(t.empty_hints());
+        } else {
+            let mut to_remove: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for hint in &item.sidecar.caption_hints {
+                    if chip(ui, hint, ChipKind::Manual, false) {
+                        to_remove.push(hint.clone());
+                    }
+                }
+            });
+            for hint in to_remove {
+                self.remove_caption_hint_at(path, &hint);
+            }
         }
+        self.ui_caption_hint_add_input(ui);
 
         ui.add_space(6.0);
         section_title(ui, t.section_manual_caption());
+        let path_owned = path.to_path_buf();
         let avail = ui.available_width();
         let buf = self
             .manual_caption_buf
@@ -1339,33 +1363,38 @@ impl AnimaTaggerApp {
 
         ui.add_space(6.0);
         section_title(ui, t.section_bulk_caption_hint());
-        let hint_values: Vec<&str> = selected_items
-            .iter()
-            .map(|i| i.sidecar.caption_hint.as_deref().unwrap_or(""))
-            .collect();
-        let hints_uniform = hint_values.iter().all(|v| *v == hint_values[0]);
-        if !hints_uniform {
-            ui.add(egui::Label::new(
-                egui::RichText::new(t.bulk_hints_differ()).small().weak(),
-            ));
+        let mut hint_order: Vec<String> = Vec::new();
+        let mut hint_counts: HashMap<String, usize> = HashMap::new();
+        for item in &selected_items {
+            for hint in &item.sidecar.caption_hints {
+                if !hint_counts.contains_key(hint) {
+                    hint_order.push(hint.clone());
+                }
+                *hint_counts.entry(hint.clone()).or_insert(0) += 1;
+            }
         }
-        let avail = ui.available_width();
-        ui.add(
-            egui::TextEdit::multiline(&mut self.bulk_hint_buf)
-                .desired_width(avail)
-                .desired_rows(3)
-                .hint_text(t.bulk_hint_placeholder()),
-        );
-        ui.horizontal(|ui| {
-            if ui.button(t.bulk_hint_apply()).clicked() {
-                let text = self.bulk_hint_buf.clone();
-                self.bulk_set_caption_hint(sel, &text);
+        if hint_order.is_empty() {
+            ui.weak(t.empty_hints());
+        } else {
+            let mut to_remove: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for hint in &hint_order {
+                    let count = hint_counts[hint];
+                    let label = if count < n {
+                        format!("{hint} ({count}/{n})")
+                    } else {
+                        hint.clone()
+                    };
+                    if chip(ui, &label, ChipKind::Manual, false) {
+                        to_remove.push(hint.clone());
+                    }
+                }
+            });
+            for hint in to_remove {
+                self.bulk_remove_caption_hint(sel, &hint);
             }
-            if ui.button(t.bulk_hint_clear()).clicked() {
-                self.bulk_hint_buf.clear();
-                self.bulk_set_caption_hint(sel, "");
-            }
-        });
+        }
+        self.ui_caption_hint_add_input(ui);
 
         ui.add_space(6.0);
         section_title(ui, t.section_manual_entries());
@@ -1664,15 +1693,12 @@ impl AnimaTaggerApp {
         for p in &to_remove {
             self.thumbnails.remove(p);
             self.manual_caption_buf.remove(p);
-            self.caption_hint_buf.remove(p);
         }
         if let Some(last) = self.last_single.as_ref()
             && to_remove.contains(last)
         {
             self.last_single = None;
         }
-        // Force bulk-edit buffers to re-derive against the new selection.
-        self.bulk_signature = 0;
         if !errors.is_empty() {
             self.error_msg = Some(errors.join("; "));
         }
@@ -1855,7 +1881,7 @@ impl AnimaTaggerApp {
             .images
             .iter()
             .filter(|i| sel.contains(&i.path))
-            .map(|i| (i.path.clone(), i.sidecar.caption_hint.clone()))
+            .map(|i| (i.path.clone(), i.sidecar.caption_hint_prompt()))
             .collect();
 
         let mut captioner = self.captioner.take();
@@ -2126,9 +2152,10 @@ impl AnimaTaggerApp {
             let _ = img.sidecar.save(&img.path);
         }
     }
-    fn save_caption_hint(&mut self, path: &Path, text: &str) {
-        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
-            img.sidecar.set_caption_hint(text);
+    fn remove_caption_hint_at(&mut self, path: &Path, hint: &str) {
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path)
+            && img.sidecar.remove_caption_hint(hint)
+        {
             let _ = img.sidecar.save(&img.path);
         }
     }
@@ -2227,13 +2254,14 @@ impl AnimaTaggerApp {
             }
         }
     }
-    fn bulk_set_caption_hint(&mut self, paths: &[PathBuf], text: &str) {
+    fn bulk_remove_caption_hint(&mut self, paths: &[PathBuf], hint: &str) {
         for img in self.images.iter_mut() {
             if !paths.contains(&img.path) {
                 continue;
             }
-            img.sidecar.set_caption_hint(text);
-            let _ = img.sidecar.save(&img.path);
+            if img.sidecar.remove_caption_hint(hint) {
+                let _ = img.sidecar.save(&img.path);
+            }
         }
     }
 }
@@ -2390,29 +2418,3 @@ fn compute_common_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
     out
 }
 
-fn bulk_signature(paths: &[PathBuf]) -> u64 {
-    let mut h: u64 = 0;
-    for p in paths {
-        for b in p.display().to_string().bytes() {
-            h = h.wrapping_mul(31).wrapping_add(b as u64);
-        }
-        h ^= 0x9E37_79B9_7F4A_7C15;
-    }
-    h
-}
-
-fn canonical_bulk_hint(images: &[ImageItem], sel: &[PathBuf]) -> String {
-    let values: Vec<&str> = sel
-        .iter()
-        .filter_map(|p| images.iter().find(|i| &i.path == p))
-        .map(|i| i.sidecar.caption_hint.as_deref().unwrap_or(""))
-        .collect();
-    if values.is_empty() {
-        return String::new();
-    }
-    if values.iter().all(|v| *v == values[0]) {
-        values[0].to_string()
-    } else {
-        String::new()
-    }
-}

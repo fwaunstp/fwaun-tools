@@ -85,7 +85,8 @@ super_deformed = ", fwaun style, chibi proportions"
 # it by name from any captioner profile's `prompts = [...]`. The built-in
 # `default` is always available; redefining it here overrides the
 # built-in. Per-image specifics (character names + positions) belong in
-# `caption_hint` on the sidecar, not in these prompts.
+# the sidecar's `caption_hints` list — edited like tags in the GUI, and
+# batch-added across a whole character — not in these prompts.
 # ---------------------------------------------------------------------------
 
 [captioner_prompts]
@@ -94,9 +95,11 @@ super_deformed = ", fwaun style, chibi proportions"
 
 # Character-focused prompt: useful for character LoRAs where you want
 # the model to weave per-character details into the description.
-# Combine with `caption_hint` ("Left girl is Alice; right boy is Bob.")
-# to lock in names — the captioner sees both at generation time and
-# stitches them into one cohesive caption rather than a manual prefix.
+# Combine with `caption_hints` (one fact per entry, e.g. "blue hair girl
+# is Laundry Dragonmaid") to lock in names — the captioner sees them as a
+# bullet list at generation time and stitches them into one cohesive
+# caption rather than a manual prefix. In the GUI you add a hint to every
+# selected image at once, so a shared fact covers a whole character.
 character = "Describe this image with attention to each person — their appearance (hair, clothing, expression), pose, and where they sit in the frame. 3-5 sentences, under 200 words."
 
 # ---------------------------------------------------------------------------

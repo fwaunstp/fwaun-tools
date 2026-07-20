@@ -192,8 +192,20 @@ impl T {
     }
     pub fn section_caption_hint(self) -> &'static str {
         self.pair(
-            "Caption hint (passed to captioner only)",
+            "Caption hints (passed to captioner only)",
             "キャプションヒント（キャプショナーにのみ渡されます）",
+        )
+    }
+    pub fn empty_hints(self) -> &'static str {
+        self.pair(
+            "(none yet — add a reference fact below)",
+            "（まだありません — 下の欄に参考情報を追加してください）",
+        )
+    }
+    pub fn add_hint_placeholder(self) -> &'static str {
+        self.pair(
+            "Add a reference fact, e.g. \"blue hair girl is Laundry Dragonmaid\" — added to every selected image, one bullet per fact. Sent to the captioner only.",
+            "参考情報を追加（例: 「blue hair girl is Laundry Dragonmaid」）。選択中のすべての画像に1項目ずつ追加され、キャプショナーにのみ渡されます。",
         )
     }
     pub fn section_manual_caption(self) -> &'static str {
@@ -218,12 +230,6 @@ impl T {
         self.pair(
             "Manual caption — exported verbatim, overrides any auto captions. Leave empty to export the auto captions instead. Click outside to save.",
             "手動キャプション — そのまま書き出され、自動キャプションを上書きします。空のままだと自動キャプションが書き出されます。フォーカスを外すと保存されます。",
-        )
-    }
-    pub fn caption_hint_placeholder(self) -> &'static str {
-        self.pair(
-            "Reference info for the captioner (e.g. \"The girl with red hair on the left is Alice; the boy on the right is Bob.\"). Sent as a system turn — does NOT appear in the exported .txt. Click outside to save.",
-            "キャプショナー向けの参考情報（例: 「左の赤髪の女の子はAlice、右の男の子はBob」）。システムターンとして送られ、書き出される .txt には含まれません。フォーカスを外すと保存されます。",
         )
     }
     pub fn promote_to_manual(self) -> &'static str {
@@ -266,27 +272,9 @@ impl T {
     }
     pub fn section_bulk_caption_hint(self) -> &'static str {
         self.pair(
-            "Caption hint (apply to all selected)",
-            "キャプションヒント（選択中すべてに適用）",
+            "Caption hints (add to all selected)",
+            "キャプションヒント（選択中すべてに追加）",
         )
-    }
-    pub fn bulk_hints_differ(self) -> &'static str {
-        self.pair(
-            "(selected images have differing hints — applying will overwrite all)",
-            "（選択中の画像でヒントが異なります — 適用するとすべて上書きされます）",
-        )
-    }
-    pub fn bulk_hint_placeholder(self) -> &'static str {
-        self.pair(
-            "Reference info applied to every selected image. Sent to the captioner as a system turn.",
-            "選択中のすべての画像に適用される参考情報。キャプショナーへシステムターンとして渡されます。",
-        )
-    }
-    pub fn bulk_hint_apply(self) -> &'static str {
-        self.pair("Apply to all selected", "選択中すべてに適用")
-    }
-    pub fn bulk_hint_clear(self) -> &'static str {
-        self.pair("Clear", "クリア")
     }
     pub fn section_manual_entries(self) -> &'static str {
         self.pair("Manual entries (union)", "手動エントリ（和集合）")

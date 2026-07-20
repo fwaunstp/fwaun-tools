@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multiple caption hints, edited like tags.** The sidecar's single
+  free-text `caption_hint` is now a `caption_hints` list of reference facts,
+  edited in the GUI exactly like tags — add via the input, remove by clicking a
+  chip. The add input applies to every selected image, so a shared fact ("blue
+  hair girl is Laundry Dragonmaid") can be batch-added across all images that
+  show a given character — handy for multi-character LoRAs (e.g. a Yu-Gi-Oh
+  Dragonmaid set). The bulk pane shows each hint as a chip with an `(n/total)`
+  coverage count. At caption time the facts are handed to the captioner as a
+  markdown bullet list. Old sidecars migrate automatically: an existing
+  `caption_hint` folds into the list, one bullet per line.
+
 - **Batch image upscaling via ComfyUI.** A new `fwaun-tools dataset upscale
   <dir>` command sends every image in a dataset to an existing ComfyUI server
   over its HTTP API (`/upload/image` → `/prompt` → `/history` → `/view`) and

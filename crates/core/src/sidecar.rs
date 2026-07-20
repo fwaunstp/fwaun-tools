@@ -61,16 +61,21 @@ pub struct Sidecar {
     /// captions on export. Seed it via the GUI's copy-from-auto button,
     /// or type it by hand. For per-image reference info that should
     /// influence generation (character names, positions, …), use
-    /// `caption_hint` instead.
+    /// `caption_hints` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manual_caption: Option<String>,
-    /// Reference info handed to the captioner as a system turn at generation
-    /// time (e.g. character names + positions). Lets the model weave the
-    /// names into its own prose rather than the caller prepending them
-    /// verbatim. Never appears in the exported `.txt` directly — it's pure
-    /// input to the captioner.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub caption_hint: Option<String>,
+    /// Reference facts handed to the captioner as a system turn at generation
+    /// time (e.g. character names + positions). Each entry is one fact; they
+    /// are formatted as a markdown bullet list by [`caption_hint_prompt`] so
+    /// the model can weave them into its own prose rather than the caller
+    /// prepending them verbatim. Edited like tags (add/remove/bulk-add) so a
+    /// shared fact — "blue hair girl is Laundry Dragonmaid" — can be applied
+    /// across every image that shows that character. Never appears in the
+    /// exported `.txt` directly — it's pure input to the captioner.
+    ///
+    /// [`caption_hint_prompt`]: Self::caption_hint_prompt
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caption_hints: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tagger: Option<TaggerInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +144,12 @@ struct SidecarOnDisk {
     captioner: Option<LegacyCaptionerInfo>,
     #[serde(default)]
     manual_caption: Option<String>,
+    /// Current form: a list of reference facts.
+    #[serde(default)]
+    caption_hints: Vec<String>,
+    /// Legacy single free-text hint (possibly multi-line). Folded into
+    /// `caption_hints` on load — split on newlines so an old multi-line hint
+    /// becomes one bullet per line.
     #[serde(default)]
     caption_hint: Option<String>,
     #[serde(default)]
@@ -167,13 +178,25 @@ impl From<SidecarOnDisk> for Sidecar {
                 skip: false,
             });
         }
+        // Fold the legacy single hint into the list: split on newlines (an old
+        // multi-line hint becomes one bullet per line), trim, drop blanks, and
+        // dedup against anything already in `caption_hints`.
+        let mut caption_hints = d.caption_hints;
+        if let Some(legacy) = d.caption_hint {
+            for line in legacy.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !caption_hints.iter().any(|x| x == trimmed) {
+                    caption_hints.push(trimmed.to_string());
+                }
+            }
+        }
         Self {
             manual_tags: d.manual_tags,
             auto_tags: d.auto_tags,
             booru_tags: d.booru_tags,
             captions,
             manual_caption: d.manual_caption,
-            caption_hint: d.caption_hint,
+            caption_hints,
             tagger: d.tagger,
             booru: d.booru,
         }
@@ -296,7 +319,7 @@ impl Sidecar {
     /// Embedded newlines in any auto caption are collapsed to spaces so
     /// the `\n` separator can never split a single caption mid-sentence.
     /// Per-image reference info (character names, positions, etc.) is
-    /// carried by `caption_hint` and consumed at caption-generation time;
+    /// carried by `caption_hints` and consumed at caption-generation time;
     /// it never appears in the exported text.
     pub fn export_caption(&self) -> Option<String> {
         let manual = self
@@ -332,13 +355,41 @@ impl Sidecar {
         };
     }
 
-    pub fn set_caption_hint(&mut self, text: &str) {
-        let trimmed = text.trim();
-        self.caption_hint = if trimmed.is_empty() {
+    /// Add one reference fact. Trimmed; a blank or exact-duplicate entry is a
+    /// no-op. Returns `true` if newly added.
+    pub fn add_caption_hint(&mut self, hint: impl Into<String>) -> bool {
+        let h = hint.into();
+        let trimmed = h.trim();
+        if trimmed.is_empty() || self.caption_hints.iter().any(|x| x == trimmed) {
+            return false;
+        }
+        self.caption_hints.push(trimmed.to_string());
+        true
+    }
+
+    /// Remove a reference fact by exact match. Returns `true` if one was removed.
+    pub fn remove_caption_hint(&mut self, hint: &str) -> bool {
+        let before = self.caption_hints.len();
+        self.caption_hints.retain(|x| x != hint);
+        before != self.caption_hints.len()
+    }
+
+    /// The reference block passed to the captioner as a system turn, or `None`
+    /// when there are no (non-blank) hints. Each fact becomes one markdown
+    /// bullet so the model reads them as a list rather than one run-on line.
+    pub fn caption_hint_prompt(&self) -> Option<String> {
+        let lines: Vec<String> = self
+            .caption_hints
+            .iter()
+            .map(|h| h.trim())
+            .filter(|h| !h.is_empty())
+            .map(|h| format!("- {h}"))
+            .collect();
+        if lines.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
-        };
+            Some(lines.join("\n"))
+        }
     }
 
     pub fn has_booru(&self) -> bool {
@@ -536,25 +587,62 @@ mod tests {
     }
 
     #[test]
-    fn caption_hint_round_trips_and_omits_when_empty() {
+    fn caption_hints_round_trip_and_omit_when_empty() {
         let mut sc = Sidecar::default();
-        sc.set_caption_hint("Left girl is Alice. Right boy is Bob.");
+        assert!(sc.add_caption_hint("blue hair girl is Laundry Dragonmaid"));
+        assert!(sc.add_caption_hint("red hair girl is Kitchen Dragonmaid"));
+        // Blank and exact-duplicate entries are no-ops.
+        assert!(!sc.add_caption_hint("   "));
+        assert!(!sc.add_caption_hint("blue hair girl is Laundry Dragonmaid"));
+
         let serialized = ron::ser::to_string_pretty(&sc, pretty_config()).unwrap();
         assert!(
-            serialized.contains("caption_hint"),
-            "non-empty hint must serialize: {serialized}"
+            serialized.contains("caption_hints"),
+            "non-empty hints must serialize: {serialized}"
         );
-        let round: Sidecar = ron::de::from_str(&serialized).unwrap();
+        let mut round: Sidecar = ron::de::from_str(&serialized).unwrap();
         assert_eq!(
-            round.caption_hint.as_deref(),
-            Some("Left girl is Alice. Right boy is Bob.")
+            round.caption_hints,
+            vec![
+                "blue hair girl is Laundry Dragonmaid".to_string(),
+                "red hair girl is Kitchen Dragonmaid".to_string(),
+            ]
         );
 
-        sc.set_caption_hint("   ");
-        let serialized = ron::ser::to_string_pretty(&sc, pretty_config()).unwrap();
+        // Formatted for the captioner as a markdown bullet list.
+        assert_eq!(
+            round.caption_hint_prompt().as_deref(),
+            Some("- blue hair girl is Laundry Dragonmaid\n- red hair girl is Kitchen Dragonmaid")
+        );
+
+        assert!(round.remove_caption_hint("blue hair girl is Laundry Dragonmaid"));
+        assert!(round.remove_caption_hint("red hair girl is Kitchen Dragonmaid"));
+        assert!(round.caption_hints.is_empty());
+        assert_eq!(round.caption_hint_prompt(), None);
+        let serialized = ron::ser::to_string_pretty(&round, pretty_config()).unwrap();
         assert!(
-            !serialized.contains("caption_hint"),
-            "empty hint must not appear in serialized form: {serialized}"
+            !serialized.contains("caption_hints"),
+            "empty hints must not appear in serialized form: {serialized}"
+        );
+    }
+
+    #[test]
+    fn legacy_single_caption_hint_migrates_into_list() {
+        // Old sidecars stored one free-text (possibly multi-line) hint; it
+        // folds into the list, one bullet per line, deduped.
+        let ron_text = r#"(
+            manual_tags: [],
+            auto_tags: [],
+            booru_tags: [],
+            caption_hint: Some("Left girl is Alice.\nRight boy is Bob."),
+        )"#;
+        let sc: Sidecar = ron::de::from_str(ron_text).unwrap();
+        assert_eq!(
+            sc.caption_hints,
+            vec![
+                "Left girl is Alice.".to_string(),
+                "Right boy is Bob.".to_string(),
+            ]
         );
     }
 
@@ -566,7 +654,7 @@ mod tests {
             booru_tags: [],
         )"#;
         let sc: Sidecar = ron::de::from_str(ron_text).unwrap();
-        assert!(sc.caption_hint.is_none());
+        assert!(sc.caption_hints.is_empty());
         assert_eq!(sc.manual_tags, vec!["foo".to_string()]);
     }
 

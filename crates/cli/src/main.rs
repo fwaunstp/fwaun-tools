@@ -473,7 +473,7 @@ fn cmd_caption(
             })
             .collect();
         let mut dirty = false;
-        let hint = sc.caption_hint.clone();
+        let hint = sc.caption_hint_prompt();
         if pending.is_empty() {
             skipped += 1;
         } else {

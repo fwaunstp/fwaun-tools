@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
-use crate::config::ExportProfile;
+use crate::config::{ExportProfile, TagGroup};
 use crate::sidecar::{is_organizational, Sidecar};
 
 #[derive(Debug, Error)]
@@ -100,11 +100,22 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
 /// Returns `None` when the image has no caption body at all: a bare affix
 /// without a caption isn't a useful training caption, so such images are
 /// skipped by callers rather than emitted affix-only.
-pub fn build_caption(sidecar: &Sidecar, profile: &ExportProfile) -> Option<String> {
+pub fn build_caption(
+    sidecar: &Sidecar,
+    profile: &ExportProfile,
+    tag_groups: &BTreeMap<String, TagGroup>,
+) -> Option<String> {
     let body = sidecar.export_caption()?;
     let present = present_caption_stems(sidecar, profile);
-    let prefix = matched_affixes(&profile.caption_prefixes, &present);
-    let suffix = matched_affixes(&profile.caption_suffixes, &present);
+    // Tag-group affixes (keyed on a tag *combination*, priority-ordered) sit
+    // outermost; legacy per-tag export-profile affixes nest just inside the
+    // caption body. Both are honored so existing configs keep working.
+    let group_prefix = crate::tag_group::resolved_caption_prefix(sidecar, tag_groups);
+    let group_suffix = crate::tag_group::resolved_caption_suffix(sidecar, tag_groups);
+    let legacy_prefix = matched_affixes(&profile.caption_prefixes, &present);
+    let legacy_suffix = matched_affixes(&profile.caption_suffixes, &present);
+    let prefix = format!("{group_prefix}{legacy_prefix}");
+    let suffix = format!("{legacy_suffix}{group_suffix}");
     if prefix.is_empty() && suffix.is_empty() {
         Some(body)
     } else {
@@ -405,7 +416,7 @@ mod tests {
         sidecar.set_caption("a", "a girl standing in a field");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("realistic proportions, a girl standing in a field")
         );
     }
@@ -420,7 +431,7 @@ mod tests {
         ]);
         // No proportion tag → bare caption (the default house style).
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("a girl standing in a field")
         );
     }
@@ -434,7 +445,7 @@ mod tests {
         sidecar.set_caption("a", "a cat");
         let profile = with_caption_prefixes(&[("super_deformed", "super deformed, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("super deformed, a cat")
         );
     }
@@ -449,7 +460,7 @@ mod tests {
         sidecar.set_manual_caption("hand-edited body");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("realistic proportions, hand-edited body")
         );
     }
@@ -463,7 +474,7 @@ mod tests {
             ..Default::default()
         };
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
-        assert_eq!(build_caption(&sidecar, &profile), None);
+        assert_eq!(build_caption(&sidecar, &profile, &BTreeMap::new()), None);
     }
 
     #[test]
@@ -479,7 +490,7 @@ mod tests {
                 .into_iter()
                 .collect();
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("a girl standing in a field, realistic proportions")
         );
     }
@@ -499,7 +510,7 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(
-            build_caption(&sidecar, &profile).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("PRE a cat SUF")
         );
     }
@@ -510,8 +521,79 @@ mod tests {
         sidecar.set_caption("a", "plain caption");
         let profile = ExportProfile::default();
         assert_eq!(
-            build_caption(&sidecar, &profile),
+            build_caption(&sidecar, &profile, &BTreeMap::new()),
             sidecar.export_caption()
+        );
+    }
+
+    fn single_tag_prefix_group(tag: &str, content: &str, priority: i64) -> TagGroup {
+        TagGroup {
+            tags: vec![tag.into()],
+            caption_prefix: Some(crate::config::CaptionAffix {
+                content: content.into(),
+                priority,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tag_group_prefix_priority_orders_concatenation() {
+        // Character name (priority 0) precedes costume (priority 1) regardless
+        // of the tags' alphabetical order or presence order.
+        let mut sidecar = Sidecar {
+            manual_tags: vec!["fantasy_knight".into(), "sayaka".into()],
+            ..Default::default()
+        };
+        sidecar.set_caption("a", "she stands ready");
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "fantasy_knight".into(),
+            single_tag_prefix_group("fantasy_knight", "She wears her Fantasy Knight costume. ", 1),
+        );
+        groups.insert(
+            "sayaka".into(),
+            single_tag_prefix_group("sayaka", "Sayaka from Saru getchu. ", 0),
+        );
+        let profile = ExportProfile::default();
+        assert_eq!(
+            build_caption(&sidecar, &profile, &groups).as_deref(),
+            Some("Sayaka from Saru getchu. She wears her Fantasy Knight costume. she stands ready")
+        );
+    }
+
+    #[test]
+    fn tag_group_caption_applies_only_when_all_tags_present() {
+        // Conjunction match: a two-tag group needs both tags present.
+        let mut sidecar = Sidecar {
+            manual_tags: vec!["1girl".into()],
+            ..Default::default()
+        };
+        sidecar.set_caption("a", "a scene");
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "girl_fourth_wall".into(),
+            TagGroup {
+                tags: vec!["1girl".into(), "breaking_through_fourth_wall".into()],
+                exclusive: false,
+                caption_prefix: Some(crate::config::CaptionAffix {
+                    content: "PRE ".into(),
+                    priority: 0,
+                }),
+                ..Default::default()
+            },
+        );
+        let profile = ExportProfile::default();
+        // Only `1girl` present → group does not fire.
+        assert_eq!(
+            build_caption(&sidecar, &profile, &groups).as_deref(),
+            Some("a scene")
+        );
+        // Add the concept tag → both present → prefix folds in.
+        sidecar.add_manual_tag("breaking_through_fourth_wall");
+        assert_eq!(
+            build_caption(&sidecar, &profile, &groups).as_deref(),
+            Some("PRE a scene")
         );
     }
 

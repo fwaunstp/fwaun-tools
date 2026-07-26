@@ -378,17 +378,33 @@ impl Sidecar {
     /// when there are no (non-blank) hints. Each fact becomes one markdown
     /// bullet so the model reads them as a list rather than one run-on line.
     pub fn caption_hint_prompt(&self) -> Option<String> {
-        let lines: Vec<String> = self
-            .caption_hints
-            .iter()
-            .map(|h| h.trim())
-            .filter(|h| !h.is_empty())
-            .map(|h| format!("- {h}"))
-            .collect();
-        if lines.is_empty() {
+        self.caption_hint_prompt_with(&[])
+    }
+
+    /// Like [`caption_hint_prompt`], but merges `extra` reference facts (e.g.
+    /// hints derived from matching tag groups) as additional bullets after
+    /// the per-image ones. Blank and duplicate entries are dropped so a hint
+    /// that appears both per-image and via a tag group isn't listed twice.
+    ///
+    /// [`caption_hint_prompt`]: Self::caption_hint_prompt
+    pub fn caption_hint_prompt_with(&self, extra: &[String]) -> Option<String> {
+        let mut items: Vec<&str> = Vec::new();
+        for h in self.caption_hints.iter().chain(extra.iter()) {
+            let h = h.trim();
+            if !h.is_empty() && !items.contains(&h) {
+                items.push(h);
+            }
+        }
+        if items.is_empty() {
             None
         } else {
-            Some(lines.join("\n"))
+            Some(
+                items
+                    .iter()
+                    .map(|h| format!("- {h}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         }
     }
 

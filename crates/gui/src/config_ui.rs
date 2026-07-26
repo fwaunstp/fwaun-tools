@@ -765,7 +765,10 @@ fn ui_tag_groups(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
     if ui.button(t.cfg_add_tag_group()).clicked() {
         draft.tag_groups.push((
             unique_name("group", &draft.tag_groups),
-            TagGroup { tags: Vec::new() },
+            TagGroup {
+                tags: Vec::new(),
+                ..Default::default()
+            },
         ));
     }
     ui.add_space(6.0);
@@ -940,6 +943,7 @@ mod tests {
             "costumes".into(),
             TagGroup {
                 tags: vec!["a".into(), "b".into()],
+                ..Default::default()
             },
         );
 
@@ -972,6 +976,7 @@ mod tests {
             "  ".into(),
             TagGroup {
                 tags: vec!["a".into()],
+                ..Default::default()
             },
         ));
         draft

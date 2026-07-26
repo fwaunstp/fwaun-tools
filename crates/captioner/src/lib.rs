@@ -76,17 +76,28 @@ impl Captioner {
     /// positions) embedded inside the user turn alongside the image so the
     /// model treats it as image-specific facts rather than global persona
     /// guidance. `None` / empty passes the prompt through unchanged.
+    ///
+    /// `prefill` is optional assistant-turn seed text: the caption prefix the
+    /// export step will prepend. When set, generation *continues from it*
+    /// (the model's assistant turn is primed with the prefix) so the produced
+    /// body flows naturally after it. The returned string is the continuation
+    /// only — the prefill is not echoed back — so callers store it verbatim
+    /// and let export re-prepend the prefix (no double-prefixing). Not every
+    /// OpenAI-compatible server honors assistant-message continuation; local
+    /// llama.cpp / koboldcpp do.
     pub fn caption_image(
         &mut self,
         image_path: &Path,
         prompt: &str,
         context: Option<&str>,
+        prefill: Option<&str>,
     ) -> Result<String, CaptionerError> {
         let context = context.map(str::trim).filter(|s| !s.is_empty());
+        let prefill = prefill.map(str::trim_start).filter(|s| !s.is_empty());
         match self {
             #[cfg(feature = "onnx")]
-            Self::Onnx(c) => c.caption_image(image_path, prompt, context),
-            Self::OpenAi(c) => c.caption_image(image_path, prompt, context),
+            Self::Onnx(c) => c.caption_image(image_path, prompt, context, prefill),
+            Self::OpenAi(c) => c.caption_image(image_path, prompt, context, prefill),
         }
     }
 }

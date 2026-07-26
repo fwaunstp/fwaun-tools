@@ -38,6 +38,7 @@ impl OpenAiCaptioner {
         image_path: &Path,
         prompt: &str,
         context: Option<&str>,
+        prefill: Option<&str>,
     ) -> Result<String, CaptionerError> {
         let data_url = encode_image_data_url(
             image_path,
@@ -52,6 +53,30 @@ impl OpenAiCaptioner {
         // framing for per-image facts like "left girl is Alice".
         let prompt_text = crate::build_user_text(prompt, context);
 
+        let mut messages = vec![ChatMessage {
+            role: "user".into(),
+            content: vec![
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl { url: data_url },
+                },
+                ContentPart::Text {
+                    text: prompt_text,
+                },
+            ],
+        }];
+        // A trailing assistant message with no following user turn is treated
+        // as a *prefix to continue* by llama.cpp / koboldcpp / vLLM. Servers
+        // that don't support continuation just start a fresh assistant turn;
+        // we defensively strip an echoed prefix from the response below.
+        if let Some(seed) = prefill {
+            messages.push(ChatMessage {
+                role: "assistant".into(),
+                content: vec![ContentPart::Text {
+                    text: seed.to_string(),
+                }],
+            });
+        }
+
         let body = ChatRequest {
             model: self
                 .profile
@@ -61,17 +86,7 @@ impl OpenAiCaptioner {
             max_tokens: self.profile.max_tokens,
             temperature: self.profile.temperature,
             stream: false,
-            messages: vec![ChatMessage {
-                role: "user".into(),
-                content: vec![
-                    ContentPart::ImageUrl {
-                        image_url: ImageUrl { url: data_url },
-                    },
-                    ContentPart::Text {
-                        text: prompt_text,
-                    },
-                ],
-            }],
+            messages,
         };
 
         let url = format!("{}/chat/completions", self.profile.endpoint.trim_end_matches('/'));
@@ -154,7 +169,25 @@ impl OpenAiCaptioner {
             .content
             .ok_or_else(|| CaptionerError::Api("response message had no content".into()))?;
 
-        Ok(text.trim().to_string())
+        Ok(strip_echoed_prefill(&text, prefill).trim().to_string())
+    }
+}
+
+/// Normalize a completion to the *continuation*: some servers echo the
+/// assistant-prefill seed at the start of their reply, others return only
+/// the newly generated text. Dropping any echoed seed keeps the stored
+/// caption body free of the prefix so export re-prepends it exactly once.
+fn strip_echoed_prefill<'a>(text: &'a str, prefill: Option<&str>) -> &'a str {
+    match prefill {
+        Some(seed) => {
+            let seed = seed.trim();
+            if seed.is_empty() {
+                text
+            } else {
+                text.trim_start().strip_prefix(seed).unwrap_or(text)
+            }
+        }
+        None => text,
     }
 }
 

@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Caption steering from tag groups (hints + prefix/suffix).** A
+  `[tag_group.*]` entry can now carry a `caption_hint`, a `caption_prefix`,
+  and/or a `caption_suffix`, applied when **all** of the group's `tags` are
+  present on an image (logical AND, matched against positive manual tags).
+  This makes tag combinations drive captioning without per-image editing:
+  - At **generation**, matching hints are auto-collected and fed to the
+    captioner as reference facts (alongside the sidecar's per-image
+    `caption_hints`), and the matching prefix is used as an **assistant-turn
+    prefill seed** so the model's output *continues from the prefix* rather
+    than restating it — the caption prefix and generated body now join
+    naturally. Only the continuation is stored; export re-prepends the prefix,
+    so there's no double-prefixing. (llama.cpp / koboldcpp honor the
+    continuation; the local ONNX Qwen3-VL backend does too.)
+  - At **export**, the prefix/suffix are folded into the caption written to
+    the musubi / sd-scripts metadata, matching what generation was primed
+    with. When several groups match, prefixes concatenate in ascending
+    `priority` (ties by group name) — so a character name (priority 0) can
+    precede a costume (priority 1): *"Sayaka from Saru getchu. She wears her
+    Fantasy Knight costume. …"*.
+
+  A logical-AND match lets one concept trigger read differently by
+  composition — e.g. `["1girl", "breaking_through_fourth_wall"]` →
+  *"A girl is breaking through the fourth wall."* vs. a `1boy` variant —
+  which a fixed prefix can't express. `TagGroup` also gains
+  `exclusive` (default `true`); set `exclusive = false` on steering groups
+  whose tags are meant to co-occur so `validate-tag-group` doesn't flag the
+  co-occurrence and the Kanban board hides them. The pre-existing
+  export-profile `caption_prefixes` / `caption_suffixes` still work.
+
 - **Multiple caption hints, edited like tags.** The sidecar's single
   free-text `caption_hint` is now a `caption_hints` list of reference facts,
   edited in the GUI exactly like tags — add via the input, remove by clicking a

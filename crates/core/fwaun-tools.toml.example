@@ -226,6 +226,67 @@ tags = ["official_school_uniform", "official_lounge_wear"]
 # tags = ["character_a", "character_b", "_no_character"]
 
 # ---------------------------------------------------------------------------
+# Caption steering from tag groups. A group can carry a `caption_hint`,
+# `caption_prefix`, and/or `caption_suffix`. They apply when ALL of the
+# group's `tags` are present on an image (logical AND), matched against the
+# image's positive manual tags. This drives:
+#   - GENERATION: the hint is fed to the captioner as a reference fact, and
+#     the prefix primes the model (assistant-turn prefill) so its output
+#     continues from it naturally. Only the continuation is stored.
+#   - EXPORT: the prefix/suffix are folded into the caption written to the
+#     musubi / sd-scripts metadata (`metadata --format musubi|sd-scripts`),
+#     so the stored body + prefix line up exactly.
+#
+# `exclusive` (default true) is the mutual-exclusivity flag used by
+# `validate-tag-group` and the Kanban view. Steering groups whose member
+# tags are meant to CO-OCCUR set `exclusive = false`, so co-occurrence isn't
+# flagged as a violation (and the group is hidden from the Kanban board).
+#
+# When several groups' prefixes match one image, they concatenate in
+# ascending `priority` (ties broken by group name); suffixes likewise.
+# Include your own separator in `content` (a trailing `", "` for a prefix,
+# a leading `", "` for a suffix).
+[tag_group.style_realistic]
+tags = ["realistic"]
+exclusive = false
+caption_hint = "The rendering style is photorealistic."
+[tag_group.style_realistic.caption_prefix]
+content = "realistic proportions, "
+priority = 0
+[tag_group.style_realistic.caption_suffix]
+content = ", photorealistic style"
+priority = 0
+
+# Single-character multi-costume: put the character name first (priority 0)
+# and the costume after (priority 1) so the caption reads
+# "Sayaka from Saru getchu. She wears her Fantasy Knight costume. <body>".
+# [tag_group.char_sayaka]
+# tags = ["sayaka"]
+# exclusive = false
+# [tag_group.char_sayaka.caption_prefix]
+# content = "Sayaka from Saru getchu. "
+# priority = 0
+# [tag_group.costume_fantasy_knight]
+# tags = ["fantasy_knight"]
+# exclusive = false
+# [tag_group.costume_fantasy_knight.caption_prefix]
+# content = "She wears her official Fantasy Knight costume. "
+# priority = 1
+
+# Multi-tag concept (logical AND): vary a concept trigger's phrasing by
+# count/gender. Each entry fires only when BOTH its tags are present, so a
+# hint is chosen per composition — better than a fixed prefix for
+# multi-subject / positional descriptions the model must place itself.
+# [tag_group.girl_breaking_through_fourth_wall]
+# tags = ["1girl", "breaking_through_fourth_wall"]
+# exclusive = false
+# caption_hint = "A girl is breaking through the fourth wall."
+# [tag_group.boy_breaking_through_fourth_wall]
+# tags = ["1boy", "breaking_through_fourth_wall"]
+# exclusive = false
+# caption_hint = "A boy is breaking through the fourth wall."
+
+# ---------------------------------------------------------------------------
 # Upscaler profiles — batch-upscale a dataset through an existing ComfyUI
 # server (`fwaun-tools dataset upscale <dir>`). Each image is uploaded over
 # ComfyUI's HTTP API, run through an upscale workflow, and the result written

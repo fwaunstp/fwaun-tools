@@ -456,7 +456,7 @@ impl Default for TagGroup {
 /// `priority` orders concatenation when several groups match on one image:
 /// ascending, so a lower number sits closer to the front (for prefixes) or
 /// nearer the body (for suffixes). Ties break by group name.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaptionAffix {
     /// The literal affix text. Include any separator yourself (a trailing
     /// `", "` for a prefix, a leading `", "` for a suffix).

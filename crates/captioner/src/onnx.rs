@@ -148,7 +148,7 @@ impl OnnxCaptioner {
         image_path: &Path,
         prompt: &str,
         context: Option<&str>,
-        prefill: Option<&str>,
+        prefix: Option<&str>,
     ) -> Result<String, CaptionerError> {
         let img = image::open(image_path)?;
 
@@ -198,7 +198,7 @@ impl OnnxCaptioner {
         drop(vision_out);
 
         // 3. Render chat template, tokenize.
-        let chat_prompt = build_chat_prompt(prompt, context, prefill);
+        let chat_prompt = build_chat_prompt(prompt, context, prefix);
         let encoding = self
             .tokenizer
             .encode(chat_prompt, false)
@@ -467,25 +467,20 @@ fn argmax_i64(slice: &[f32]) -> i64 {
     best as i64
 }
 
-fn build_chat_prompt(user_instruction: &str, context: Option<&str>, prefill: Option<&str>) -> String {
+fn build_chat_prompt(user_instruction: &str, context: Option<&str>, prefix: Option<&str>) -> String {
     // Qwen3-VL's default chat template emits no system block when none is
     // supplied (different from Qwen2-VL). Single image + single user turn.
     //
     // Caller-supplied `context` (character names / positions / scene
-    // continuity) is image-specific reference info, so we embed it inside
-    // the user turn next to the image rather than as a system turn — that
-    // way the model sees image, context, and instruction together as one
-    // unit instead of a free-floating persona-style preamble.
-    //
-    // `prefill` seeds the assistant turn: the greedy decode loop only
-    // collects *newly generated* tokens, so the seed stays in the prompt
-    // (priming the KV cache) and the returned caption is the continuation
-    // that flows on from the prefix.
-    let body = crate::build_user_text(user_instruction, context);
-    let seed = prefill.unwrap_or("");
+    // continuity) and the caption `prefix` are both embedded inside the user
+    // turn next to the image (see `build_user_text`) rather than seeded into
+    // the assistant turn. The assistant turn is left empty so the model's
+    // normal reason-then-answer flow is preserved — same reason the OpenAI
+    // backend avoids an assistant-message prefill.
+    let body = crate::build_user_text(user_instruction, context, prefix);
     format!(
         "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{body}<|im_end|>\n\
-         <|im_start|>assistant\n{seed}"
+         <|im_start|>assistant\n"
     )
 }
 

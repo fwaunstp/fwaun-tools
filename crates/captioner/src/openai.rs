@@ -38,6 +38,7 @@ impl OpenAiCaptioner {
         image_path: &Path,
         prompt: &str,
         context: Option<&str>,
+        prefix: Option<&str>,
     ) -> Result<String, CaptionerError> {
         let data_url = encode_image_data_url(
             image_path,
@@ -45,12 +46,14 @@ impl OpenAiCaptioner {
             self.profile.jpeg_quality,
         )?;
 
-        // Embed reference info in the same user turn as the image rather
-        // than as a separate `system` message, so the model sees image +
-        // context + instruction together. System messages tend to be
-        // interpreted as global persona/style guidance, which is the wrong
-        // framing for per-image facts like "left girl is Alice".
-        let prompt_text = crate::build_user_text(prompt, context);
+        // Embed reference info AND the caption prefix in the same user turn as
+        // the image rather than as separate `system` / trailing `assistant`
+        // messages. A system message reads as global persona guidance (wrong
+        // framing for per-image facts), and a trailing assistant message is
+        // treated as a raw continuation — which makes a reasoning model dump
+        // its chain-of-thought into the caption. Keeping everything in the
+        // user turn preserves the normal reason-then-answer flow.
+        let prompt_text = crate::build_user_text(prompt, context, prefix);
 
         let body = ChatRequest {
             model: self
@@ -154,7 +157,9 @@ impl OpenAiCaptioner {
             .content
             .ok_or_else(|| CaptionerError::Api("response message had no content".into()))?;
 
-        Ok(text.trim().to_string())
+        // The shared `Captioner::caption_image` wrapper strips any echoed
+        // prefix and trims — return the raw content here.
+        Ok(text)
     }
 }
 

@@ -395,13 +395,75 @@ impl Default for ExportProfile {
 /// Single-tag groups are valid and useful for a "set / unset" split on
 /// one tag (e.g. `[tag_group.solo_check] tags = ["solo"]`).
 ///
-/// A future `exclusive: bool` field can be added with
-/// `#[serde(default = "...")]` (defaulting to `true`) without breaking
-/// existing configs, if non-exclusive grouping ever becomes useful.
+/// A group can also carry caption steering — `caption_hint` /
+/// `caption_prefix` / `caption_suffix` — applied when *all* of the group's
+/// `tags` are present on an image (logical AND). This lets a tag
+/// combination (e.g. count/gender × concept, like `["1girl",
+/// "breaking_through_fourth_wall"]`) inject the right phrasing without
+/// per-image editing. Groups used this way are typically `exclusive =
+/// false`, since their member tags are meant to co-occur.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TagGroup {
     /// Tags that participate in this group.
     pub tags: Vec<String>,
+    /// Whether the group's tags are mutually exclusive on each image.
+    /// `true` (default): at most one tag is expected; two or more
+    /// co-occurring is a "violation" flagged by `validate-tag-group` and
+    /// the Kanban view. `false`: the tags are meant to co-occur (e.g. a
+    /// count/gender tag plus a concept trigger), so co-occurrence is not
+    /// flagged.
+    #[serde(default = "default_exclusive")]
+    pub exclusive: bool,
+    /// Reference fact fed to the captioner as generation `context` when all
+    /// of the group's `tags` are present. Auto-collected into the
+    /// caption-hint block alongside the sidecar's per-image
+    /// `caption_hints`, so the model can weave it into a natural,
+    /// position-aware description. Never exported to the training `.txt`.
+    #[serde(default)]
+    pub caption_hint: Option<String>,
+    /// Caption prefix folded in when all of the group's `tags` are present:
+    /// prepended at export, and used as the assistant-turn prefill seed at
+    /// generation so the generated body continues from it naturally. When
+    /// several groups match, their prefixes concatenate in ascending
+    /// `priority` (ties broken by group name). Include your own trailing
+    /// separator (e.g. `". "`) in `content`.
+    #[serde(default)]
+    pub caption_prefix: Option<CaptionAffix>,
+    /// Like `caption_prefix`, but appended after the caption body instead of
+    /// prepended. Same match + ordering rules; include your own leading
+    /// separator.
+    #[serde(default)]
+    pub caption_suffix: Option<CaptionAffix>,
+}
+
+fn default_exclusive() -> bool {
+    true
+}
+
+impl Default for TagGroup {
+    fn default() -> Self {
+        Self {
+            tags: Vec::new(),
+            exclusive: default_exclusive(),
+            caption_hint: None,
+            caption_prefix: None,
+            caption_suffix: None,
+        }
+    }
+}
+
+/// A caption affix (prefix or suffix) contributed by a matching [`TagGroup`].
+/// `priority` orders concatenation when several groups match on one image:
+/// ascending, so a lower number sits closer to the front (for prefixes) or
+/// nearer the body (for suffixes). Ties break by group name.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CaptionAffix {
+    /// The literal affix text. Include any separator yourself (a trailing
+    /// `", "` for a prefix, a leading `", "` for a suffix).
+    pub content: String,
+    /// Ascending sort key for concatenation order. Defaults to 0.
+    #[serde(default)]
+    pub priority: i64,
 }
 
 impl ExportProfile {
@@ -1134,6 +1196,16 @@ mod tests {
         });
         let full_tag_group = TagGroup {
             tags: vec!["x".into()],
+            exclusive: false,
+            caption_hint: Some("h".into()),
+            caption_prefix: Some(CaptionAffix {
+                content: "p".into(),
+                priority: 1,
+            }),
+            caption_suffix: Some(CaptionAffix {
+                content: "s".into(),
+                priority: 1,
+            }),
         };
         let full_upscaler = UpscalerProfile {
             base_url: "http://x".into(),
@@ -1214,6 +1286,7 @@ mod tests {
             "official_costumes".into(),
             TagGroup {
                 tags: vec!["a".into(), "b".into()],
+                ..Default::default()
             },
         );
         let s = toml::to_string(&cfg).expect("serialize");
@@ -1228,8 +1301,13 @@ mod tests {
     #[test]
     fn validate_tag_groups_rejects_empty_tags() {
         let mut cfg = ProjectConfig::default();
-        cfg.tag_groups
-            .insert("foo".into(), TagGroup { tags: Vec::new() });
+        cfg.tag_groups.insert(
+            "foo".into(),
+            TagGroup {
+                tags: Vec::new(),
+                ..Default::default()
+            },
+        );
         match cfg.validate_tag_groups() {
             Err(ConfigError::EmptyTagGroup(name)) => assert_eq!(name, "foo"),
             other => panic!("expected EmptyTagGroup, got {other:?}"),
@@ -1243,6 +1321,7 @@ mod tests {
             "solo_check".into(),
             TagGroup {
                 tags: vec!["solo".into()],
+                ..Default::default()
             },
         );
         cfg.validate_tag_groups().expect("single-tag group is valid");

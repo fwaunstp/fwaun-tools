@@ -530,8 +530,29 @@ impl T {
     }
     pub fn cfg_tag_groups_note(self) -> &'static str {
         self.pair(
-            "Tag groups define mutually-exclusive tag sets. The Kanban view shows one column per tag plus an \"unset\" and \"violation\" column.",
-            "タググループは相互排他なタグの集合を定義します。カンバン表示ではタグごとに 1 列 + 「未設定」「違反」の列が表示されます。",
+            "Tag groups define tag sets. Exclusive groups drive the Kanban view (one column per tag plus \"unset\"/\"violation\"). A group's caption hint / prefix / suffix apply when ALL its tags are present — set exclusive off for co-occurring steering tags.",
+            "タググループはタグの集合を定義します。排他グループはカンバン表示に使われます（タグごとに 1 列 + 「未設定」「違反」）。キャプションのヒント／プレフィクス／サフィックスはグループの全タグが揃ったときに適用されます。共起させるステアリング用タグは排他をオフにしてください。",
+        )
+    }
+    pub fn cfg_tag_group_exclusive(self) -> &'static str {
+        self.pair("Exclusive (mutually-exclusive tags)", "排他（相互排他タグ）")
+    }
+    pub fn cfg_tag_group_caption_hint(self) -> &'static str {
+        self.pair("Caption hint (fed to the model)", "キャプションヒント（モデルに渡す）")
+    }
+    pub fn cfg_tag_group_caption_prefix(self) -> &'static str {
+        self.pair("Caption prefix", "キャプションプレフィクス")
+    }
+    pub fn cfg_tag_group_caption_suffix(self) -> &'static str {
+        self.pair("Caption suffix", "キャプションサフィックス")
+    }
+    pub fn cfg_tag_group_priority(self) -> &'static str {
+        self.pair("priority", "優先度")
+    }
+    pub fn cfg_tag_group_affix_note(self) -> &'static str {
+        self.pair(
+            "Prefix/suffix are folded into the exported caption and steer generation; ascending priority orders concatenation when several groups match. Leave content empty to disable.",
+            "プレフィクス／サフィックスはエクスポート時のキャプションに畳み込まれ、生成も誘導します。複数グループが一致した場合は優先度の昇順で連結されます。内容を空にすると無効になります。",
         )
     }
     pub fn cfg_add(self) -> &'static str {

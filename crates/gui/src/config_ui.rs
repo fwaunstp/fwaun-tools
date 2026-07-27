@@ -8,9 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fwaun_tools_core::config::{
-    BUILT_IN_CAPTIONER_REPO, BUILT_IN_CAPTIONER_SUBDIR, BUILT_IN_TAGGER_REPO, CaptionerProfile,
-    ExportProfile, OnnxCaptionerProfile, OpenAiCaptionerProfile, ProjectConfig, TagGroup,
-    TaggerProfile,
+    BUILT_IN_CAPTIONER_REPO, BUILT_IN_CAPTIONER_SUBDIR, BUILT_IN_TAGGER_REPO, CaptionAffix,
+    CaptionerProfile, ExportProfile, OnnxCaptionerProfile, OpenAiCaptionerProfile, ProjectConfig,
+    TagGroup, TaggerProfile,
 };
 use eframe::egui;
 
@@ -149,7 +149,13 @@ impl ConfigDraft {
         let tagger = collect(&self.tagger, "tagger", t)?;
         let captioner = collect(&self.captioner, "captioner", t)?;
         let captioner_prompts = collect(&self.captioner_prompts, "captioner_prompts", t)?;
-        let tag_groups = collect(&self.tag_groups, "tag_group", t)?;
+        let mut tag_groups = collect(&self.tag_groups, "tag_group", t)?;
+        // The editor `get_or_insert`s empty hint/affix structs so their fields
+        // render; drop the empties here so a save doesn't persist blank
+        // `caption_hint = ""` / `[..caption_prefix] content = ""` entries.
+        for g in tag_groups.values_mut() {
+            normalize_tag_group_captions(g);
+        }
 
         let cfg = ProjectConfig {
             default_profile: self
@@ -756,6 +762,33 @@ fn ui_tag_groups(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                 });
                 ui.label(t.cfg_tags());
                 string_list_editor(ui, ("group_tags", idx), &mut group.tags, t);
+
+                ui.checkbox(&mut group.exclusive, t.cfg_tag_group_exclusive());
+
+                // Caption steering. `get_or_insert` so the fields render; empty
+                // values are normalized back to `None` on save.
+                ui.label(t.cfg_tag_group_caption_hint());
+                ui.add(
+                    egui::TextEdit::multiline(group.caption_hint.get_or_insert_with(String::new))
+                        .id_salt(("group_hint", idx))
+                        .desired_rows(1)
+                        .desired_width(f32::INFINITY),
+                );
+                affix_editor(
+                    ui,
+                    ("group_prefix", idx),
+                    t.cfg_tag_group_caption_prefix(),
+                    t,
+                    group.caption_prefix.get_or_insert_with(CaptionAffix::default),
+                );
+                affix_editor(
+                    ui,
+                    ("group_suffix", idx),
+                    t.cfg_tag_group_caption_suffix(),
+                    t,
+                    group.caption_suffix.get_or_insert_with(CaptionAffix::default),
+                );
+                ui.label(egui::RichText::new(t.cfg_tag_group_affix_note()).weak());
             });
         ui.add_space(2.0);
     }
@@ -765,11 +798,51 @@ fn ui_tag_groups(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
     if ui.button(t.cfg_add_tag_group()).clicked() {
         draft.tag_groups.push((
             unique_name("group", &draft.tag_groups),
-            TagGroup { tags: Vec::new() },
+            TagGroup {
+                tags: Vec::new(),
+                ..Default::default()
+            },
         ));
     }
     ui.add_space(6.0);
     ui.label(egui::RichText::new(t.cfg_tag_groups_note()).weak());
+}
+
+/// Editor for one optional [`CaptionAffix`] (prefix or suffix): a priority
+/// spinner plus a content box. An empty `content` is dropped on save (see
+/// [`normalize_tag_group_captions`]).
+fn affix_editor(
+    ui: &mut egui::Ui,
+    salt: (&'static str, usize),
+    label: &str,
+    t: T,
+    affix: &mut CaptionAffix,
+) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.label(t.cfg_tag_group_priority());
+        ui.add(egui::DragValue::new(&mut affix.priority));
+    });
+    ui.add(
+        egui::TextEdit::multiline(&mut affix.content)
+            .id_salt(salt)
+            .desired_rows(1)
+            .desired_width(f32::INFINITY),
+    );
+}
+
+/// Drop blank caption steering left behind by the editor's `get_or_insert`,
+/// so a save doesn't persist empty `caption_hint` / affix entries.
+fn normalize_tag_group_captions(g: &mut TagGroup) {
+    if g.caption_hint.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        g.caption_hint = None;
+    }
+    if g.caption_prefix.as_ref().is_some_and(|a| a.content.trim().is_empty()) {
+        g.caption_prefix = None;
+    }
+    if g.caption_suffix.as_ref().is_some_and(|a| a.content.trim().is_empty()) {
+        g.caption_suffix = None;
+    }
 }
 
 // ───────── shared widgets ─────────
@@ -940,6 +1013,7 @@ mod tests {
             "costumes".into(),
             TagGroup {
                 tags: vec!["a".into(), "b".into()],
+                ..Default::default()
             },
         );
 
@@ -972,6 +1046,7 @@ mod tests {
             "  ".into(),
             TagGroup {
                 tags: vec!["a".into()],
+                ..Default::default()
             },
         ));
         draft

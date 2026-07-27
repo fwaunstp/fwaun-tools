@@ -542,11 +542,20 @@ impl AnimaTaggerApp {
                     }
                 });
 
-            // View dropdown — Grid plus one entry per [tag_group.<name>].
+            // View dropdown — Grid plus one entry per *exclusive*
+            // [tag_group.<name>]. Non-exclusive groups exist for caption
+            // steering (their tags are meant to co-occur), so they don't map
+            // onto the Kanban's one-column-per-tag / violation model.
             let group_names: Vec<String> = self
                 .project_config
                 .as_ref()
-                .map(|c| c.tag_groups.keys().cloned().collect())
+                .map(|c| {
+                    c.tag_groups
+                        .iter()
+                        .filter(|(_, g)| g.exclusive)
+                        .map(|(name, _)| name.clone())
+                        .collect()
+                })
                 .unwrap_or_default();
             let view_label = match &self.view_mode {
                 ViewMode::Grid => t.view_grid().to_string(),
@@ -1877,11 +1886,32 @@ impl AnimaTaggerApp {
             self.error_msg = Some(t.info_skipped_already_tagged(skipped));
         }
         let total = sel.len();
+        // Tag groups drive both the caption hints (facts fed as context when
+        // a tag combination is present) and the caption prefix, which is
+        // embedded in the prompt so the model's output continues from what
+        // export will prepend.
+        let tag_groups = self
+            .project_config
+            .as_ref()
+            .map(|c| c.tag_groups.clone())
+            .unwrap_or_default();
         let hints: HashMap<PathBuf, Option<String>> = self
             .images
             .iter()
             .filter(|i| sel.contains(&i.path))
-            .map(|i| (i.path.clone(), i.sidecar.caption_hint_prompt()))
+            .map(|i| {
+                let extra = tag_group::resolved_caption_hints(&i.sidecar, &tag_groups);
+                (i.path.clone(), i.sidecar.caption_hint_prompt_with(&extra))
+            })
+            .collect();
+        let prefixes: HashMap<PathBuf, Option<String>> = self
+            .images
+            .iter()
+            .filter(|i| sel.contains(&i.path))
+            .map(|i| {
+                let p = tag_group::resolved_caption_prefix(&i.sidecar, &tag_groups);
+                (i.path.clone(), (!p.is_empty()).then_some(p))
+            })
             .collect();
 
         let mut captioner = self.captioner.take();
@@ -1910,6 +1940,7 @@ impl AnimaTaggerApp {
                 }));
                 ctx_clone.request_repaint();
                 let hint = hints.get(path).cloned().flatten();
+                let prefix = prefixes.get(path).cloned().flatten();
                 let have = existing_keys.get(path);
                 let mut entries: Vec<(String, String)> = Vec::new();
                 for (pname, ptext) in &prompts {
@@ -1917,7 +1948,7 @@ impl AnimaTaggerApp {
                     if have.is_some_and(|s| s.contains(&key)) {
                         continue;
                     }
-                    match captioner_inst.caption_image(path, ptext, hint.as_deref()) {
+                    match captioner_inst.caption_image(path, ptext, hint.as_deref(), prefix.as_deref()) {
                         Ok(caption) => entries.push((key, caption)),
                         Err(e) => {
                             let _ = tx.send(WorkerMsg::Error(format!(

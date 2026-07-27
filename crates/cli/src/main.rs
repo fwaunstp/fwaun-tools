@@ -473,12 +473,25 @@ fn cmd_caption(
             })
             .collect();
         let mut dirty = false;
-        let hint = sc.caption_hint_prompt();
+        // Merge per-image hints with hints from tag groups whose tags are all
+        // present, and resolve the tag-group caption prefix. The prefix is
+        // embedded in the prompt (see `build_user_text`) so the model
+        // continues from what export will prepend.
+        let extra_hints =
+            fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups);
+        let hint = sc.caption_hint_prompt_with(&extra_hints);
+        let prefix = fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups);
+        let prefix = (!prefix.is_empty()).then_some(prefix);
         if pending.is_empty() {
             skipped += 1;
         } else {
             for (key, pname, ptext) in pending {
-                let caption = captioner.caption_image(&image, &ptext, hint.as_deref())?;
+                let caption = captioner.caption_image(
+                    &image,
+                    &ptext,
+                    hint.as_deref(),
+                    prefix.as_deref(),
+                )?;
                 let preview: String = caption.chars().take(60).collect();
                 sc.set_caption(key, caption);
                 dirty = true;
@@ -761,14 +774,17 @@ fn cmd_metadata(
     profile.shuffle = false;
 
     match format {
-        MetadataFormat::SdScripts => cmd_metadata_sd_scripts(&dir, &profile, output),
-        MetadataFormat::Musubi => cmd_metadata_musubi(&dir, &profile, output),
+        MetadataFormat::SdScripts => {
+            cmd_metadata_sd_scripts(&dir, &profile, &cfg.tag_groups, output)
+        }
+        MetadataFormat::Musubi => cmd_metadata_musubi(&dir, &profile, &cfg.tag_groups, output),
     }
 }
 
 fn cmd_metadata_sd_scripts(
     dir: &std::path::Path,
     profile: &fwaun_tools_core::config::ExportProfile,
+    tag_groups: &std::collections::BTreeMap<String, fwaun_tools_core::config::TagGroup>,
     output: Option<PathBuf>,
 ) -> Result<()> {
     use std::collections::BTreeMap;
@@ -795,7 +811,7 @@ fn cmd_metadata_sd_scripts(
                 .join(", ");
             entry.insert("tags".to_string(), serde_json::Value::String(joined));
         }
-        if let Some(cap) = export::build_caption(&sidecar, profile) {
+        if let Some(cap) = export::build_caption(&sidecar, profile, tag_groups) {
             entry.insert("caption".to_string(), serde_json::Value::String(cap));
         }
         if entry.is_empty() {
@@ -819,6 +835,7 @@ fn cmd_metadata_sd_scripts(
 fn cmd_metadata_musubi(
     dir: &std::path::Path,
     profile: &fwaun_tools_core::config::ExportProfile,
+    tag_groups: &std::collections::BTreeMap<String, fwaun_tools_core::config::TagGroup>,
     output: Option<PathBuf>,
 ) -> Result<()> {
     // (image_path, caption) pairs, sorted by path so the JSONL is stable
@@ -837,7 +854,7 @@ fn cmd_metadata_musubi(
         };
         // musubi training here is caption-only: an image without a caption
         // has nothing to contribute, so skip it rather than emit a blank.
-        match export::build_caption(&sidecar, profile) {
+        match export::build_caption(&sidecar, profile, tag_groups) {
             Some(cap) => rows.push((metadata_image_key(&image), cap)),
             None => no_caption += 1,
         }
@@ -1134,10 +1151,15 @@ fn cmd_validate_tag_group(
             }
         };
 
-        let is_problem = matches!(
-            classification,
-            Classification::Unset | Classification::Violation(_)
-        );
+        // Only exclusive groups have a notion of a "problem": Unset (image
+        // not categorized) or Violation (two+ mutually-exclusive tags
+        // coexisting). Non-exclusive groups exist for caption steering, where
+        // co-occurrence is the whole point, so nothing is flagged.
+        let is_problem = group.exclusive
+            && matches!(
+                classification,
+                Classification::Unset | Classification::Violation(_)
+            );
         if problems_only && !is_problem {
             continue;
         }
@@ -1209,7 +1231,8 @@ fn cmd_tokens(
             .map(|t| t.replace('_', " "))
             .collect::<Vec<_>>()
             .join(", ");
-        let caption_text = export::build_caption(&sidecar, &profile).unwrap_or_default();
+        let caption_text =
+            export::build_caption(&sidecar, &profile, &cfg.tag_groups).unwrap_or_default();
 
         let tag_tok = count(&tags_text)?;
         let cap_tok = count(&caption_text)?;

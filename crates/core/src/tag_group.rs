@@ -10,10 +10,10 @@
 //! here" — hiding it would silently drop the image into the "unset"
 //! bucket and the user would never see it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
-use crate::config::TagGroup;
-use crate::sidecar::Sidecar;
+use crate::config::{CaptionAffix, TagGroup};
+use crate::sidecar::{ORGANIZATIONAL_PREFIX, Sidecar};
 
 /// Classification result for one image against one tag group.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +82,82 @@ pub fn classify(sc: &Sidecar, group: &TagGroup) -> Classification {
     }
 }
 
+// ───────── caption steering (hint / prefix / suffix) ─────────
+//
+// A tag group's `caption_hint` / `caption_prefix` / `caption_suffix` apply
+// to an image when *all* of the group's tags are present (logical AND).
+// Matching keys on the image's positive *manual* tags only — consistent
+// with export caption-affix matching, and the deliberate choice for
+// curation-driven steering — normalized the same way (trim, drop a single
+// leading organizational `_`, lowercase).
+
+/// Normalize a tag for caption-steering matching.
+fn caption_match_stem(s: &str) -> String {
+    let t = s.trim();
+    t.strip_prefix(ORGANIZATIONAL_PREFIX).unwrap_or(t).to_lowercase()
+}
+
+/// Lowercase, `_`-stripped stems of the image's positive manual tags.
+fn manual_caption_stems(sc: &Sidecar) -> HashSet<String> {
+    sc.manual_positive_tags()
+        .map(caption_match_stem)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// True when the group is non-empty and every one of its tags is present.
+fn group_all_present(group: &TagGroup, stems: &HashSet<String>) -> bool {
+    !group.tags.is_empty()
+        && group
+            .tags
+            .iter()
+            .all(|t| stems.contains(&caption_match_stem(t)))
+}
+
+/// Caption hints contributed by every tag group all of whose tags are
+/// present on `sc`. Ordered by group name (BTreeMap iteration) for
+/// determinism. Blank hints are skipped.
+pub fn resolved_caption_hints(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> Vec<String> {
+    let stems = manual_caption_stems(sc);
+    groups
+        .values()
+        .filter(|g| group_all_present(g, &stems))
+        .filter_map(|g| g.caption_hint.as_deref())
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Concatenated caption prefix from every matching tag group, ordered by
+/// ascending `priority` (ties broken by group name). Empty when nothing
+/// matches.
+pub fn resolved_caption_prefix(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> String {
+    resolved_affix(sc, groups, |g| g.caption_prefix.as_ref())
+}
+
+/// Concatenated caption suffix from every matching tag group. Same ordering
+/// as [`resolved_caption_prefix`].
+pub fn resolved_caption_suffix(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> String {
+    resolved_affix(sc, groups, |g| g.caption_suffix.as_ref())
+}
+
+fn resolved_affix(
+    sc: &Sidecar,
+    groups: &BTreeMap<String, TagGroup>,
+    pick: impl Fn(&TagGroup) -> Option<&CaptionAffix>,
+) -> String {
+    let stems = manual_caption_stems(sc);
+    let mut matched: Vec<(&str, &CaptionAffix)> = groups
+        .iter()
+        .filter(|(_, g)| group_all_present(g, &stems))
+        .filter_map(|(name, g)| pick(g).map(|a| (name.as_str(), a)))
+        .collect();
+    // Ascending priority; ties broken by group name for a stable order.
+    matched.sort_by(|a, b| a.1.priority.cmp(&b.1.priority).then_with(|| a.0.cmp(b.0)));
+    matched.into_iter().map(|(_, a)| a.content.as_str()).collect()
+}
+
 /// Apply a Kanban drop to `sc`, mutating its `manual_tags` so that the
 /// classification result becomes `target`.
 ///
@@ -147,6 +223,7 @@ mod tests {
     fn group(tags: &[&str]) -> TagGroup {
         TagGroup {
             tags: tags.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
         }
     }
 
@@ -295,6 +372,84 @@ mod tests {
         let after_once = sc.manual_tags.clone();
         apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
         assert_eq!(sc.manual_tags, after_once);
+    }
+
+    #[test]
+    fn resolved_caption_hints_fire_only_on_full_conjunction() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("1girl".into());
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "g".into(),
+            TagGroup {
+                tags: vec!["1girl".into(), "breaking_through_fourth_wall".into()],
+                exclusive: false,
+                caption_hint: Some("A girl is breaking through the fourth wall.".into()),
+                ..Default::default()
+            },
+        );
+        // Only one of the two tags present → no hint.
+        assert!(resolved_caption_hints(&sc, &groups).is_empty());
+        sc.manual_tags.push("breaking_through_fourth_wall".into());
+        assert_eq!(
+            resolved_caption_hints(&sc, &groups),
+            vec!["A girl is breaking through the fourth wall.".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolved_caption_prefix_concatenates_by_priority_then_name() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("sayaka".into());
+        sc.manual_tags.push("fantasy_knight".into());
+        let mut groups = BTreeMap::new();
+        // Group name order (z before a alphabetically is false) is deliberately
+        // opposite to priority order to prove priority wins.
+        groups.insert(
+            "z_costume".into(),
+            TagGroup {
+                tags: vec!["fantasy_knight".into()],
+                caption_prefix: Some(CaptionAffix {
+                    content: "B".into(),
+                    priority: 1,
+                }),
+                ..Default::default()
+            },
+        );
+        groups.insert(
+            "a_name".into(),
+            TagGroup {
+                tags: vec!["sayaka".into()],
+                caption_prefix: Some(CaptionAffix {
+                    content: "A".into(),
+                    priority: 0,
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(resolved_caption_prefix(&sc, &groups), "AB");
+    }
+
+    #[test]
+    fn resolved_caption_prefix_matches_organizational_and_case_insensitively() {
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("_Realistic".into());
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "style".into(),
+            TagGroup {
+                tags: vec!["realistic".into()],
+                caption_prefix: Some(CaptionAffix {
+                    content: "realistic proportions, ".into(),
+                    priority: 0,
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            resolved_caption_prefix(&sc, &groups),
+            "realistic proportions, "
+        );
     }
 
     #[test]

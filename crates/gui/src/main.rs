@@ -1887,8 +1887,9 @@ impl AnimaTaggerApp {
         }
         let total = sel.len();
         // Tag groups drive both the caption hints (facts fed as context when
-        // a tag combination is present) and the caption prefix used to prime
-        // the model so its output continues from what export will prepend.
+        // a tag combination is present) and the caption prefix, which is
+        // embedded in the prompt so the model's output continues from what
+        // export will prepend.
         let tag_groups = self
             .project_config
             .as_ref()
@@ -1903,7 +1904,7 @@ impl AnimaTaggerApp {
                 (i.path.clone(), i.sidecar.caption_hint_prompt_with(&extra))
             })
             .collect();
-        let prefills: HashMap<PathBuf, Option<String>> = self
+        let prefixes: HashMap<PathBuf, Option<String>> = self
             .images
             .iter()
             .filter(|i| sel.contains(&i.path))
@@ -1939,7 +1940,7 @@ impl AnimaTaggerApp {
                 }));
                 ctx_clone.request_repaint();
                 let hint = hints.get(path).cloned().flatten();
-                let prefill = prefills.get(path).cloned().flatten();
+                let prefix = prefixes.get(path).cloned().flatten();
                 let have = existing_keys.get(path);
                 let mut entries: Vec<(String, String)> = Vec::new();
                 for (pname, ptext) in &prompts {
@@ -1947,7 +1948,7 @@ impl AnimaTaggerApp {
                     if have.is_some_and(|s| s.contains(&key)) {
                         continue;
                     }
-                    match captioner_inst.caption_image(path, ptext, hint.as_deref(), prefill.as_deref()) {
+                    match captioner_inst.caption_image(path, ptext, hint.as_deref(), prefix.as_deref()) {
                         Ok(caption) => entries.push((key, caption)),
                         Err(e) => {
                             let _ = tx.send(WorkerMsg::Error(format!(

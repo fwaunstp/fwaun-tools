@@ -474,13 +474,14 @@ fn cmd_caption(
             .collect();
         let mut dirty = false;
         // Merge per-image hints with hints from tag groups whose tags are all
-        // present, and resolve the tag-group caption prefix to prime the
-        // model so its output continues from what export will prepend.
+        // present, and resolve the tag-group caption prefix. The prefix is
+        // embedded in the prompt (see `build_user_text`) so the model
+        // continues from what export will prepend.
         let extra_hints =
             fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups);
         let hint = sc.caption_hint_prompt_with(&extra_hints);
-        let prefill = fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups);
-        let prefill = (!prefill.is_empty()).then_some(prefill);
+        let prefix = fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups);
+        let prefix = (!prefix.is_empty()).then_some(prefix);
         if pending.is_empty() {
             skipped += 1;
         } else {
@@ -489,7 +490,7 @@ fn cmd_caption(
                     &image,
                     &ptext,
                     hint.as_deref(),
-                    prefill.as_deref(),
+                    prefix.as_deref(),
                 )?;
                 let preview: String = caption.chars().take(60).collect();
                 sc.set_caption(key, caption);

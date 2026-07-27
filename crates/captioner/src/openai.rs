@@ -38,7 +38,7 @@ impl OpenAiCaptioner {
         image_path: &Path,
         prompt: &str,
         context: Option<&str>,
-        prefill: Option<&str>,
+        prefix: Option<&str>,
     ) -> Result<String, CaptionerError> {
         let data_url = encode_image_data_url(
             image_path,
@@ -46,36 +46,14 @@ impl OpenAiCaptioner {
             self.profile.jpeg_quality,
         )?;
 
-        // Embed reference info in the same user turn as the image rather
-        // than as a separate `system` message, so the model sees image +
-        // context + instruction together. System messages tend to be
-        // interpreted as global persona/style guidance, which is the wrong
-        // framing for per-image facts like "left girl is Alice".
-        let prompt_text = crate::build_user_text(prompt, context);
-
-        let mut messages = vec![ChatMessage {
-            role: "user".into(),
-            content: vec![
-                ContentPart::ImageUrl {
-                    image_url: ImageUrl { url: data_url },
-                },
-                ContentPart::Text {
-                    text: prompt_text,
-                },
-            ],
-        }];
-        // A trailing assistant message with no following user turn is treated
-        // as a *prefix to continue* by llama.cpp / koboldcpp / vLLM. Servers
-        // that don't support continuation just start a fresh assistant turn;
-        // we defensively strip an echoed prefix from the response below.
-        if let Some(seed) = prefill {
-            messages.push(ChatMessage {
-                role: "assistant".into(),
-                content: vec![ContentPart::Text {
-                    text: seed.to_string(),
-                }],
-            });
-        }
+        // Embed reference info AND the caption prefix in the same user turn as
+        // the image rather than as separate `system` / trailing `assistant`
+        // messages. A system message reads as global persona guidance (wrong
+        // framing for per-image facts), and a trailing assistant message is
+        // treated as a raw continuation — which makes a reasoning model dump
+        // its chain-of-thought into the caption. Keeping everything in the
+        // user turn preserves the normal reason-then-answer flow.
+        let prompt_text = crate::build_user_text(prompt, context, prefix);
 
         let body = ChatRequest {
             model: self
@@ -86,7 +64,17 @@ impl OpenAiCaptioner {
             max_tokens: self.profile.max_tokens,
             temperature: self.profile.temperature,
             stream: false,
-            messages,
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: vec![
+                    ContentPart::ImageUrl {
+                        image_url: ImageUrl { url: data_url },
+                    },
+                    ContentPart::Text {
+                        text: prompt_text,
+                    },
+                ],
+            }],
         };
 
         let url = format!("{}/chat/completions", self.profile.endpoint.trim_end_matches('/'));
@@ -169,25 +157,9 @@ impl OpenAiCaptioner {
             .content
             .ok_or_else(|| CaptionerError::Api("response message had no content".into()))?;
 
-        Ok(strip_echoed_prefill(&text, prefill).trim().to_string())
-    }
-}
-
-/// Normalize a completion to the *continuation*: some servers echo the
-/// assistant-prefill seed at the start of their reply, others return only
-/// the newly generated text. Dropping any echoed seed keeps the stored
-/// caption body free of the prefix so export re-prepends it exactly once.
-fn strip_echoed_prefill<'a>(text: &'a str, prefill: Option<&str>) -> &'a str {
-    match prefill {
-        Some(seed) => {
-            let seed = seed.trim();
-            if seed.is_empty() {
-                text
-            } else {
-                text.trim_start().strip_prefix(seed).unwrap_or(text)
-            }
-        }
-        None => text,
+        // The shared `Captioner::caption_image` wrapper strips any echoed
+        // prefix and trims — return the raw content here.
+        Ok(text)
     }
 }
 

@@ -16,12 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This makes tag combinations drive captioning without per-image editing:
   - At **generation**, matching hints are auto-collected and fed to the
     captioner as reference facts (alongside the sidecar's per-image
-    `caption_hints`), and the matching prefix is used as an **assistant-turn
-    prefill seed** so the model's output *continues from the prefix* rather
-    than restating it — the caption prefix and generated body now join
-    naturally. Only the continuation is stored; export re-prepends the prefix,
-    so there's no double-prefixing. (llama.cpp / koboldcpp honor the
-    continuation; the local ONNX Qwen3-VL backend does too.)
+    `caption_hints`), and the matching prefix is **embedded in the prompt**
+    with an instruction to continue from it, so the model's output flows on
+    from the prefix rather than restating it — the caption prefix and
+    generated body now join naturally. The prefix is deliberately NOT sent as
+    a trailing assistant message: that reads as a raw continuation and makes a
+    reasoning model's chain-of-thought spill into the caption, so embedding it
+    in the user turn keeps thinking working. Only the continuation is stored
+    (an echoed prefix is stripped as a safeguard); export re-prepends the
+    prefix, so there's no double-prefixing.
   - At **export**, the prefix/suffix are folded into the caption written to
     the musubi / sd-scripts metadata, matching what generation was primed
     with. When several groups match, prefixes concatenate in ascending

@@ -33,6 +33,8 @@ pub enum CaptionerError {
     Http(String),
     #[error("api response: {0}")]
     Api(String),
+    #[error("captioner returned an empty caption after {attempts} attempt(s)")]
+    EmptyCaption { attempts: u32 },
     #[error(
         "this is a light build without the local ONNX captioner; configure an OpenAI-compatible captioner, or install the full build for local Qwen3-VL"
     )]
@@ -46,7 +48,15 @@ impl<F> From<ort::Error<F>> for CaptionerError {
     }
 }
 
-pub enum Captioner {
+/// Loaded captioning backend plus the shared empty-caption retry policy.
+pub struct Captioner {
+    backend: Backend,
+    /// Extra generation attempts when the result trims to empty (see
+    /// [`Captioner::caption_image`]). Total tries = `empty_retries + 1`.
+    empty_retries: u32,
+}
+
+enum Backend {
     #[cfg(feature = "onnx")]
     Onnx(onnx::OnnxCaptioner),
     OpenAi(openai::OpenAiCaptioner),
@@ -54,17 +64,21 @@ pub enum Captioner {
 
 impl Captioner {
     pub fn from_profile(profile: &CaptionerProfile) -> Result<Self, CaptionerError> {
-        match profile {
+        let (backend, empty_retries) = match profile {
             #[cfg(feature = "onnx")]
             CaptionerProfile::Onnx(p) => {
-                Ok(Self::Onnx(onnx::OnnxCaptioner::from_profile(p)?))
+                (Backend::Onnx(onnx::OnnxCaptioner::from_profile(p)?), p.empty_retries)
             }
             #[cfg(not(feature = "onnx"))]
-            CaptionerProfile::Onnx(_) => Err(CaptionerError::Unsupported),
+            CaptionerProfile::Onnx(_) => return Err(CaptionerError::Unsupported),
             CaptionerProfile::Openai(p) => {
-                Ok(Self::OpenAi(openai::OpenAiCaptioner::from_profile(p)?))
+                (Backend::OpenAi(openai::OpenAiCaptioner::from_profile(p)?), p.empty_retries)
             }
-        }
+        };
+        Ok(Self {
+            backend,
+            empty_retries,
+        })
     }
 
     /// Generate a caption for `image_path` using `prompt`. Callers iterate
@@ -96,12 +110,34 @@ impl Captioner {
     ) -> Result<String, CaptionerError> {
         let context = context.map(str::trim).filter(|s| !s.is_empty());
         let prefix = prefix.map(str::trim).filter(|s| !s.is_empty());
-        let raw = match self {
-            #[cfg(feature = "onnx")]
-            Self::Onnx(c) => c.caption_image(image_path, prompt, context, prefix)?,
-            Self::OpenAi(c) => c.caption_image(image_path, prompt, context, prefix)?,
-        };
-        Ok(strip_echoed_prefix(&raw, prefix).trim().to_string())
+
+        // A model can return nothing — a reasoning model that spent its whole
+        // budget in the thinking channel, a context-length overflow, or (for
+        // the local decoder) an immediate end-of-turn token. Storing that empty
+        // string marks the caption key as done, so it never regenerates without
+        // `--force`. Retry up to `empty_retries` times; if every attempt is
+        // empty, surface an error instead of returning "" so the caller skips
+        // the image rather than persisting a blank caption.
+        let attempts = self.empty_retries.saturating_add(1);
+        for attempt in 1..=attempts {
+            let raw = match &mut self.backend {
+                #[cfg(feature = "onnx")]
+                Backend::Onnx(c) => c.caption_image(image_path, prompt, context, prefix)?,
+                Backend::OpenAi(c) => c.caption_image(image_path, prompt, context, prefix)?,
+            };
+            let caption = strip_echoed_prefix(&raw, prefix).trim().to_string();
+            if !caption.is_empty() {
+                return Ok(caption);
+            }
+            if attempt < attempts {
+                eprintln!(
+                    "[captioner] empty caption for {}; retrying ({attempt}/{})",
+                    image_path.display(),
+                    self.empty_retries
+                );
+            }
+        }
+        Err(CaptionerError::EmptyCaption { attempts })
     }
 }
 

@@ -158,6 +158,16 @@ pub struct OnnxCaptionerProfile {
     pub max_pixels: u32,
     #[serde(default = "default_max_new_tokens")]
     pub max_new_tokens: usize,
+    /// How many times to re-run generation when the model returns an empty
+    /// caption (trimmed to nothing). An empty result is otherwise saved
+    /// verbatim and marks the `{model}.{prompt}` key as done, so it never
+    /// regenerates without `--force`. After the retries are exhausted the
+    /// caption is reported as an error instead of being stored. 0 = never
+    /// retry. Default 2. (Greedy ONNX decode is deterministic, so a retry
+    /// reproduces the same empty output — the value here still governs how
+    /// many attempts are made before the empty result surfaces as an error.)
+    #[serde(default = "default_empty_retries")]
+    pub empty_retries: u32,
 }
 
 /// OpenAI-compatible chat-completions captioner. Works against any server
@@ -202,6 +212,15 @@ pub struct OpenAiCaptionerProfile {
     /// succeeds on a fresh attempt. 0 = never retry. Default 3.
     #[serde(default = "default_openai_max_retries")]
     pub max_retries: u32,
+    /// How many times to re-run generation when the server returns an empty
+    /// caption (trimmed to nothing) — distinct from `max_retries`, which
+    /// covers transient HTTP/transport failures. An empty result is otherwise
+    /// saved verbatim and marks the `{model}.{prompt}` key as done, so it
+    /// never regenerates without `--force`; after the retries are exhausted it
+    /// is reported as an error instead of being stored. 0 = never retry.
+    /// Default 2.
+    #[serde(default = "default_empty_retries")]
+    pub empty_retries: u32,
 }
 
 /// The built-in `default` prompt text. Sized to fit comfortably inside
@@ -253,6 +272,10 @@ fn default_openai_timeout_secs() -> u64 {
 
 fn default_openai_max_retries() -> u32 {
     3
+}
+
+fn default_empty_retries() -> u32 {
+    2
 }
 
 /// Default ComfyUI server root — the stock local install listens here.
@@ -509,6 +532,7 @@ impl CaptionerProfile {
             prompts: default_profile_prompts(),
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
+            empty_retries: default_empty_retries(),
         })
     }
 
@@ -952,6 +976,7 @@ mod tests {
                 jpeg_quality: 90,
                 timeout_secs: 600,
                 max_retries: 3,
+                empty_retries: 2,
             }),
         );
 
@@ -969,6 +994,7 @@ mod tests {
                 jpeg_quality: 90,
                 timeout_secs: 600,
                 max_retries: 3,
+                empty_retries: 2,
             }),
         );
 
@@ -1002,6 +1028,7 @@ mod tests {
             prompts: vec!["character".into(), "default".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
+            empty_retries: default_empty_retries(),
         });
         let mut config = ProjectConfig::default();
         config
@@ -1024,6 +1051,7 @@ mod tests {
             prompts: vec!["nonexistent".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
+            empty_retries: default_empty_retries(),
         });
         let library = ProjectConfig::default().prompt_library();
         let err = cfg.resolved_prompts(&library).unwrap_err();
@@ -1181,6 +1209,7 @@ mod tests {
             prompts: vec!["default".into()],
             max_pixels: default_max_pixels(),
             max_new_tokens: default_max_new_tokens(),
+            empty_retries: default_empty_retries(),
         });
         let full_openai = CaptionerProfile::Openai(OpenAiCaptionerProfile {
             endpoint: "http://x".into(),
@@ -1193,6 +1222,7 @@ mod tests {
             jpeg_quality: default_openai_jpeg_quality(),
             timeout_secs: default_openai_timeout_secs(),
             max_retries: default_openai_max_retries(),
+            empty_retries: default_empty_retries(),
         });
         let full_tag_group = TagGroup {
             tags: vec!["x".into()],

@@ -7,12 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use eframe::egui;
 use fwaun_tools_core::config::{
     BUILT_IN_CAPTIONER_REPO, BUILT_IN_CAPTIONER_SUBDIR, BUILT_IN_TAGGER_REPO, CaptionAffix,
     CaptionerProfile, ExportProfile, OnnxCaptionerProfile, OpenAiCaptionerProfile, ProjectConfig,
     TagGroup, TaggerProfile,
 };
-use eframe::egui;
 
 use crate::i18n::T;
 
@@ -62,11 +62,7 @@ impl ConfigDraft {
             default_profile: cfg.default_profile,
             default_tagger: cfg.default_tagger,
             default_captioner: cfg.default_captioner,
-            export: cfg
-                .export
-                .into_iter()
-                .map(|(k, v)| (k, v.into()))
-                .collect(),
+            export: cfg.export.into_iter().map(|(k, v)| (k, v.into())).collect(),
             tagger: cfg.tagger.into_iter().collect(),
             captioner: cfg.captioner.into_iter().collect(),
             captioner_prompts: cfg.captioner_prompts.into_iter().collect(),
@@ -162,10 +158,7 @@ impl ConfigDraft {
                 .default_profile
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
-            default_tagger: self
-                .default_tagger
-                .clone()
-                .filter(|s| !s.trim().is_empty()),
+            default_tagger: self.default_tagger.clone().filter(|s| !s.trim().is_empty()),
             default_captioner: self
                 .default_captioner
                 .clone()
@@ -186,20 +179,15 @@ impl ConfigDraft {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConfigTab {
+    #[default]
     General,
     Tagger,
     Captioner,
     Prompts,
     Export,
     TagGroups,
-}
-
-impl Default for ConfigTab {
-    fn default() -> Self {
-        Self::General
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -661,9 +649,10 @@ fn ui_prompts(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
         draft.captioner_prompts.remove(i);
     }
     if ui.button(t.cfg_add_prompt()).clicked() {
-        draft
-            .captioner_prompts
-            .push((unique_name("prompt", &draft.captioner_prompts), String::new()));
+        draft.captioner_prompts.push((
+            unique_name("prompt", &draft.captioner_prompts),
+            String::new(),
+        ));
     }
     ui.add_space(6.0);
     ui.label(egui::RichText::new(t.cfg_prompts_note()).weak());
@@ -706,12 +695,7 @@ fn ui_export(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     });
                 ui.add_space(4.0);
                 ui.label(t.cfg_exclude_categories());
-                string_list_editor(
-                    ui,
-                    ("export_excl", idx),
-                    &mut p.exclude_categories,
-                    t,
-                );
+                string_list_editor(ui, ("export_excl", idx), &mut p.exclude_categories, t);
                 ui.add_space(4.0);
                 ui.label(t.cfg_category_prefixes());
                 kv_list_editor(
@@ -801,14 +785,18 @@ fn ui_tag_groups(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     ("group_prefix", idx),
                     t.cfg_tag_group_caption_prefix(),
                     t,
-                    group.caption_prefix.get_or_insert_with(CaptionAffix::default),
+                    group
+                        .caption_prefix
+                        .get_or_insert_with(CaptionAffix::default),
                 );
                 affix_editor(
                     ui,
                     ("group_suffix", idx),
                     t.cfg_tag_group_caption_suffix(),
                     t,
-                    group.caption_suffix.get_or_insert_with(CaptionAffix::default),
+                    group
+                        .caption_suffix
+                        .get_or_insert_with(CaptionAffix::default),
                 );
                 ui.label(egui::RichText::new(t.cfg_tag_group_affix_note()).weak());
             });
@@ -856,13 +844,24 @@ fn affix_editor(
 /// Drop blank caption steering left behind by the editor's `get_or_insert`,
 /// so a save doesn't persist empty `caption_hint` / affix entries.
 fn normalize_tag_group_captions(g: &mut TagGroup) {
-    if g.caption_hint.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if g.caption_hint
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
         g.caption_hint = None;
     }
-    if g.caption_prefix.as_ref().is_some_and(|a| a.content.trim().is_empty()) {
+    if g.caption_prefix
+        .as_ref()
+        .is_some_and(|a| a.content.trim().is_empty())
+    {
         g.caption_prefix = None;
     }
-    if g.caption_suffix.as_ref().is_some_and(|a| a.content.trim().is_empty()) {
+    if g.caption_suffix
+        .as_ref()
+        .is_some_and(|a| a.content.trim().is_empty())
+    {
         g.caption_suffix = None;
     }
 }
@@ -898,7 +897,11 @@ fn optional_text(ui: &mut egui::Ui, salt: impl std::hash::Hash, value: &mut Opti
         let mut buf = value.clone().unwrap_or_default();
         let resp = ui.text_edit_singleline(&mut buf);
         if resp.changed() {
-            *value = if buf.trim().is_empty() { None } else { Some(buf) };
+            *value = if buf.trim().is_empty() {
+                None
+            } else {
+                Some(buf)
+            };
         }
     });
 }
@@ -928,11 +931,7 @@ fn optional_dragvalue_f32(
                 *value = if enabled { Some(enable_default) } else { None };
             }
             if let Some(v) = value.as_mut() {
-                ui.add(
-                    egui::DragValue::new(v)
-                        .range(range)
-                        .speed(speed),
-                );
+                ui.add(egui::DragValue::new(v).range(range).speed(speed));
             }
         });
     });
@@ -1020,8 +1019,10 @@ mod tests {
 
     #[test]
     fn draft_round_trips_through_project_config() {
-        let mut original = ProjectConfig::default();
-        original.default_profile = Some("anima".into());
+        let mut original = ProjectConfig {
+            default_profile: Some("anima".into()),
+            ..Default::default()
+        };
         original.tagger.insert(
             "wd".into(),
             TaggerProfile {

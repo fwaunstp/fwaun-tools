@@ -1,4 +1,7 @@
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 mod config_ui;
 mod i18n;
@@ -7,11 +10,14 @@ mod model_ui;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
+use chrono::{DateTime, Utc};
+use eframe::egui;
+use egui::{ColorImage, Key, TextureHandle};
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::Captioner;
 use fwaun_tools_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
@@ -21,9 +27,6 @@ use fwaun_tools_core::sidecar::{
 use fwaun_tools_core::tag_group::{self, Classification, DropTarget};
 use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
-use chrono::{DateTime, Utc};
-use eframe::egui;
-use egui::{ColorImage, Key, TextureHandle};
 
 use crate::config_ui::{ConfigAction, ConfigDraft, ConfigTab, show_config_modal};
 use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
@@ -67,9 +70,10 @@ fn main() -> eframe::Result<()> {
 
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("noto-jp".into(), egui::FontData::from_static(JP_FONT).into());
+    fonts.font_data.insert(
+        "noto-jp".into(),
+        egui::FontData::from_static(JP_FONT).into(),
+    );
     // Append, not prepend — keep latin glyph fidelity for the default
     // proportional font, fall through to Noto JP for codepoints the
     // primary face doesn't cover.
@@ -162,8 +166,8 @@ struct Progress {
 
 enum DoneKind {
     LoadFolder,
-    Tagger(Option<Tagger>),
-    Captioner(Option<Captioner>),
+    Tagger(Option<Box<Tagger>>),
+    Captioner(Option<Box<Captioner>>),
     Booru,
 }
 
@@ -206,8 +210,11 @@ struct AnimaTaggerApp {
     tag_input: String,
     loading: bool,
     error_msg: Option<String>,
-    tagger: Option<Tagger>,
-    captioner: Option<Captioner>,
+    // Boxed: both models own ort sessions and are large; keeping them behind a
+    // Box shrinks the App struct and the `DoneKind` message that hands them back
+    // from the worker (clippy's `large_enum_variant`).
+    tagger: Option<Box<Tagger>>,
+    captioner: Option<Box<Captioner>>,
 
     // Modal: config editor
     config_open: bool,
@@ -509,11 +516,9 @@ impl AnimaTaggerApp {
                     self.ui_detail(ui);
                 });
             });
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.view_mode.clone() {
-                ViewMode::Grid => self.ui_grid(ui),
-                ViewMode::Kanban { group } => self.ui_kanban(ui, &group),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.view_mode.clone() {
+            ViewMode::Grid => self.ui_grid(ui),
+            ViewMode::Kanban { group } => self.ui_kanban(ui, &group),
         });
         if self.config_open {
             self.ui_config_modal(ctx);
@@ -560,8 +565,7 @@ impl AnimaTaggerApp {
                             match fs::read_to_string(&resolved)
                                 .map_err(|e| e.to_string())
                                 .and_then(|s| {
-                                    toml::from_str::<ProjectConfig>(&s)
-                                        .map_err(|e| e.to_string())
+                                    toml::from_str::<ProjectConfig>(&s).map_err(|e| e.to_string())
                                 }) {
                                 Ok(c) => (c, None),
                                 Err(e) => (ProjectConfig::default(), Some(e)),
@@ -631,10 +635,7 @@ impl AnimaTaggerApp {
                 .selected_text(view_label)
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(
-                            matches!(self.view_mode, ViewMode::Grid),
-                            t.view_grid(),
-                        )
+                        .selectable_label(matches!(self.view_mode, ViewMode::Grid), t.view_grid())
                         .clicked()
                     {
                         self.view_mode = ViewMode::Grid;
@@ -717,9 +718,7 @@ impl AnimaTaggerApp {
             if self.loading {
                 ui.label(t.working());
             }
-            ui.label(
-                t.images_selected_summary(self.images.len(), self.selected.len()),
-            );
+            ui.label(t.images_selected_summary(self.images.len(), self.selected.len()));
         });
     }
 }
@@ -953,13 +952,13 @@ impl AnimaTaggerApp {
         let dragging = self.kanban_drag.is_some() && drop_target.is_some();
         let column_response = ui
             .allocate_ui(egui::vec2(width, ui.available_height()), |ui| {
-                let frame = egui::Frame::group(ui.style())
-                    .inner_margin(6.0)
-                    .stroke(if dragging && ui.rect_contains_pointer(ui.max_rect()) {
+                let frame = egui::Frame::group(ui.style()).inner_margin(6.0).stroke(
+                    if dragging && ui.rect_contains_pointer(ui.max_rect()) {
                         egui::Stroke::new(2.0, ui.visuals().selection.bg_fill)
                     } else {
                         ui.visuals().widgets.noninteractive.bg_stroke
-                    });
+                    },
+                );
                 frame
                     .show(ui, |ui| {
                         ui.set_min_width(width);
@@ -1071,12 +1070,7 @@ impl AnimaTaggerApp {
     /// [`tag_group::apply_drop`] and persist it to disk. Errors surface
     /// in the top error banner; remaining paths are still attempted so
     /// a single broken file doesn't abort the whole drop.
-    fn apply_kanban_drop(
-        &mut self,
-        group: &TagGroup,
-        target: &DropTarget,
-        paths: &[PathBuf],
-    ) {
+    fn apply_kanban_drop(&mut self, group: &TagGroup, target: &DropTarget, paths: &[PathBuf]) {
         let t = self.t();
         for path in paths {
             let Some(item) = self.images.iter_mut().find(|i| i.path == *path) else {
@@ -1097,7 +1091,11 @@ fn status_flags(s: &Sidecar) -> String {
     let c = if s.is_captioned() { 'C' } else { ' ' };
     let b = if s.has_booru() { 'B' } else { ' ' };
     let m = if !s.manual_tags.is_empty() { 'M' } else { ' ' };
-    let h = if !s.caption_hints.is_empty() { 'H' } else { ' ' };
+    let h = if !s.caption_hints.is_empty() {
+        'H'
+    } else {
+        ' '
+    };
     format!("{t}{c}{b}{m}{h}")
 }
 
@@ -1231,11 +1229,7 @@ impl AnimaTaggerApp {
             None => return,
         };
 
-        let filename = item
-            .path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         ui.label(egui::RichText::new(filename).monospace().weak());
 
         ui.add_space(6.0);
@@ -1272,12 +1266,7 @@ impl AnimaTaggerApp {
                 }
                 for bt in &item.sidecar.booru_tags {
                     let suppressed = item.sidecar.is_suppressed(&bt.tag);
-                    if chip(
-                        ui,
-                        &format!("{} [B]", bt.tag),
-                        ChipKind::Booru,
-                        suppressed,
-                    ) {
+                    if chip(ui, &format!("{} [B]", bt.tag), ChipKind::Booru, suppressed) {
                         to_toggle_suppression.push(bt.tag.clone());
                     }
                 }
@@ -1410,7 +1399,9 @@ impl AnimaTaggerApp {
         ui.separator();
         ui.add_space(4.0);
         if ui
-            .button(egui::RichText::new(t.delete_image()).color(egui::Color32::from_rgb(220, 90, 90)))
+            .button(
+                egui::RichText::new(t.delete_image()).color(egui::Color32::from_rgb(220, 90, 90)),
+            )
             .on_hover_text(t.delete_image_title())
             .clicked()
         {
@@ -1584,14 +1575,18 @@ impl AnimaTaggerApp {
 
         ui.add_space(6.0);
         ui.add(egui::Label::new(
-            egui::RichText::new(t.switch_to_single_hint()).small().weak(),
+            egui::RichText::new(t.switch_to_single_hint())
+                .small()
+                .weak(),
         ));
 
         ui.add_space(12.0);
         ui.separator();
         ui.add_space(4.0);
         if ui
-            .button(egui::RichText::new(t.delete_images()).color(egui::Color32::from_rgb(220, 90, 90)))
+            .button(
+                egui::RichText::new(t.delete_images()).color(egui::Color32::from_rgb(220, 90, 90)),
+            )
             .on_hover_text(t.delete_image_title())
             .clicked()
         {
@@ -1708,10 +1703,7 @@ impl AnimaTaggerApp {
                     .max_height(160.0)
                     .show(ui, |ui| {
                         for p in &paths {
-                            let name = p
-                                .file_name()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or_default();
+                            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or_default();
                             ui.label(egui::RichText::new(name).monospace().small().weak());
                         }
                     });
@@ -1747,7 +1739,10 @@ impl AnimaTaggerApp {
             let sidecar = sidecar_path_for(p);
             if let Err(e) = fs::remove_file(p) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    errors.push(self.t().err_delete_failed(&p.display().to_string(), &e.to_string()));
+                    errors.push(
+                        self.t()
+                            .err_delete_failed(&p.display().to_string(), &e.to_string()),
+                    );
                     continue;
                 }
             }
@@ -1839,7 +1834,7 @@ impl AnimaTaggerApp {
         thread::spawn(move || {
             if tagger.is_none() {
                 match Tagger::from_profile(&profile_for_load) {
-                    Ok(t) => tagger = Some(t),
+                    Ok(t) => tagger = Some(Box::new(t)),
                     Err(e) => {
                         let _ = tx.send(WorkerMsg::Error(format!("tagger load: {e}")));
                         let _ = tx.send(WorkerMsg::Done(DoneKind::Tagger(None)));
@@ -1924,8 +1919,10 @@ impl AnimaTaggerApp {
         // at least one prompt-key not already present in the sidecar.
         // Mirrors the CLI's default behavior (`fwaun-tools dataset caption`
         // without --force).
-        let prompt_keys: Vec<String> =
-            prompts.iter().map(|(n, _)| format!("{model_name}.{n}")).collect();
+        let prompt_keys: Vec<String> = prompts
+            .iter()
+            .map(|(n, _)| format!("{model_name}.{n}"))
+            .collect();
         let existing_keys: HashMap<PathBuf, HashSet<String>> = self
             .images
             .iter()
@@ -1994,7 +1991,7 @@ impl AnimaTaggerApp {
         thread::spawn(move || {
             if captioner.is_none() {
                 match Captioner::from_profile(&profile_for_load) {
-                    Ok(c) => captioner = Some(c),
+                    Ok(c) => captioner = Some(Box::new(c)),
                     Err(e) => {
                         let _ = tx.send(WorkerMsg::Error(format!("captioner load: {e}")));
                         let _ = tx.send(WorkerMsg::Done(DoneKind::Captioner(None)));
@@ -2023,7 +2020,12 @@ impl AnimaTaggerApp {
                     if have.is_some_and(|s| s.contains(&key)) {
                         continue;
                     }
-                    match captioner_inst.caption_image(path, ptext, hint.as_deref(), prefix.as_deref()) {
+                    match captioner_inst.caption_image(
+                        path,
+                        ptext,
+                        hint.as_deref(),
+                        prefix.as_deref(),
+                    ) {
                         Ok(caption) => entries.push((key, caption)),
                         Err(e) => {
                             let _ = tx.send(WorkerMsg::Error(format!(
@@ -2143,29 +2145,25 @@ impl AnimaTaggerApp {
         if self.worker_rx.is_none() {
             return;
         }
-        // Drain everything currently buffered. We can't hold a borrow
-        // of self.worker_rx across the apply_worker_msg call (which
-        // mutably borrows self), so each iteration grabs the receiver
-        // briefly to try_recv, drops the borrow, then dispatches.
+        // Drain everything currently buffered. We can't hold a borrow of
+        // self.worker_rx across the apply_worker_msg call (which mutably
+        // borrows self), so try_recv runs inside the match scrutinee — the
+        // receiver borrow ends there, before we dispatch the message.
         loop {
-            let recv = match self.worker_rx.as_ref() {
-                Some(rx) => rx.try_recv(),
-                None => break,
-            };
-            match recv {
-                Ok(msg) => self.apply_worker_msg(msg),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // Worker dropped without sending Done — clean up
-                    // anyway so the UI doesn't get stuck on the
-                    // progress overlay.
+            let msg = match self.worker_rx.as_ref().map(|rx| rx.try_recv()) {
+                Some(Ok(msg)) => msg,
+                None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => break,
+                Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+                    // Worker dropped without sending Done — clean up anyway so
+                    // the UI doesn't get stuck on the progress overlay.
                     self.worker_rx = None;
                     self.progress = None;
                     self.loading = false;
                     self.cancel_flag = None;
                     break;
                 }
-            }
+            };
+            self.apply_worker_msg(msg);
         }
     }
 
@@ -2288,9 +2286,7 @@ impl AnimaTaggerApp {
                     ui.add_space(4.0);
                 });
             });
-        if request_cancel
-            && let Some(flag) = &self.cancel_flag
-        {
+        if request_cancel && let Some(flag) = &self.cancel_flag {
             flag.store(true, Ordering::Relaxed);
         }
     }
@@ -2500,7 +2496,11 @@ fn section_title(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-fn make_thumbnail_texture(path: &Path, max_size: u32, ctx: &egui::Context) -> Option<TextureHandle> {
+fn make_thumbnail_texture(
+    path: &Path,
+    max_size: u32,
+    ctx: &egui::Context,
+) -> Option<TextureHandle> {
     let img = image::open(path).ok()?;
     let thumb = img.thumbnail(max_size, max_size).to_rgba8();
     let size = [thumb.width() as usize, thumb.height() as usize];
@@ -2570,4 +2570,3 @@ fn compute_common_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
 }
-

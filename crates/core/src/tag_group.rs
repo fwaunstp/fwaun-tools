@@ -94,7 +94,9 @@ pub fn classify(sc: &Sidecar, group: &TagGroup) -> Classification {
 /// Normalize a tag for caption-steering matching.
 fn caption_match_stem(s: &str) -> String {
     let t = s.trim();
-    t.strip_prefix(ORGANIZATIONAL_PREFIX).unwrap_or(t).to_lowercase()
+    t.strip_prefix(ORGANIZATIONAL_PREFIX)
+        .unwrap_or(t)
+        .to_lowercase()
 }
 
 /// Lowercase, `_`-stripped stems of the image's positive manual tags.
@@ -155,7 +157,10 @@ fn resolved_affix(
         .collect();
     // Ascending priority; ties broken by group name for a stable order.
     matched.sort_by(|a, b| a.1.priority.cmp(&b.1.priority).then_with(|| a.0.cmp(b.0)));
-    matched.into_iter().map(|(_, a)| a.content.as_str()).collect()
+    matched
+        .into_iter()
+        .map(|(_, a)| a.content.as_str())
+        .collect()
 }
 
 /// Apply a Kanban drop to `sc`, mutating its `manual_tags` so that the

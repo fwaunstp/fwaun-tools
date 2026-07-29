@@ -172,9 +172,12 @@ impl Upscaler {
         let uploaded = self.client.upload_image(filename, &bytes)?;
         let graph = self.workflow.build_graph(&uploaded.load_image_value());
         let prompt_id = self.client.queue_prompt(&graph)?;
-        let image =
-            self.client
-                .wait_for_output(&prompt_id, self.workflow.save_node(), self.timeout, self.poll)?;
+        let image = self.client.wait_for_output(
+            &prompt_id,
+            self.workflow.save_node(),
+            self.timeout,
+            self.poll,
+        )?;
         let raw = self.client.download(&image)?;
         self.fit_max_edge(raw)
     }
@@ -280,7 +283,10 @@ mod tests {
         assert_eq!(g[BUILTIN_LOAD_NODE]["inputs"]["image"], json!("cat.png"));
         // The UpscaleModelLoader widget is `model_name`, and node 12 wires to
         // node 11's UPSCALE_MODEL output.
-        assert_eq!(g["11"]["inputs"]["model_name"], json!("RealESRGAN_x4plus.pth"));
+        assert_eq!(
+            g["11"]["inputs"]["model_name"],
+            json!("RealESRGAN_x4plus.pth")
+        );
         assert_eq!(g["12"]["inputs"]["upscale_model"], json!(["11", 0]));
         assert_eq!(wf.save_node(), BUILTIN_SAVE_NODE);
     }
@@ -296,7 +302,11 @@ mod tests {
         });
         let wf = parse_template(graph).expect("valid template");
         match &wf {
-            Workflow::Custom { load_node, save_node, .. } => {
+            Workflow::Custom {
+                load_node,
+                save_node,
+                ..
+            } => {
                 assert_eq!(load_node, "1");
                 assert_eq!(save_node, "9");
             }

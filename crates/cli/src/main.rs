@@ -1,5 +1,8 @@
 use std::path::PathBuf;
 
+use anyhow::{Context, Result};
+use chrono::Utc;
+use clap::{Parser, Subcommand, ValueEnum};
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::{Captioner, CaptionerError};
 use fwaun_tools_comfyui::Client as ComfyClient;
@@ -9,9 +12,6 @@ use fwaun_tools_core::export;
 use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
 use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
-use anyhow::{Context, Result};
-use chrono::Utc;
-use clap::{Parser, Subcommand, ValueEnum};
 
 mod model;
 
@@ -225,7 +225,12 @@ enum DatasetCommand {
         /// Directory to scan (recursively).
         dir: PathBuf,
         /// Tag(s) to add, comma-separated or repeated. Case preserved.
-        #[arg(long, value_delimiter = ',', required = true, allow_hyphen_values = true)]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            required = true,
+            allow_hyphen_values = true
+        )]
         tags: Vec<String>,
         /// List what would change without writing any sidecar.
         #[arg(long)]
@@ -242,7 +247,12 @@ enum DatasetCommand {
         dir: PathBuf,
         /// Tag(s) to remove, comma-separated or repeated. Match the leading
         /// `-` to drop a suppression marker (`--tags=-foo`).
-        #[arg(long, value_delimiter = ',', required = true, allow_hyphen_values = true)]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            required = true,
+            allow_hyphen_values = true
+        )]
         tags: Vec<String>,
         /// List what would change without writing any sidecar.
         #[arg(long)]
@@ -350,16 +360,8 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             tags,
             dry_run,
         } => cmd_mv(dir, dest, tags, dry_run),
-        DatasetCommand::AddTag {
-            dir,
-            tags,
-            dry_run,
-        } => cmd_add_tag(dir, tags, dry_run),
-        DatasetCommand::RemoveTag {
-            dir,
-            tags,
-            dry_run,
-        } => cmd_remove_tag(dir, tags, dry_run),
+        DatasetCommand::AddTag { dir, tags, dry_run } => cmd_add_tag(dir, tags, dry_run),
+        DatasetCommand::RemoveTag { dir, tags, dry_run } => cmd_remove_tag(dir, tags, dry_run),
         DatasetCommand::Status { dir } => cmd_status(dir),
         DatasetCommand::ValidateTagGroup {
             dir,
@@ -444,13 +446,17 @@ fn cmd_caption(
             prompts.len()
         );
     }
-    let promote_key = (promote_mode != PromoteMode::Never)
-        .then(|| format!("{resolved_name}.{}", prompts[0].0));
+    let promote_key =
+        (promote_mode != PromoteMode::Never).then(|| format!("{resolved_name}.{}", prompts[0].0));
 
     eprintln!(
         "loading captioner `{resolved_name}` from {} (prompts: {}, promote: {:?}) …",
         profile.source_label(),
-        prompts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
+        prompts
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
         promote_mode,
     );
     let mut captioner = Captioner::from_profile(&profile)?;
@@ -478,8 +484,7 @@ fn cmd_caption(
         // present, and resolve the tag-group caption prefix. The prefix is
         // embedded in the prompt (see `build_user_text`) so the model
         // continues from what export will prepend.
-        let extra_hints =
-            fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups);
+        let extra_hints = fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups);
         let hint = sc.caption_hint_prompt_with(&extra_hints);
         let prefix = fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups);
         let prefix = (!prefix.is_empty()).then_some(prefix);
@@ -506,9 +511,10 @@ fn cmd_caption(
                         );
                         continue;
                     }
-                    Err(e) => return Err(e).with_context(|| {
-                        format!("captioning {} [{pname}]", image.display())
-                    }),
+                    Err(e) => {
+                        return Err(e)
+                            .with_context(|| format!("captioning {} [{pname}]", image.display()));
+                    }
                 };
                 let preview: String = caption.chars().take(60).collect();
                 sc.set_caption(key, caption);
@@ -561,9 +567,9 @@ fn cmd_caption(
 fn cmd_booru(dir: PathBuf, source: String, force: bool) -> Result<()> {
     let client = match source.as_str() {
         "danbooru" => BooruClient::danbooru(),
-        other => anyhow::bail!(
-            "unsupported booru source `{other}` (only 'danbooru' is implemented)"
-        ),
+        other => {
+            anyhow::bail!("unsupported booru source `{other}` (only 'danbooru' is implemented)")
+        }
     };
 
     let mut fetched = 0usize;
@@ -702,7 +708,11 @@ fn cmd_upscale(
                 if src_side.exists() {
                     let dst_side = sidecar_path_for(&target);
                     std::fs::copy(&src_side, &dst_side).with_context(|| {
-                        format!("copying sidecar {} → {}", src_side.display(), dst_side.display())
+                        format!(
+                            "copying sidecar {} → {}",
+                            src_side.display(),
+                            dst_side.display()
+                        )
                     })?;
                 }
                 done += 1;
@@ -729,8 +739,7 @@ fn cmd_upscale_models(profile_name: Option<String>, base_url: Option<String>) ->
     // Resolve base_url from the profile if present; a flag overrides it. Fall
     // back to the built-in default when there's no config at all.
     let base = base_url.unwrap_or_else(|| {
-        let cfg = ProjectConfig::load_or_default(std::path::Path::new("."))
-            .unwrap_or_default();
+        let cfg = ProjectConfig::load_or_default(std::path::Path::new(".")).unwrap_or_default();
         let (_, profile) = cfg.resolve_upscaler(profile_name.as_deref());
         profile.base_url
     });
@@ -982,11 +991,7 @@ fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Resu
             move_file(&sidecar, &target_sidecar)?;
         }
         moved += 1;
-        println!(
-            "moved {} → {}",
-            rel.display(),
-            target_image.display()
-        );
+        println!("moved {} → {}", rel.display(), target_image.display());
     }
 
     if dry_run {
@@ -1009,9 +1014,7 @@ fn move_file(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
                 .with_context(|| format!("removing {} after copy", from.display()))?;
             Ok(())
         }
-        Err(e) => {
-            Err(e).with_context(|| format!("moving {} → {}", from.display(), to.display()))
-        }
+        Err(e) => Err(e).with_context(|| format!("moving {} → {}", from.display(), to.display())),
     }
 }
 
@@ -1157,7 +1160,10 @@ fn cmd_validate_tag_group(
         let (state_text, state_json) = match &classification {
             Classification::Tag(t) => {
                 tagged += 1;
-                (format!("tag={t}"), serde_json::json!({"state": "tag", "tag": t}))
+                (
+                    format!("tag={t}"),
+                    serde_json::json!({"state": "tag", "tag": t}),
+                )
             }
             Classification::Unset => {
                 unset += 1;
@@ -1223,8 +1229,8 @@ fn cmd_tokens(
     eprintln!("[tokens] fetching Qwen/Qwen3-0.6B tokenizer...");
     let paths = hub::fetch_files("Qwen/Qwen3-0.6B", None, &["tokenizer.json"])
         .context("download Qwen3-0.6B tokenizer.json")?;
-    let tokenizer = Tokenizer::from_file(&paths[0])
-        .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
+    let tokenizer =
+        Tokenizer::from_file(&paths[0]).map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
 
     let count = |s: &str| -> Result<usize> {
         if s.is_empty() {
@@ -1280,9 +1286,7 @@ fn cmd_tokens(
         totals[i.min(totals.len() - 1)]
     };
 
-    println!(
-        "analyzed {analyzed} images (skipped {no_sidecar} without sidecar) | budget {limit}"
-    );
+    println!("analyzed {analyzed} images (skipped {no_sidecar} without sidecar) | budget {limit}");
     println!(
         "tokens p50={} p90={} p99={} max={} | over budget: {}",
         pct(0.5),

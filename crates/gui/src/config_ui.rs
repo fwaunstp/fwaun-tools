@@ -429,6 +429,7 @@ fn ui_captioner(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     prompts: vec!["default".to_string()],
                     max_pixels: 589_824,
                     max_new_tokens: 512,
+                    empty_retries: 2,
                 }),
             ));
         }
@@ -445,7 +446,8 @@ fn ui_captioner(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
                     max_edge: 1024,
                     jpeg_quality: 90,
                     timeout_secs: 600,
-                max_retries: 3,
+                    max_retries: 3,
+                    empty_retries: 2,
                 }),
             ));
         }
@@ -480,6 +482,7 @@ fn captioner_kind_combo(ui: &mut egui::Ui, idx: usize, profile: &mut CaptionerPr
                 prompts,
                 max_pixels: 589_824,
                 max_new_tokens: 512,
+                empty_retries: 2,
             }),
             _ => CaptionerProfile::Openai(OpenAiCaptionerProfile {
                 endpoint: "http://localhost:8080/v1".to_string(),
@@ -491,7 +494,8 @@ fn captioner_kind_combo(ui: &mut egui::Ui, idx: usize, profile: &mut CaptionerPr
                 max_edge: 1024,
                 jpeg_quality: 90,
                 timeout_secs: 600,
-            max_retries: 3,
+                max_retries: 3,
+                empty_retries: 2,
             }),
         };
     }
@@ -526,6 +530,15 @@ fn ui_captioner_onnx(ui: &mut egui::Ui, t: T, idx: usize, p: &mut OnnxCaptionerP
             ui.add(
                 egui::DragValue::new(&mut p.max_new_tokens)
                     .range(1..=8192)
+                    .speed(1.0),
+            );
+            ui.end_row();
+
+            ui.label(t.cfg_empty_retries())
+                .on_hover_text(t.cfg_empty_retries_hint());
+            ui.add(
+                egui::DragValue::new(&mut p.empty_retries)
+                    .range(0..=10)
                     .speed(1.0),
             );
             ui.end_row();
@@ -598,6 +611,15 @@ fn ui_captioner_openai(ui: &mut egui::Ui, t: T, idx: usize, p: &mut OpenAiCaptio
             ui.label(t.cfg_max_retries());
             ui.add(
                 egui::DragValue::new(&mut p.max_retries)
+                    .range(0..=10)
+                    .speed(1.0),
+            );
+            ui.end_row();
+
+            ui.label(t.cfg_empty_retries())
+                .on_hover_text(t.cfg_empty_retries_hint());
+            ui.add(
+                egui::DragValue::new(&mut p.empty_retries)
                     .range(0..=10)
                     .speed(1.0),
             );

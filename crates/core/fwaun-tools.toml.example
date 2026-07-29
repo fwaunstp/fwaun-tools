@@ -160,6 +160,13 @@ subdir = "qwen3-vl-4b-instruct-onnx-vision-fp32-text-int4-cpu"
 # slower decode.
 max_pixels = 589824
 max_new_tokens = 512
+# Regenerate when the caption comes back empty (trims to nothing). After the
+# retries are used up the empty result is reported as an error instead of being
+# saved, so the key stays un-generated and a later run retries it rather than
+# leaving a blank caption behind. 0 = never retry. (Greedy ONNX decode is
+# deterministic, so a retry reproduces the same output — this mainly governs how
+# many attempts run before the empty result surfaces as an error.)
+empty_retries = 2
 prompts = ["default"]
 
 [captioner.local-llamacpp]
@@ -188,6 +195,12 @@ timeout_secs = 600
 # with servers that intermittently 500 — e.g. gpt-oss harmony parse errors.
 # 0 = never retry.
 max_retries = 3
+# Regenerate when the server returns an empty caption (trims to nothing) —
+# separate from `max_retries`, which handles transient HTTP failures. Useful
+# when a reasoning model spends its whole budget in the thinking channel, or a
+# context-length overflow yields no content. After the retries are used up the
+# empty result is reported as an error instead of being saved. 0 = never retry.
+empty_retries = 2
 # Run two prompts per image: one general description and one focused on
 # characters. Both share the same loaded model.
 prompts = ["default", "character"]

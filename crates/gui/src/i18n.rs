@@ -495,6 +495,15 @@ impl T {
     pub fn cfg_max_retries(self) -> &'static str {
         self.pair("Max retries", "最大リトライ回数")
     }
+    pub fn cfg_empty_retries(self) -> &'static str {
+        self.pair("Empty-caption retries", "空キャプション時リトライ回数")
+    }
+    pub fn cfg_empty_retries_hint(self) -> &'static str {
+        self.pair(
+            "How many times to regenerate when the caption comes back empty. After the retries are used up the empty result is reported as an error instead of being saved, so it will be retried on the next run.",
+            "キャプションが空で返ってきたときに再生成する回数。リトライを使い切っても空の場合は保存せずエラーとして報告するため、次回実行時に再試行されます。",
+        )
+    }
     pub fn cfg_prompts(self) -> &'static str {
         self.pair("Prompts", "プロンプト")
     }

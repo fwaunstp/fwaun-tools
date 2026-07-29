@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use fwaun_tools_booru::{BooruClient, BooruError};
-use fwaun_tools_captioner::Captioner;
+use fwaun_tools_captioner::{Captioner, CaptionerError};
 use fwaun_tools_comfyui::Client as ComfyClient;
 use fwaun_tools_comfyui::upscale::{Options as UpscaleOptions, Upscaler};
 use fwaun_tools_core::config::ProjectConfig;
@@ -459,6 +459,7 @@ fn cmd_caption(
     let mut captioned = 0usize;
     let mut skipped = 0usize;
     let mut promoted = 0usize;
+    let mut empty_failures = 0usize;
     for image in iter_images(&dir) {
         let mut sc = Sidecar::load_or_default(&image)?;
         let pending: Vec<(String, String, String)> = prompts
@@ -485,19 +486,39 @@ fn cmd_caption(
         if pending.is_empty() {
             skipped += 1;
         } else {
+            let mut generated_any = false;
             for (key, pname, ptext) in pending {
-                let caption = captioner.caption_image(
+                let caption = match captioner.caption_image(
                     &image,
                     &ptext,
                     hint.as_deref(),
                     prefix.as_deref(),
-                )?;
+                ) {
+                    Ok(c) => c,
+                    // An all-empty result (after retries) is skipped rather than
+                    // stored, so the key stays un-generated and a later run
+                    // retries it. Don't abort the whole batch for one image.
+                    Err(CaptionerError::EmptyCaption { attempts }) => {
+                        empty_failures += 1;
+                        eprintln!(
+                            "skipped {} [{pname}]: empty caption after {attempts} attempt(s)",
+                            image.display()
+                        );
+                        continue;
+                    }
+                    Err(e) => return Err(e).with_context(|| {
+                        format!("captioning {} [{pname}]", image.display())
+                    }),
+                };
                 let preview: String = caption.chars().take(60).collect();
                 sc.set_caption(key, caption);
                 dirty = true;
+                generated_any = true;
                 println!("captioned {} [{pname}] — \"{preview}…\"", image.display());
             }
-            captioned += 1;
+            if generated_any {
+                captioned += 1;
+            }
         }
 
         // Promote step runs independently of generation, so a follow-up
@@ -531,8 +552,8 @@ fn cmd_caption(
         }
     }
     println!(
-        "done: {captioned} captioned, {skipped} skipped, {promoted} promoted to manual \
-         (use --force to recaption)",
+        "done: {captioned} captioned, {skipped} skipped, {promoted} promoted to manual, \
+         {empty_failures} empty (not saved) (use --force to recaption)",
     );
     Ok(())
 }

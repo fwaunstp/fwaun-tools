@@ -77,7 +77,9 @@ fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
 /// Map a bare DiT weight path (`double_blocks.0.img_attn.qkv.weight`) to the kohya
 /// LoRA module name (`lora_unet_double_blocks_0_img_attn_qkv`).
 fn kohya_name(bare_weight_key: &str) -> String {
-    let module = bare_weight_key.strip_suffix(".weight").unwrap_or(bare_weight_key);
+    let module = bare_weight_key
+        .strip_suffix(".weight")
+        .unwrap_or(bare_weight_key);
     format!("lora_unet_{}", module.replace('.', "_"))
 }
 
@@ -88,7 +90,9 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
     p.log(&format!("rank         : {}", args.rank));
     p.log(&format!(
         "alpha        : {}",
-        args.alpha.map(|a| a.to_string()).unwrap_or_else(|| "per-module (= rank)".into())
+        args.alpha
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "per-module (= rank)".into())
     ));
     p.log(&format!("save dtype   : {}", args.save_dtype.tag()));
     p.log(&format!("model        : {:?}", args.arch));
@@ -106,15 +110,29 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
         );
     }
 
-    let include = args.include.as_deref().map(Regex::new).transpose().context("bad --include regex")?;
-    let exclude = args.exclude.as_deref().map(Regex::new).transpose().context("bad --exclude regex")?;
+    let include = args
+        .include
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .context("bad --include regex")?;
+    let exclude = args
+        .exclude
+        .as_deref()
+        .map(Regex::new)
+        .transpose()
+        .context("bad --exclude regex")?;
 
     // Bare-key -> actual key, for both sides (prefix-normalized so differently
     // namespaced checkpoints line up, exactly as merge-diff does).
-    let base_norm: BTreeMap<&str, &String> =
-        base.keys().map(|k| (args.arch.strip_prefix_pub(k), k)).collect();
-    let tuned_norm: BTreeMap<&str, &String> =
-        tuned.keys().map(|k| (args.arch.strip_prefix_pub(k), k)).collect();
+    let base_norm: BTreeMap<&str, &String> = base
+        .keys()
+        .map(|k| (args.arch.strip_prefix_pub(k), k))
+        .collect();
+    let tuned_norm: BTreeMap<&str, &String> = tuned
+        .keys()
+        .map(|k| (args.arch.strip_prefix_pub(k), k))
+        .collect();
 
     // Select every 2D float `.weight` present in both, with matching shapes.
     let mut modules: Vec<Module> = Vec::new();
@@ -123,7 +141,9 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
         if !bare.ends_with(".weight") {
             continue;
         }
-        let Some(tkey) = tuned_norm.get(bare) else { continue };
+        let Some(tkey) = tuned_norm.get(bare) else {
+            continue;
+        };
         let binfo = base.info(bkey).unwrap();
         let tinfo = tuned.info(tkey).unwrap();
         if !binfo.dtype.is_float() || binfo.shape.len() != 2 {
@@ -158,7 +178,9 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
     modules.sort_by(|a, b| a.lora_name.cmp(&b.lora_name));
 
     if modules.is_empty() {
-        bail!("no matching 2D weight tensors found in both base and tuned (check --model / --include)");
+        bail!(
+            "no matching 2D weight tensors found in both base and tuned (check --model / --include)"
+        );
     }
     if skipped_shape > 0 {
         p.log(&format!(
@@ -199,10 +221,18 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
     metadata.insert("ss_network_dim".into(), args.rank.to_string());
     metadata.insert(
         "ss_network_alpha".into(),
-        args.alpha.map(|a| a.to_string()).unwrap_or_else(|| args.rank.to_string()),
+        args.alpha
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| args.rank.to_string()),
     );
-    metadata.insert("lora_extracted_from_base".into(), args.base.display().to_string());
-    metadata.insert("lora_extracted_from_tuned".into(), args.tuned.display().to_string());
+    metadata.insert(
+        "lora_extracted_from_base".into(),
+        args.base.display().to_string(),
+    );
+    metadata.insert(
+        "lora_extracted_from_tuned".into(),
+        args.tuned.display().to_string(),
+    );
 
     let mut writer = StreamWriter::begin(&args.output, plan, &metadata)?;
 
@@ -225,12 +255,24 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
         // Vary the random projection per module but keep it reproducible.
         let seed = (idx as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let svd = randomized_svd(&delta, m.out, m.in_, m.r_eff, args.oversample, args.niter, seed);
+        let svd = randomized_svd(
+            &delta,
+            m.out,
+            m.in_,
+            m.r_eff,
+            args.oversample,
+            args.niter,
+            seed,
+        );
         drop(delta);
 
         // Energy captured by the retained singular values.
         let kept: f64 = svd.s.iter().map(|&x| (x as f64) * (x as f64)).sum();
-        let energy = if fro2 > 0.0 { (kept / fro2) as f32 } else { 1.0 };
+        let energy = if fro2 > 0.0 {
+            (kept / fro2) as f32
+        } else {
+            1.0
+        };
         if energy < min_energy {
             min_energy = energy;
             worst_name = m.lora_name.clone();
@@ -262,7 +304,11 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
         p.tick(idx + 1, modules.len());
         if (idx + 1) % 32 == 0 || idx + 1 == modules.len() {
-            p.log(&format!("  extracted {}/{} modules", idx + 1, modules.len()));
+            p.log(&format!(
+                "  extracted {}/{} modules",
+                idx + 1,
+                modules.len()
+            ));
         }
     }
 
@@ -580,7 +626,11 @@ fn jacobi_eigh(g: &[f64], k: usize) -> (Vec<f64>, Vec<f64>) {
 
 /// A tiny reproducible xorshift64* stream of standard-normal f32 values.
 fn gaussian(count: usize, seed: u64) -> Vec<f32> {
-    let mut state = if seed == 0 { 0xDEAD_BEEF_CAFE_F00D } else { seed };
+    let mut state = if seed == 0 {
+        0xDEAD_BEEF_CAFE_F00D
+    } else {
+        seed
+    };
     let mut next_unit = || {
         // xorshift64* -> (0, 1].
         state ^= state << 13;
@@ -679,6 +729,9 @@ mod tests {
             }
         }
         let scale = a.iter().fold(0.0f32, |mx, &v| mx.max(v.abs()));
-        assert!(max_err < 1e-3 * scale.max(1.0), "max_err={max_err}, scale={scale}");
+        assert!(
+            max_err < 1e-3 * scale.max(1.0),
+            "max_err={max_err}, scale={scale}"
+        );
     }
 }

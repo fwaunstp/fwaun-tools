@@ -207,7 +207,14 @@ fn quantize_convrot(w: &[f32], out: usize, in_: usize, gs: usize, h: &[f32]) -> 
         dot += d;
         sum_sq_deq += sd;
     }
-    QuantOut { qdata, scale, sum_sq_err, sum_sq_ref, dot, sum_sq_deq }
+    QuantOut {
+        qdata,
+        scale,
+        sum_sq_err,
+        sum_sq_ref,
+        dot,
+        sum_sq_deq,
+    }
 }
 
 /// The embedded per-layer config the comfy-kitchen loader reads (uint8 JSON bytes).
@@ -232,7 +239,9 @@ fn derive_dst(src: &Path) -> PathBuf {
 
 /// True if the file carries per-tensor fp8 scales we cannot cleanly consume here.
 fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
-    f.keys().any(|k| k.ends_with(".weight_scale") || k.ends_with("_scale") || k.ends_with(".scale_weight"))
+    f.keys().any(|k| {
+        k.ends_with(".weight_scale") || k.ends_with("_scale") || k.ends_with(".scale_weight")
+    })
 }
 
 /// Collapse digit runs to `N` so sibling block layers group under one pattern.
@@ -248,7 +257,13 @@ enum Action {
     /// Passthrough f32 weight downcast to the compute dtype (`--downcast-fp32`).
     Downcast { key: String, dtype: Dtype },
     /// Quantize this `.weight`; emits weight + weight_scale + comfy_quant.
-    Quantize { key: String, base: String, out: usize, in_: usize, gs: usize },
+    Quantize {
+        key: String,
+        base: String,
+        out: usize,
+        in_: usize,
+        gs: usize,
+    },
 }
 
 pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
@@ -280,7 +295,11 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
             }
         }
     }
-    let target = if n_f16 >= n_bf16 && n_f16 > 0 { Dtype::F16 } else { Dtype::Bf16 };
+    let target = if n_f16 >= n_bf16 && n_f16 > 0 {
+        Dtype::F16
+    } else {
+        Dtype::Bf16
+    };
 
     // ---- plan ----
     let mut actions: Vec<Action> = Vec::new();
@@ -351,7 +370,13 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
                     shape: vec![cq.len()],
                     nbytes: cq.len(),
                 });
-                actions.push(Action::Quantize { key: key.clone(), base, out, in_, gs });
+                actions.push(Action::Quantize {
+                    key: key.clone(),
+                    base,
+                    out,
+                    in_,
+                    gs,
+                });
             }
             Err(reason) => {
                 *skip.entry(reason).or_default() += 1;
@@ -366,7 +391,10 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
                         shape: info.shape.clone(),
                         nbytes: info.numel() * target.element_size(),
                     });
-                    actions.push(Action::Downcast { key: key.clone(), dtype: target });
+                    actions.push(Action::Downcast {
+                        key: key.clone(),
+                        dtype: target,
+                    });
                 } else {
                     out_tensors.push(OutputTensor {
                         key: key.clone(),
@@ -381,12 +409,20 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
     }
 
     // ---- report ----
-    let n_quant = actions.iter().filter(|a| matches!(a, Action::Quantize { .. })).count();
+    let n_quant = actions
+        .iter()
+        .filter(|a| matches!(a, Action::Quantize { .. }))
+        .count();
     p.log(&format!("SRC {}", args.src.display()));
     p.log(&format!("compute/passthrough dtype: {}", target.tag()));
-    p.log(&format!("\nQUANTIZE {n_quant} layers (int8+convrot, absmax):"));
+    p.log(&format!(
+        "\nQUANTIZE {n_quant} layers (int8+convrot, absmax):"
+    ));
     for (pat, (c, shape, gs)) in &by_pat {
-        p.log(&format!("  x{c:<4} gs{gs:<3} {:<16} {pat}", format!("{shape:?}")));
+        p.log(&format!(
+            "  x{c:<4} gs{gs:<3} {:<16} {pat}",
+            format!("{shape:?}")
+        ));
     }
     p.log(&format!(
         "  groupsizes: {gsdist:?}   quantized params: {:.2}B (~{:.1} GB int8)",
@@ -425,8 +461,16 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
                 let vals = src.to_f32(key)?;
                 writer.write_tensor(key, &f32_to_bytes(&vals, *dtype)?)?;
             }
-            Action::Quantize { key, base, out, in_, gs } => {
-                let h = hadamard_cache.entry(*gs).or_insert_with(|| build_hadamard(*gs));
+            Action::Quantize {
+                key,
+                base,
+                out,
+                in_,
+                gs,
+            } => {
+                let h = hadamard_cache
+                    .entry(*gs)
+                    .or_insert_with(|| build_hadamard(*gs));
                 let w = src.to_f32(key)?;
                 let r = quantize_convrot(&w, *out, *in_, *gs, h);
                 let (relerr, cos) = (r.relerr(), r.cosine());
@@ -444,7 +488,10 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
                 let qbytes: Vec<u8> = r.qdata.iter().map(|&v| v as u8).collect();
                 writer.write_tensor(key, &qbytes)?;
-                writer.write_tensor(&format!("{base}.weight_scale"), &f32_to_bytes(&r.scale, Dtype::F32)?)?;
+                writer.write_tensor(
+                    &format!("{base}.weight_scale"),
+                    &f32_to_bytes(&r.scale, Dtype::F32)?,
+                )?;
                 writer.write_tensor(&format!("{base}.comfy_quant"), &comfy_quant_json(*gs))?;
 
                 nq += 1;
@@ -491,7 +538,10 @@ pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
         for (r, c, gs, b) in errs.iter().take(8) {
             p.log(&format!("    {r:6.3}%  cos {c:.5}  gs{gs:<3} {b}"));
         }
-        let over = errs.iter().filter(|e| e.0 > args.warn_thresh as f64).count();
+        let over = errs
+            .iter()
+            .filter(|e| e.0 > args.warn_thresh as f64)
+            .count();
         if over > 0 {
             p.log(&format!(
                 "  !! {over} layer(s) over --warn-thresh ({}%) — review above",

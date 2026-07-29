@@ -371,7 +371,13 @@ impl ModelApp {
         let running = self.running();
         file_row(ui, t, t.model_field_base(), &mut self.extract.base, false);
         file_row(ui, t, t.model_field_tuned(), &mut self.extract.tuned, false);
-        file_row(ui, t, t.model_field_output(), &mut self.extract.output, true);
+        file_row(
+            ui,
+            t,
+            t.model_field_output(),
+            &mut self.extract.output,
+            true,
+        );
 
         ui.horizontal(|ui| {
             ui.label(t.model_field_rank());
@@ -404,8 +410,8 @@ impl ModelApp {
             && !self.extract.output.trim().is_empty();
         self.run_row(ui, t, running, ready, |form| {
             let e = &form.extract;
-            let save_dtype = parse_dtype(e.save_dtype)?
-                .ok_or_else(|| "save dtype required".to_string())?;
+            let save_dtype =
+                parse_dtype(e.save_dtype)?.ok_or_else(|| "save dtype required".to_string())?;
             let args = ExtractArgs {
                 base: PathBuf::from(e.base.trim()),
                 tuned: PathBuf::from(e.tuned.trim()),
@@ -471,8 +477,10 @@ impl ModelApp {
     where
         F: FnOnce(
             &Self,
-        )
-            -> Result<Box<dyn FnOnce(&mut dyn ProgressSink) -> anyhow::Result<()> + Send>, String>,
+        ) -> Result<
+            Box<dyn FnOnce(&mut dyn ProgressSink) -> anyhow::Result<()> + Send>,
+            String,
+        >,
     {
         ui.horizontal(|ui| {
             let clicked = ui

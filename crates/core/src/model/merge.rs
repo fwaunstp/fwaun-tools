@@ -110,10 +110,14 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
     }
 
     // Normalize both sides to the bare DiT key: bare_key -> actual key in that file.
-    let base_norm: BTreeMap<&str, &String> =
-        base.keys().map(|k| (args.arch.strip_prefix(k), k)).collect();
-    let tuned_norm: BTreeMap<&str, &String> =
-        tuned.keys().map(|k| (args.arch.strip_prefix(k), k)).collect();
+    let base_norm: BTreeMap<&str, &String> = base
+        .keys()
+        .map(|k| (args.arch.strip_prefix(k), k))
+        .collect();
+    let tuned_norm: BTreeMap<&str, &String> = tuned
+        .keys()
+        .map(|k| (args.arch.strip_prefix(k), k))
+        .collect();
 
     // Report keys present in the fine-tune but not usable (diagnostics only).
     let base_bare: std::collections::BTreeSet<&str> = base_norm.keys().copied().collect();
@@ -185,7 +189,11 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
             shape: tinfo.shape.clone(),
             nbytes,
         });
-        plans.push(Plan { key: key.clone(), out_dtype, has_delta });
+        plans.push(Plan {
+            key: key.clone(),
+            out_dtype,
+            has_delta,
+        });
     }
 
     // Delta keys defined by base∩tuned that the target does not carry.
@@ -203,9 +211,18 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
     // Carry the target's metadata (keeps modelspec.architecture etc.) plus notes.
     let mut metadata = target.metadata().clone();
-    metadata.insert("merged_from_target".to_string(), args.target.display().to_string());
-    metadata.insert("merged_delta_base".to_string(), args.base.display().to_string());
-    metadata.insert("merged_delta_tuned".to_string(), args.tuned.display().to_string());
+    metadata.insert(
+        "merged_from_target".to_string(),
+        args.target.display().to_string(),
+    );
+    metadata.insert(
+        "merged_delta_base".to_string(),
+        args.base.display().to_string(),
+    );
+    metadata.insert(
+        "merged_delta_tuned".to_string(),
+        args.tuned.display().to_string(),
+    );
     metadata.insert("merged_multiplier".to_string(), args.multiplier.to_string());
 
     let applied = plans.iter().filter(|p| p.has_delta).count();
@@ -313,7 +330,8 @@ mod tests {
             nbytes,
         }];
         let mut w = StreamWriter::begin(path, plan, &BTreeMap::new()).unwrap();
-        w.write_tensor(key, &f32_to_bytes(vals, dtype).unwrap()).unwrap();
+        w.write_tensor(key, &f32_to_bytes(vals, dtype).unwrap())
+            .unwrap();
         w.finish().unwrap();
     }
 

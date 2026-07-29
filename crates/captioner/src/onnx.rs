@@ -54,8 +54,8 @@ use fwaun_tools_core::hub;
 use image::DynamicImage;
 use image::imageops::FilterType;
 use ort::memory::Allocator;
-use ort::session::{Session, SessionInputValue};
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::{Session, SessionInputValue};
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
@@ -165,10 +165,7 @@ impl OnnxCaptioner {
         );
 
         // 2. Vision encoder → vision_hidden_states [Nv, 2560].
-        let pixel_tensor = Tensor::from_array((
-            [n_patches as i64, row_dim as i64],
-            pixel_values,
-        ))?;
+        let pixel_tensor = Tensor::from_array(([n_patches as i64, row_dim as i64], pixel_values))?;
         let grid_thw_tensor = Tensor::from_array((
             [1_i64, 3_i64],
             vec![grid_t as i64, grid_h as i64, grid_w as i64],
@@ -219,9 +216,7 @@ impl OnnxCaptioner {
             .expect("checked above");
         let mut input_ids: Vec<i64> = Vec::with_capacity(prompt_ids.len() + n_vision_tokens - 1);
         input_ids.extend_from_slice(&prompt_ids[..pad_pos]);
-        for _ in 0..n_vision_tokens {
-            input_ids.push(IMAGE_PAD_TOKEN_ID);
-        }
+        input_ids.resize(input_ids.len() + n_vision_tokens, IMAGE_PAD_TOKEN_ID);
         input_ids.extend_from_slice(&prompt_ids[pad_pos + 1..]);
         let s = input_ids.len();
 
@@ -274,14 +269,10 @@ impl OnnxCaptioner {
                 [1_i64, cur_seq_len as i64, HIDDEN_SIZE as i64],
                 cur_embeds.clone(),
             ))?;
-            let mask_tensor = Tensor::from_array((
-                [1_i64, attention_mask.len() as i64],
-                attention_mask.clone(),
-            ))?;
-            let pos_tensor = Tensor::from_array((
-                [3_i64, 1_i64, cur_seq_len as i64],
-                cur_pos_ids.clone(),
-            ))?;
+            let mask_tensor =
+                Tensor::from_array(([1_i64, attention_mask.len() as i64], attention_mask.clone()))?;
+            let pos_tensor =
+                Tensor::from_array(([3_i64, 1_i64, cur_seq_len as i64], cur_pos_ids.clone()))?;
 
             let mut named: Vec<(Cow<'static, str>, SessionInputValue)> =
                 Vec::with_capacity(3 + NUM_LAYERS * 2);
@@ -352,10 +343,8 @@ impl OnnxCaptioner {
             // `Tensor::from_array` rejects any dim < 1 in ort 2.0.0-rc.12, so
             // the zero-row vision input has to be constructed via the
             // allocator-based ctor instead.
-            let empty_vision = Tensor::<f32>::new(
-                &Allocator::default(),
-                [0_i64, HIDDEN_SIZE as i64],
-            )?;
+            let empty_vision =
+                Tensor::<f32>::new(&Allocator::default(), [0_i64, HIDDEN_SIZE as i64])?;
             let next_embed_out = self
                 .embed
                 .run(ort::inputs! {
@@ -467,7 +456,11 @@ fn argmax_i64(slice: &[f32]) -> i64 {
     best as i64
 }
 
-fn build_chat_prompt(user_instruction: &str, context: Option<&str>, prefix: Option<&str>) -> String {
+fn build_chat_prompt(
+    user_instruction: &str,
+    context: Option<&str>,
+    prefix: Option<&str>,
+) -> String {
     // Qwen3-VL's default chat template emits no system block when none is
     // supplied (different from Qwen2-VL). Single image + single user turn.
     //

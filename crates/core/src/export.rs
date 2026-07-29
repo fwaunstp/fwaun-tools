@@ -6,7 +6,7 @@ use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::config::{ExportProfile, TagGroup};
-use crate::sidecar::{is_organizational, Sidecar};
+use crate::sidecar::{Sidecar, is_organizational};
 
 #[derive(Debug, Error)]
 pub enum ExportError {
@@ -138,7 +138,10 @@ fn present_caption_stems(sidecar: &Sidecar, profile: &ExportProfile) -> HashSet<
 
 /// Concatenate the affixes whose tag stem is present, in map key order.
 /// Empty when nothing matches.
-fn matched_affixes(affixes: &std::collections::BTreeMap<String, String>, present: &HashSet<String>) -> String {
+fn matched_affixes(
+    affixes: &std::collections::BTreeMap<String, String>,
+    present: &HashSet<String>,
+) -> String {
     let mut out = String::new();
     for (tag, affix) in affixes {
         if present.contains(&caption_prefix_stem(tag)) {
@@ -399,12 +402,13 @@ mod tests {
     }
 
     fn with_caption_prefixes(pairs: &[(&str, &str)]) -> ExportProfile {
-        let mut p = ExportProfile::default();
-        p.caption_prefixes = pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        p
+        ExportProfile {
+            caption_prefixes: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -484,11 +488,15 @@ mod tests {
             ..Default::default()
         };
         sidecar.set_caption("a", "a girl standing in a field");
-        let mut profile = ExportProfile::default();
-        profile.caption_suffixes =
-            [("realistic".to_string(), ", realistic proportions".to_string())]
-                .into_iter()
-                .collect();
+        let profile = ExportProfile {
+            caption_suffixes: [(
+                "realistic".to_string(),
+                ", realistic proportions".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
         assert_eq!(
             build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("a girl standing in a field, realistic proportions")
@@ -502,13 +510,15 @@ mod tests {
             ..Default::default()
         };
         sidecar.set_caption("a", "a cat");
-        let mut profile = ExportProfile::default();
-        profile.caption_prefixes = [("super_deformed".to_string(), "PRE ".to_string())]
-            .into_iter()
-            .collect();
-        profile.caption_suffixes = [("super_deformed".to_string(), " SUF".to_string())]
-            .into_iter()
-            .collect();
+        let profile = ExportProfile {
+            caption_prefixes: [("super_deformed".to_string(), "PRE ".to_string())]
+                .into_iter()
+                .collect(),
+            caption_suffixes: [("super_deformed".to_string(), " SUF".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
         assert_eq!(
             build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
             Some("PRE a cat SUF")
@@ -549,7 +559,11 @@ mod tests {
         let mut groups = BTreeMap::new();
         groups.insert(
             "fantasy_knight".into(),
-            single_tag_prefix_group("fantasy_knight", "She wears her Fantasy Knight costume. ", 1),
+            single_tag_prefix_group(
+                "fantasy_knight",
+                "She wears her Fantasy Knight costume. ",
+                1,
+            ),
         );
         groups.insert(
             "sayaka".into(),

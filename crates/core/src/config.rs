@@ -233,10 +233,7 @@ pub const BUILT_IN_DEFAULT_PROMPT: &str =
 /// user's `[captioner_prompts]` table at resolution time, with user
 /// entries taking precedence on key collision.
 pub fn default_prompt_library() -> BTreeMap<String, String> {
-    BTreeMap::from([(
-        "default".to_string(),
-        BUILT_IN_DEFAULT_PROMPT.to_string(),
-    )])
+    BTreeMap::from([("default".to_string(), BUILT_IN_DEFAULT_PROMPT.to_string())])
 }
 
 fn default_profile_prompts() -> Vec<String> {
@@ -618,8 +615,10 @@ pub enum ConfigError {
     #[error("parse error on {path}: {source}")]
     Parse {
         path: std::path::PathBuf,
+        // Boxed: `toml::de::Error` is large enough that an unboxed variant made
+        // every `Result<_, ConfigError>` trip clippy's `result_large_err`.
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("unknown prompt name `{0}` — define it in [captioner_prompts] or pick an existing one")]
     UnknownPrompt(String),
@@ -676,7 +675,7 @@ impl ProjectConfig {
         })?;
         let cfg = toml::from_str(&s).map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
         Ok(Some(cfg))
     }
@@ -688,9 +687,7 @@ impl ProjectConfig {
     /// a legacy name from [`LEGACY_CONFIG_FILES`] is accepted as a fallback
     /// and triggers a deprecation warning.
     pub fn find_project_config(start: &Path) -> Option<PathBuf> {
-        let abs = start
-            .canonicalize()
-            .unwrap_or_else(|_| start.to_path_buf());
+        let abs = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
         for dir in abs.ancestors() {
             let primary = dir.join(CONFIG_FILE);
             if primary.is_file() {
@@ -903,9 +900,12 @@ mod tests {
         let cfg_path = root.path().join(CONFIG_FILE);
         fs::write(&cfg_path, "default_profile = \"plain\"\n").unwrap();
 
-        let found = ProjectConfig::find_project_config(&nested)
-            .expect("should walk up to root config");
-        assert_eq!(found.canonicalize().unwrap(), cfg_path.canonicalize().unwrap());
+        let found =
+            ProjectConfig::find_project_config(&nested).expect("should walk up to root config");
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            cfg_path.canonicalize().unwrap()
+        );
 
         let cfg = ProjectConfig::load(&nested)
             .expect("load ok")
@@ -919,7 +919,11 @@ mod tests {
         let mid = root.path().join("mid");
         let leaf = mid.join("leaf");
         fs::create_dir_all(&leaf).unwrap();
-        fs::write(root.path().join(CONFIG_FILE), "default_profile = \"root\"\n").unwrap();
+        fs::write(
+            root.path().join(CONFIG_FILE),
+            "default_profile = \"root\"\n",
+        )
+        .unwrap();
         fs::write(mid.join(CONFIG_FILE), "default_profile = \"mid\"\n").unwrap();
 
         let cfg = ProjectConfig::load(&leaf).unwrap().unwrap();
@@ -961,8 +965,10 @@ mod tests {
 
     #[test]
     fn merge_project_overrides_user() {
-        let mut user = ProjectConfig::default();
-        user.default_captioner = Some("user-cap".into());
+        let mut user = ProjectConfig {
+            default_captioner: Some("user-cap".into()),
+            ..Default::default()
+        };
         user.captioner.insert(
             "shared".into(),
             CaptionerProfile::Openai(OpenAiCaptionerProfile {
@@ -1068,17 +1074,19 @@ mod tests {
             .captioner_prompts
             .insert("default".into(), "Describe briefly.".into());
         let library = config.prompt_library();
-        assert_eq!(library.get("default").map(String::as_str), Some("Describe briefly."));
+        assert_eq!(
+            library.get("default").map(String::as_str),
+            Some("Describe briefly.")
+        );
     }
 
     #[test]
     fn project_only_keys_survive_merge() {
         let user = ProjectConfig::default();
         let mut project = ProjectConfig::default();
-        project.tagger.insert(
-            "wd-tagger".into(),
-            TaggerProfile::built_in(),
-        );
+        project
+            .tagger
+            .insert("wd-tagger".into(), TaggerProfile::built_in());
 
         let mut merged = ProjectConfig::default();
         merged.merge_from(user);
@@ -1176,8 +1184,7 @@ mod tests {
                     continue;
                 }
                 let actual: BTreeSet<String> = pt.keys().cloned().collect();
-                let missing: BTreeSet<String> =
-                    expected.difference(&actual).cloned().collect();
+                let missing: BTreeSet<String> = expected.difference(&actual).cloned().collect();
                 if missing.is_empty() {
                     return Ok(());
                 }
@@ -1193,8 +1200,14 @@ mod tests {
             shuffle: true,
             exclude_categories: vec!["meta".into()],
             category_prefixes: BTreeMap::from([("artist".into(), "@".into())]),
-            caption_prefixes: BTreeMap::from([("realistic".into(), "realistic proportions, ".into())]),
-            caption_suffixes: BTreeMap::from([("realistic".into(), ", realistic proportions".into())]),
+            caption_prefixes: BTreeMap::from([(
+                "realistic".into(),
+                "realistic proportions, ".into(),
+            )]),
+            caption_suffixes: BTreeMap::from([(
+                "realistic".into(),
+                ", realistic proportions".into(),
+            )]),
         };
         let full_tagger = TaggerProfile {
             repo: "r".into(),
@@ -1269,22 +1282,22 @@ mod tests {
                  TaggerProfile field; closest match is missing {missing:?}"
             );
         }
-        if let Err(missing) = missing_from_best_match(
-            raw_table.get("captioner"),
-            &expected_onnx,
-            |t| t.get("kind").and_then(|v| v.as_str()) == Some("onnx"),
-        ) {
+        if let Err(missing) =
+            missing_from_best_match(raw_table.get("captioner"), &expected_onnx, |t| {
+                t.get("kind").and_then(|v| v.as_str()) == Some("onnx")
+            })
+        {
             panic!(
                 "no [captioner.*] profile with `kind = \"onnx\"` in \
                  crates/core/fwaun-tools.toml.example covers every OnnxCaptionerProfile field; \
                  closest match is missing {missing:?}"
             );
         }
-        if let Err(missing) = missing_from_best_match(
-            raw_table.get("captioner"),
-            &expected_openai,
-            |t| t.get("kind").and_then(|v| v.as_str()) == Some("openai"),
-        ) {
+        if let Err(missing) =
+            missing_from_best_match(raw_table.get("captioner"), &expected_openai, |t| {
+                t.get("kind").and_then(|v| v.as_str()) == Some("openai")
+            })
+        {
             panic!(
                 "no [captioner.*] profile with `kind = \"openai\"` in \
                  crates/core/fwaun-tools.toml.example covers every OpenAiCaptionerProfile field; \
@@ -1354,6 +1367,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        cfg.validate_tag_groups().expect("single-tag group is valid");
+        cfg.validate_tag_groups()
+            .expect("single-tag group is valid");
     }
 }

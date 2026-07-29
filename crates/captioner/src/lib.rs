@@ -57,8 +57,10 @@ pub struct Captioner {
 }
 
 enum Backend {
+    // Boxed: the ONNX captioner owns three ort sessions and dwarfs the OpenAI
+    // variant, so an unboxed variant trips clippy's `large_enum_variant`.
     #[cfg(feature = "onnx")]
-    Onnx(onnx::OnnxCaptioner),
+    Onnx(Box<onnx::OnnxCaptioner>),
     OpenAi(openai::OpenAiCaptioner),
 }
 
@@ -66,14 +68,16 @@ impl Captioner {
     pub fn from_profile(profile: &CaptionerProfile) -> Result<Self, CaptionerError> {
         let (backend, empty_retries) = match profile {
             #[cfg(feature = "onnx")]
-            CaptionerProfile::Onnx(p) => {
-                (Backend::Onnx(onnx::OnnxCaptioner::from_profile(p)?), p.empty_retries)
-            }
+            CaptionerProfile::Onnx(p) => (
+                Backend::Onnx(Box::new(onnx::OnnxCaptioner::from_profile(p)?)),
+                p.empty_retries,
+            ),
             #[cfg(not(feature = "onnx"))]
             CaptionerProfile::Onnx(_) => return Err(CaptionerError::Unsupported),
-            CaptionerProfile::Openai(p) => {
-                (Backend::OpenAi(openai::OpenAiCaptioner::from_profile(p)?), p.empty_retries)
-            }
+            CaptionerProfile::Openai(p) => (
+                Backend::OpenAi(openai::OpenAiCaptioner::from_profile(p)?),
+                p.empty_retries,
+            ),
         };
         Ok(Self {
             backend,
@@ -175,11 +179,7 @@ fn strip_echoed_prefix<'a>(text: &'a str, prefix: Option<&str>) -> &'a str {
 /// chain-of-thought leak into the caption. Embedding it in the prompt keeps
 /// the normal user→assistant structure (so thinking stays in its own
 /// channel) while still steering the opening.
-pub(crate) fn build_user_text(
-    prompt: &str,
-    context: Option<&str>,
-    prefix: Option<&str>,
-) -> String {
+pub(crate) fn build_user_text(prompt: &str, context: Option<&str>, prefix: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(ctx) = context {
         out.push_str("Use the following names and details when describing the image:\n");

@@ -128,7 +128,7 @@ breaks.
 
 ### Build from source
 
-Requires Rust 1.85+ (edition 2024). On Linux, install standard X11 /
+Requires Rust 1.87+ (edition 2024). On Linux, install standard X11 /
 Wayland dev headers (`libx11-dev`, `libxcb1-dev`, `libxkbcommon-dev`,
 `libwayland-dev`, `libgl1-mesa-dev`, or your distro's equivalents) for
 the GUI:

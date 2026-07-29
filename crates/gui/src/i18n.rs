@@ -218,7 +218,10 @@ impl T {
         )
     }
     pub fn section_manual_caption(self) -> &'static str {
-        self.pair("Caption (manual — exported)", "キャプション（手動・書き出し対象）")
+        self.pair(
+            "Caption (manual — exported)",
+            "キャプション（手動・書き出し対象）",
+        )
     }
     pub fn section_auto_captions(self) -> &'static str {
         self.pair("Auto captions", "自動キャプション")
@@ -233,7 +236,10 @@ impl T {
         )
     }
     pub fn empty_auto_captions(self) -> &'static str {
-        self.pair("(none — run captioner)", "（なし — キャプショナーを実行してください）")
+        self.pair(
+            "(none — run captioner)",
+            "（なし — キャプショナーを実行してください）",
+        )
     }
     pub fn manual_caption_placeholder(self) -> &'static str {
         self.pair(
@@ -289,7 +295,10 @@ impl T {
         self.pair("Manual entries (union)", "手動エントリ（和集合）")
     }
     pub fn section_common_tags(self) -> &'static str {
-        self.pair("Common tags (auto/booru, ≥2 images)", "共通タグ（自動/Booru、2件以上）")
+        self.pair(
+            "Common tags (auto/booru, ≥2 images)",
+            "共通タグ（自動/Booru、2件以上）",
+        )
     }
     pub fn section_bulk_manual_caption(self) -> &'static str {
         self.pair("Manual caption (bulk)", "手動キャプション（一括）")
@@ -427,7 +436,10 @@ impl T {
         self.pair("Default tagger profile", "既定タガープロファイル")
     }
     pub fn cfg_default_captioner(self) -> &'static str {
-        self.pair("Default captioner profile", "既定キャプショナープロファイル")
+        self.pair(
+            "Default captioner profile",
+            "既定キャプショナープロファイル",
+        )
     }
     pub fn cfg_none(self) -> &'static str {
         self.pair("(none — use built-in)", "（未指定 — 組込みを使用）")
@@ -484,7 +496,10 @@ impl T {
         self.pair("Temperature (optional)", "温度（任意）")
     }
     pub fn cfg_max_edge(self) -> &'static str {
-        self.pair("Max edge (resize, 0=off)", "最大辺サイズ（リサイズ、0で無効）")
+        self.pair(
+            "Max edge (resize, 0=off)",
+            "最大辺サイズ（リサイズ、0で無効）",
+        )
     }
     pub fn cfg_jpeg_quality(self) -> &'static str {
         self.pair("JPEG quality", "JPEG品質")
@@ -553,10 +568,16 @@ impl T {
         )
     }
     pub fn cfg_tag_group_exclusive(self) -> &'static str {
-        self.pair("Exclusive (mutually-exclusive tags)", "排他（相互排他タグ）")
+        self.pair(
+            "Exclusive (mutually-exclusive tags)",
+            "排他（相互排他タグ）",
+        )
     }
     pub fn cfg_tag_group_caption_hint(self) -> &'static str {
-        self.pair("Caption hint (fed to the model)", "キャプションヒント（モデルに渡す）")
+        self.pair(
+            "Caption hint (fed to the model)",
+            "キャプションヒント（モデルに渡す）",
+        )
     }
     pub fn cfg_tag_group_caption_prefix(self) -> &'static str {
         self.pair("Caption prefix", "キャプションプレフィクス")
@@ -611,18 +632,17 @@ impl T {
     }
     pub fn cfg_err_load(self, err: &str) -> String {
         match self.lang {
-            Lang::En => format!(
-                "Existing config could not be parsed; starting from defaults: {err}"
-            ),
-            Lang::Ja => format!(
-                "既存の設定を解析できなかったため、既定値から編集します: {err}"
-            ),
+            Lang::En => {
+                format!("Existing config could not be parsed; starting from defaults: {err}")
+            }
+            Lang::Ja => format!("既存の設定を解析できなかったため、既定値から編集します: {err}"),
         }
     }
 
     // Errors raised from the UI (most others come from anyhow / external).
     pub fn err_open_folder_first(self) -> String {
-        self.pair("Open a folder first.", "先にフォルダを開いてください。").to_string()
+        self.pair("Open a folder first.", "先にフォルダを開いてください。")
+            .to_string()
     }
 
     // ───────── Top-level mode tabs ─────────
@@ -722,7 +742,10 @@ impl T {
         self.pair("Run", "実行")
     }
     pub fn model_running(self) -> &'static str {
-        self.pair("Running… (this can take a while)", "実行中…（時間がかかることがあります）")
+        self.pair(
+            "Running… (this can take a while)",
+            "実行中…（時間がかかることがあります）",
+        )
     }
     pub fn model_err_need_paths(self) -> String {
         self.pair(

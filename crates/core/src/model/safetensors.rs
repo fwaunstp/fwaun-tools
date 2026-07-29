@@ -131,7 +131,8 @@ impl SafeTensorsFile {
     pub fn open(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
         // SAFETY: we only read from the mapping; the file is not mutated elsewhere.
-        let mmap = unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?;
+        let mmap =
+            unsafe { Mmap::map(&file) }.with_context(|| format!("mmapping {}", path.display()))?;
 
         if mmap.len() < 8 {
             bail!("{}: too small to be a safetensors file", path.display());
@@ -140,7 +141,12 @@ impl SafeTensorsFile {
         let header_end = 8usize
             .checked_add(header_len)
             .filter(|&e| e <= mmap.len())
-            .ok_or_else(|| anyhow!("{}: header length {header_len} exceeds file size", path.display()))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}: header length {header_len} exceeds file size",
+                    path.display()
+                )
+            })?;
 
         let header: Value = serde_json::from_slice(&mmap[8..header_end])
             .with_context(|| format!("parsing header JSON of {}", path.display()))?;
@@ -162,14 +168,20 @@ impl SafeTensorsFile {
                 continue;
             }
             let dtype = Dtype::from_tag(
-                val.get("dtype").and_then(Value::as_str).ok_or_else(|| anyhow!("{key}: missing dtype"))?,
+                val.get("dtype")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("{key}: missing dtype"))?,
             )?;
             let shape = val
                 .get("shape")
                 .and_then(Value::as_array)
                 .ok_or_else(|| anyhow!("{key}: missing shape"))?
                 .iter()
-                .map(|v| v.as_u64().map(|n| n as usize).ok_or_else(|| anyhow!("{key}: bad shape entry")))
+                .map(|v| {
+                    v.as_u64()
+                        .map(|n| n as usize)
+                        .ok_or_else(|| anyhow!("{key}: bad shape entry"))
+                })
                 .collect::<Result<Vec<_>>>()?;
             let offsets = val
                 .get("data_offsets")
@@ -178,12 +190,29 @@ impl SafeTensorsFile {
             if offsets.len() != 2 {
                 bail!("{key}: data_offsets must have 2 entries");
             }
-            let begin = offsets[0].as_u64().ok_or_else(|| anyhow!("{key}: bad offset"))? as usize;
-            let end = offsets[1].as_u64().ok_or_else(|| anyhow!("{key}: bad offset"))? as usize;
-            tensors.insert(key.clone(), TensorInfo { dtype, shape, begin, end });
+            let begin = offsets[0]
+                .as_u64()
+                .ok_or_else(|| anyhow!("{key}: bad offset"))? as usize;
+            let end = offsets[1]
+                .as_u64()
+                .ok_or_else(|| anyhow!("{key}: bad offset"))? as usize;
+            tensors.insert(
+                key.clone(),
+                TensorInfo {
+                    dtype,
+                    shape,
+                    begin,
+                    end,
+                },
+            );
         }
 
-        Ok(Self { mmap, data_start: header_end, tensors, metadata })
+        Ok(Self {
+            mmap,
+            data_start: header_end,
+            tensors,
+            metadata,
+        })
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &String> {
@@ -200,7 +229,10 @@ impl SafeTensorsFile {
 
     /// Raw little-endian bytes for a tensor (a view into the mmap, no copy).
     pub fn raw_bytes(&self, key: &str) -> Result<&[u8]> {
-        let info = self.tensors.get(key).ok_or_else(|| anyhow!("tensor '{key}' not found"))?;
+        let info = self
+            .tensors
+            .get(key)
+            .ok_or_else(|| anyhow!("tensor '{key}' not found"))?;
         let start = self.data_start + info.begin;
         let end = self.data_start + info.end;
         self.mmap
@@ -210,7 +242,10 @@ impl SafeTensorsFile {
 
     /// Decode a float tensor into an f32 vector for arithmetic.
     pub fn to_f32(&self, key: &str) -> Result<Vec<f32>> {
-        let info = self.tensors.get(key).ok_or_else(|| anyhow!("tensor '{key}' not found"))?;
+        let info = self
+            .tensors
+            .get(key)
+            .ok_or_else(|| anyhow!("tensor '{key}' not found"))?;
         bytes_to_f32(self.raw_bytes(key)?, info.dtype)
     }
 }
@@ -219,7 +254,10 @@ impl SafeTensorsFile {
 pub fn bytes_to_f32(bytes: &[u8], dtype: Dtype) -> Result<Vec<f32>> {
     let esz = dtype.element_size();
     if !bytes.len().is_multiple_of(esz) {
-        bail!("byte length {} not a multiple of element size {esz}", bytes.len());
+        bail!(
+            "byte length {} not a multiple of element size {esz}",
+            bytes.len()
+        );
     }
     let n = bytes.len() / esz;
     let mut out = Vec::with_capacity(n);
@@ -338,7 +376,11 @@ impl StreamWriter {
         inner.write_all(&(hjson.len() as u64).to_le_bytes())?;
         inner.write_all(&hjson)?;
 
-        Ok(Self { inner, plan, next: 0 })
+        Ok(Self {
+            inner,
+            plan,
+            next: 0,
+        })
     }
 
     /// Write the next tensor's bytes. Must be called in plan order; `bytes` length
@@ -352,7 +394,11 @@ impl StreamWriter {
             bail!("out-of-order write: expected '{}', got '{}'", slot.key, key);
         }
         if bytes.len() != slot.nbytes {
-            bail!("'{key}': wrote {} bytes, planned {}", bytes.len(), slot.nbytes);
+            bail!(
+                "'{key}': wrote {} bytes, planned {}",
+                bytes.len(),
+                slot.nbytes
+            );
         }
         self.inner.write_all(bytes)?;
         self.next += 1;
@@ -361,7 +407,11 @@ impl StreamWriter {
 
     pub fn finish(mut self) -> Result<()> {
         if self.next != self.plan.len() {
-            bail!("only wrote {} of {} planned tensors", self.next, self.plan.len());
+            bail!(
+                "only wrote {} of {} planned tensors",
+                self.next,
+                self.plan.len()
+            );
         }
         self.inner.flush()?;
         Ok(())

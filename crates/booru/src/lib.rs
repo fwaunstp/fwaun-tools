@@ -7,8 +7,8 @@
 
 use std::path::Path;
 
-use fwaun_tools_core::sidecar::{BooruInfo, BooruTag};
 use chrono::Utc;
+use fwaun_tools_core::sidecar::{BooruInfo, BooruTag};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -35,17 +35,11 @@ impl BooruClient {
         }
     }
 
-    pub fn fetch_for_image(
-        &self,
-        path: &Path,
-    ) -> Result<(Vec<BooruTag>, BooruInfo), BooruError> {
+    pub fn fetch_for_image(&self, path: &Path) -> Result<(Vec<BooruTag>, BooruInfo), BooruError> {
         let bytes = std::fs::read(path)?;
         let digest = md5::compute(&bytes);
         let hex = format!("{:x}", digest);
-        let url = format!(
-            "{}/posts.json?tags=md5:{}&limit=1",
-            self.base_url, hex
-        );
+        let url = format!("{}/posts.json?tags=md5:{}&limit=1", self.base_url, hex);
 
         let posts: Vec<DanbooruPost> = ureq::get(&url)
             .set("User-Agent", &self.user_agent)

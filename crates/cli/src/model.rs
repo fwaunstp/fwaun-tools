@@ -158,7 +158,11 @@ pub struct MergeCommand {
 pub fn run(command: ModelCommand) -> Result<()> {
     match command {
         ModelCommand::MergeDiff(cmd) => {
-            let save_dtype = cmd.save_dtype.as_deref().map(Dtype::parse_save_dtype).transpose()?;
+            let save_dtype = cmd
+                .save_dtype
+                .as_deref()
+                .map(Dtype::parse_save_dtype)
+                .transpose()?;
             let arch = ModelArch::parse(&cmd.model)?;
             merge::run(
                 MergeArgs {

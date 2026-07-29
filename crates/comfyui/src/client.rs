@@ -149,11 +149,11 @@ impl Client {
         loop {
             let v: Value = self.agent.get(&url).call().map_err(http_err)?.into_json()?;
             if let Some(entry) = v.get(prompt_id) {
-                if let Some("error") = entry
-                    .pointer("/status/status_str")
-                    .and_then(Value::as_str)
-                {
-                    let detail = entry.get("status").map(Value::to_string).unwrap_or_default();
+                if let Some("error") = entry.pointer("/status/status_str").and_then(Value::as_str) {
+                    let detail = entry
+                        .get("status")
+                        .map(Value::to_string)
+                        .unwrap_or_default();
                     return Err(ComfyError::Http(format!("ComfyUI job errored: {detail}")));
                 }
                 if let Some(img) = extract_output(entry, save_node) {

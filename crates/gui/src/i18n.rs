@@ -145,6 +145,9 @@ impl T {
     }
 
     // Progress overlay
+    pub fn op_loading_folder(self) -> &'static str {
+        self.pair("Loading folder…", "フォルダ読み込み中…")
+    }
     pub fn op_tagging(self) -> &'static str {
         self.pair("Tagging…", "タグ付け中…")
     }
@@ -159,6 +162,12 @@ impl T {
             Lang::En => format!("{current} / {total} images"),
             Lang::Ja => format!("{current} / {total} 件"),
         }
+    }
+    pub fn cancel(self) -> &'static str {
+        self.pair("Cancel", "キャンセル")
+    }
+    pub fn cancelling(self) -> &'static str {
+        self.pair("Cancelling…", "キャンセル中…")
     }
 
     // Grid / status flags

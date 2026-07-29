@@ -7,6 +7,8 @@ mod model_ui;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 
@@ -145,6 +147,7 @@ impl Filter {
 
 #[derive(Clone, Copy, PartialEq)]
 enum WorkerOp {
+    LoadFolder,
     Tagger,
     Captioner,
     Booru,
@@ -158,6 +161,7 @@ struct Progress {
 }
 
 enum DoneKind {
+    LoadFolder,
     Tagger(Option<Tagger>),
     Captioner(Option<Captioner>),
     Booru,
@@ -165,6 +169,15 @@ enum DoneKind {
 
 enum WorkerMsg {
     Progress(Progress),
+    /// One image finished loading during a folder scan: its sidecar plus a
+    /// pre-built thumbnail texture (built on the worker thread — egui's
+    /// `Context::load_texture` is internally synchronized, so this keeps the
+    /// decode + upload off the UI thread).
+    ImageLoaded {
+        path: PathBuf,
+        sidecar: Box<Sidecar>,
+        thumbnail: Option<TextureHandle>,
+    },
     TaggerResult {
         path: PathBuf,
         tags: Vec<AutoTag>,
@@ -228,6 +241,11 @@ struct AnimaTaggerApp {
     // it goes back to None and the action buttons re-enable.
     progress: Option<Progress>,
     worker_rx: Option<Receiver<WorkerMsg>>,
+    // Cooperative cancel for the in-flight op. Set by the progress
+    // overlay's Cancel button; the worker checks it at the top of each
+    // per-item iteration and stops early (results already sent are kept).
+    // Cleared alongside `worker_rx` when the op finishes.
+    cancel_flag: Option<Arc<AtomicBool>>,
 
     // When Some, the next `update()` shows a confirmation modal before
     // removing these paths' image+sidecar files from disk.
@@ -288,6 +306,7 @@ impl AnimaTaggerApp {
             thumbnails: HashMap::new(),
             progress: None,
             worker_rx: None,
+            cancel_flag: None,
             pending_delete: None,
             project_config: None,
             view_mode: ViewMode::Grid,
@@ -333,13 +352,54 @@ impl AnimaTaggerApp {
             }
         }
 
-        for path in iter_images(dir) {
-            let sidecar = Sidecar::load_or_default(&path).unwrap_or_default();
-            if let Some(tex) = make_thumbnail_texture(&path, THUMB_SIZE, ctx) {
-                self.thumbnails.insert(path.clone(), tex);
+        // Decoding every image and uploading a thumbnail texture is the slow
+        // part of opening a folder — on a large dataset it froze the UI with no
+        // feedback. Stream it from a background thread instead: the progress
+        // overlay shows how far along we are, images appear as they load, and
+        // the Cancel button can stop a huge folder mid-scan.
+        let paths: Vec<PathBuf> = iter_images(dir).collect();
+        let total = paths.len();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
+        let ctx_clone = ctx.clone();
+        let (tx, rx) = channel::<WorkerMsg>();
+
+        thread::spawn(move || {
+            for (i, path) in paths.iter().enumerate() {
+                if cancel_worker.load(Ordering::Relaxed) {
+                    break;
+                }
+                let _ = tx.send(WorkerMsg::Progress(Progress {
+                    op: WorkerOp::LoadFolder,
+                    current: i,
+                    total,
+                }));
+                let sidecar = Sidecar::load_or_default(path).unwrap_or_default();
+                let thumbnail = make_thumbnail_texture(path, THUMB_SIZE, &ctx_clone);
+                let _ = tx.send(WorkerMsg::ImageLoaded {
+                    path: path.clone(),
+                    sidecar: Box::new(sidecar),
+                    thumbnail,
+                });
+                ctx_clone.request_repaint();
             }
-            self.images.push(ImageItem { path, sidecar });
-        }
+            let _ = tx.send(WorkerMsg::Progress(Progress {
+                op: WorkerOp::LoadFolder,
+                current: total,
+                total,
+            }));
+            let _ = tx.send(WorkerMsg::Done(DoneKind::LoadFolder));
+            ctx_clone.request_repaint();
+        });
+
+        self.worker_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
+        self.loading = true;
+        self.progress = Some(Progress {
+            op: WorkerOp::LoadFolder,
+            current: 0,
+            total,
+        });
     }
 }
 
@@ -473,10 +533,14 @@ impl AnimaTaggerApp {
     fn ui_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let t = self.t();
         ui.horizontal_wrapped(|ui| {
-            if ui.button(t.open_folder()).clicked() {
-                if let Some(picked) = rfd::FileDialog::new().pick_folder() {
-                    self.load_folder(ctx, &picked);
-                }
+            // Disabled mid-op: opening a new folder would orphan the running
+            // worker and swap the data out from under it.
+            if ui
+                .add_enabled(!self.loading, egui::Button::new(t.open_folder()))
+                .clicked()
+                && let Some(picked) = rfd::FileDialog::new().pick_folder()
+            {
+                self.load_folder(ctx, &picked);
             }
             let cfg_btn = ui
                 .button(t.config_button())
@@ -1768,6 +1832,8 @@ impl AnimaTaggerApp {
         let storage_threshold = profile.storage_threshold;
         let profile_for_load = profile.clone();
         let ctx_clone = ctx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
         let (tx, rx) = channel::<WorkerMsg>();
 
         thread::spawn(move || {
@@ -1785,6 +1851,9 @@ impl AnimaTaggerApp {
             let tagger_inst = tagger.as_mut().expect("loaded above");
             let now = Utc::now();
             for (i, path) in sel.iter().enumerate() {
+                if cancel_worker.load(Ordering::Relaxed) {
+                    break;
+                }
                 let _ = tx.send(WorkerMsg::Progress(Progress {
                     op: WorkerOp::Tagger,
                     current: i,
@@ -1816,6 +1885,7 @@ impl AnimaTaggerApp {
         });
 
         self.worker_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
         self.loading = true;
         self.progress = Some(Progress {
             op: WorkerOp::Tagger,
@@ -1917,6 +1987,8 @@ impl AnimaTaggerApp {
         let mut captioner = self.captioner.take();
         let profile_for_load = profile.clone();
         let ctx_clone = ctx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
         let (tx, rx) = channel::<WorkerMsg>();
 
         thread::spawn(move || {
@@ -1933,6 +2005,9 @@ impl AnimaTaggerApp {
             }
             let captioner_inst = captioner.as_mut().expect("loaded above");
             for (i, path) in sel.iter().enumerate() {
+                if cancel_worker.load(Ordering::Relaxed) {
+                    break;
+                }
                 let _ = tx.send(WorkerMsg::Progress(Progress {
                     op: WorkerOp::Captioner,
                     current: i,
@@ -1976,6 +2051,7 @@ impl AnimaTaggerApp {
         });
 
         self.worker_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
         self.loading = true;
         self.progress = Some(Progress {
             op: WorkerOp::Captioner,
@@ -2013,11 +2089,16 @@ impl AnimaTaggerApp {
         }
         let total = sel.len();
         let ctx_clone = ctx.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel.clone();
         let (tx, rx) = channel::<WorkerMsg>();
 
         thread::spawn(move || {
             let client = BooruClient::danbooru();
             for (i, path) in sel.iter().enumerate() {
+                if cancel_worker.load(Ordering::Relaxed) {
+                    break;
+                }
                 let _ = tx.send(WorkerMsg::Progress(Progress {
                     op: WorkerOp::Booru,
                     current: i,
@@ -2049,6 +2130,7 @@ impl AnimaTaggerApp {
         });
 
         self.worker_rx = Some(rx);
+        self.cancel_flag = Some(cancel);
         self.loading = true;
         self.progress = Some(Progress {
             op: WorkerOp::Booru,
@@ -2080,6 +2162,7 @@ impl AnimaTaggerApp {
                     self.worker_rx = None;
                     self.progress = None;
                     self.loading = false;
+                    self.cancel_flag = None;
                     break;
                 }
             }
@@ -2089,6 +2172,19 @@ impl AnimaTaggerApp {
     fn apply_worker_msg(&mut self, msg: WorkerMsg) {
         match msg {
             WorkerMsg::Progress(p) => self.progress = Some(p),
+            WorkerMsg::ImageLoaded {
+                path,
+                sidecar,
+                thumbnail,
+            } => {
+                if let Some(tex) = thumbnail {
+                    self.thumbnails.insert(path.clone(), tex);
+                }
+                self.images.push(ImageItem {
+                    path,
+                    sidecar: *sidecar,
+                });
+            }
             WorkerMsg::TaggerResult {
                 path,
                 tags,
@@ -2124,6 +2220,7 @@ impl AnimaTaggerApp {
             }
             WorkerMsg::Done(kind) => {
                 match kind {
+                    DoneKind::LoadFolder => {}
                     DoneKind::Tagger(t) => self.tagger = t,
                     DoneKind::Captioner(c) => self.captioner = c,
                     DoneKind::Booru => {}
@@ -2131,16 +2228,18 @@ impl AnimaTaggerApp {
                 self.progress = None;
                 self.loading = false;
                 self.worker_rx = None;
+                self.cancel_flag = None;
             }
         }
     }
 
-    fn ui_progress_overlay(&self, ctx: &egui::Context) {
+    fn ui_progress_overlay(&mut self, ctx: &egui::Context) {
         let Some(p) = self.progress.clone() else {
             return;
         };
         let t = self.t();
         let label = match p.op {
+            WorkerOp::LoadFolder => t.op_loading_folder(),
             WorkerOp::Tagger => t.op_tagging(),
             WorkerOp::Captioner => t.op_captioning(),
             WorkerOp::Booru => t.op_fetching_booru(),
@@ -2150,6 +2249,15 @@ impl AnimaTaggerApp {
         } else {
             (p.current as f32) / (p.total as f32)
         };
+        // Already asked to stop? Show a spinner + "cancelling…" and disable the
+        // button so a second click can't do anything — the worker stops at its
+        // next iteration boundary.
+        let cancelling = self
+            .cancel_flag
+            .as_ref()
+            .map(|f| f.load(Ordering::Relaxed))
+            .unwrap_or(false);
+        let mut request_cancel = false;
         egui::Window::new("fwaun-tools-progress")
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .collapsible(false)
@@ -2168,9 +2276,23 @@ impl AnimaTaggerApp {
                     );
                     ui.add_space(4.0);
                     ui.label(t.progress_count(p.current, p.total));
+                    ui.add_space(8.0);
+                    if cancelling {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t.cancelling());
+                        });
+                    } else if ui.button(t.cancel()).clicked() {
+                        request_cancel = true;
+                    }
                     ui.add_space(4.0);
                 });
             });
+        if request_cancel
+            && let Some(flag) = &self.cancel_flag
+        {
+            flag.store(true, Ordering::Relaxed);
+        }
     }
 }
 

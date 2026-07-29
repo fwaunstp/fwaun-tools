@@ -125,7 +125,7 @@ Windows バイナリは CI でビルドされていますが、メンテナの�
 
 ### ソースからビルド
 
-Rust 1.85+ (edition 2024) が必要です。
+Rust 1.87+ (edition 2024) が必要です。
 Linux では GUI のビルドに標準的な X11 / Wayland 開発ヘッダ
 (`libx11-dev` / `libxcb1-dev` / `libxkbcommon-dev` / `libwayland-dev` /
 `libgl1-mesa-dev` など、ディストリビューションによって名前が異なる場合あり)

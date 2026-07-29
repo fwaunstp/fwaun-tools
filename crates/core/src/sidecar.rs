@@ -167,7 +167,11 @@ struct LegacyCaptionerInfo {
 impl From<SidecarOnDisk> for Sidecar {
     fn from(d: SidecarOnDisk) -> Self {
         let mut captions = d.captions;
-        if let Some(text) = d.caption.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if let Some(text) = d
+            .caption
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
             let (model, captioned_at) = match d.captioner {
                 Some(info) => (info.model, info.captioned_at),
                 None => ("legacy".to_string(), Utc::now()),

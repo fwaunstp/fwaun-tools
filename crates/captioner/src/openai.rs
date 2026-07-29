@@ -11,8 +11,8 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Duration;
 
-use fwaun_tools_core::config::OpenAiCaptionerProfile;
 use base64::Engine;
+use fwaun_tools_core::config::OpenAiCaptionerProfile;
 use serde::{Deserialize, Serialize};
 
 use crate::CaptionerError;
@@ -40,11 +40,8 @@ impl OpenAiCaptioner {
         context: Option<&str>,
         prefix: Option<&str>,
     ) -> Result<String, CaptionerError> {
-        let data_url = encode_image_data_url(
-            image_path,
-            self.profile.max_edge,
-            self.profile.jpeg_quality,
-        )?;
+        let data_url =
+            encode_image_data_url(image_path, self.profile.max_edge, self.profile.jpeg_quality)?;
 
         // Embed reference info AND the caption prefix in the same user turn as
         // the image rather than as separate `system` / trailing `assistant`
@@ -70,14 +67,15 @@ impl OpenAiCaptioner {
                     ContentPart::ImageUrl {
                         image_url: ImageUrl { url: data_url },
                     },
-                    ContentPart::Text {
-                        text: prompt_text,
-                    },
+                    ContentPart::Text { text: prompt_text },
                 ],
             }],
         };
 
-        let url = format!("{}/chat/completions", self.profile.endpoint.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.profile.endpoint.trim_end_matches('/')
+        );
 
         eprintln!(
             "[captioner:openai] POST {url} (model={}, max_tokens={})",
@@ -166,7 +164,9 @@ impl OpenAiCaptioner {
 /// Exponential backoff between retry attempts: ~1s, 2s, 4s, … capped at 30s.
 /// `attempt` is 1-based (the delay before the first retry uses `attempt == 1`).
 fn retry_backoff(attempt: u32) -> Duration {
-    let secs = 1u64.checked_shl(attempt.saturating_sub(1)).unwrap_or(u64::MAX);
+    let secs = 1u64
+        .checked_shl(attempt.saturating_sub(1))
+        .unwrap_or(u64::MAX);
     Duration::from_secs(secs.min(30))
 }
 
@@ -191,13 +191,14 @@ fn encode_image_data_url(
     };
     let rgb = resized.to_rgb8();
     let quality = jpeg_quality.clamp(1, 100);
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        Cursor::new(&mut buf),
-        quality,
-    );
-    encoder
-        .encode(rgb.as_raw(), rgb.width(), rgb.height(), image::ColorType::Rgb8.into())
-        .map_err(image::ImageError::from)?;
+    let mut encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(Cursor::new(&mut buf), quality);
+    encoder.encode(
+        rgb.as_raw(),
+        rgb.width(),
+        rgb.height(),
+        image::ColorType::Rgb8.into(),
+    )?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
     Ok(format!("data:image/jpeg;base64,{b64}"))
 }

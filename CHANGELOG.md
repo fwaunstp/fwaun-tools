@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-29
+
 ### Added
 
 - **Caption steering from tag groups (hints + prefix/suffix).** A
@@ -68,6 +70,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[upscaler.<name>]` profile. Backed by a new reusable `fwaun-tools-comfyui`
   crate wrapping the ComfyUI API, so future ComfyUI-driven batch passes can
   share the same client.
+
+- **Folder-load progress and cancellable operations (GUI).** Opening a folder
+  now streams thumbnails from a background thread with a progress overlay, so a
+  large dataset no longer freezes the window with no feedback — images appear as
+  they load. The progress overlay gains a **Cancel** button that stops the
+  in-flight operation at the next item boundary; it covers folder loading,
+  tagging, captioning, and booru fetches. Results already produced are kept;
+  only the remaining items are skipped. The Open-folder button is disabled while
+  an operation runs so a new load can't orphan a running worker. (#36)
+
+### Changed
+
+- **Minimum supported Rust version is now 1.87** (was 1.85). The checkpoint
+  tooling uses `u*::is_multiple_of`, stabilized in Rust 1.87, so the previously
+  stated 1.85 floor could not actually build.
+
+### Fixed
+
+- **Empty captions are retried instead of being saved blank.** When the model
+  returned an empty caption (a reasoning model that spent its budget in the
+  thinking channel, a context-length overflow, or an immediate end-of-turn from
+  the local decoder), the blank was stored verbatim — which marked the
+  `{model}.{prompt}` key as done, so it never regenerated without `--force`.
+  Generation is now retried up to `empty_retries` times (a new per-profile knob
+  on both the ONNX and OpenAI captioners, default 2); if every attempt is empty
+  the caption is reported as an error rather than stored, so the key stays
+  un-generated and a later run retries it. The CLI skips such an image and keeps
+  going (no longer aborts the whole batch), counted in the run summary; the GUI
+  reports it in the error banner. (#35)
 
 ## [0.5.0] - 2026-07-18
 
@@ -398,7 +429,8 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.2.1...v0.3.0

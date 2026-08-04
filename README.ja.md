@@ -32,6 +32,10 @@ fwaun モデル群の学習を支えるツール群です。1つのバイナリ�
   出所を意識する必要はありません。
 - **モデルを切り替えても消えない非表示指定。** `-foo` を一度書いておけば、
   別のタガーモデルで再実行しても抑制設定は維持されます。
+- **データセット共通タグを1行で。** `fwaun-tools.toml` の `common_tags` に
+  書いたタグは、サイドカーを一切書き換えずにデータセット内の全画像へ適用
+  されます（あとから追加した画像にも自動で効きます）。個別画像側での
+  打ち消しも可能。
 - **整理用タグ（出力されないラベル）。** アンダースコア始まりの手動タグ
   (`_foo`) はデータに残りタググループ分類にも使われますが、書き出しには
   含まれません。「確認済みだがどれでもない」を「未確認」と区別できます。
@@ -197,6 +201,9 @@ default_profile   = "anima"
 default_tagger    = "wd-eva02-large-v3"
 default_captioner = "qwen3-vl-4b"
 
+# データセット内の全画像に適用されます（サイドカーには書き込まれません）
+common_tags = ["himeko", "-red_hair", "-yellow_eyes"]
+
 [export.anima]
 threshold = 0.35
 shuffle = false
@@ -223,8 +230,8 @@ fwaun-tools dataset caption <dir>  [--model NAME] [--force]
 fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
 fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run]
-fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run]
+fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
+fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tools dataset status <dir>
 fwaun-tools dataset tokens <dir>
@@ -261,6 +268,60 @@ ConvRot レイアウトを書き出します。いずれも CPU/f32 でキー単
 `--tags=-foo` のように渡します）。この2つを組み合わせると、ディレクトリ
 全体でのタグのリネームになります（`remove-tag <dir> --tags 旧タグ` の
 あとに `add-tag <dir> --tags 新タグ`）。
+
+`<dir>` がデータセットルートの場合、この2つは `common_tags` を編集します
+（後述の[データセット共通タグ](#データセット共通タグ)を参照）。
+
+## データセット共通タグ
+
+キャラクター LoRA では、全画像に同じ手動エントリを入れたくなります。
+キャラ名のトリガーワードと、そのトリガーに吸収させたい特徴
+（髪色・目色など）の `-foo` 抑制です。これを一箇所に書きます:
+
+```toml
+common_tags = ["himeko", "-red_hair", "-yellow_eyes", "-slit_pupils"]
+```
+
+記法はサイドカーの `manual_tags` と同じです（`foo` 通常、`-foo` 抑制、
+`_foo` 整理用）。このリストは各画像の手動エントリの下に敷かれる仮想
+レイヤーとして扱われ、**サイドカーには一切書き込まれません**。そのため
+あとから画像を追加しても再実行は不要で、この行を消せば全画像から一括で
+外れます。共通レイヤーの通常タグは先頭に出力されるので、トリガーワードが
+書き出しの先頭に来ます。
+
+個別の画像は、同じタグを自分で指定することで打ち消せます。画像側の
+`red_hair` はデータセット全体の `-red_hair` をその画像だけで無効化し、
+画像側の `-himeko` はそのキャラが写っていないカットからトリガーを外します。
+
+このレイヤーは画像のタグを読むすべての箇所で効きます — `export`、
+`metadata`、キャプションの prefix/suffix、タググループ分類、カンバン表示、
+`mv --tags`。
+
+### リストの編集
+
+データセット全体にかかる一括タグ編集は、データセットについての指定なので、
+サイドカーではなく設定ファイルに書き込まれます:
+
+```sh
+# <dir> に fwaun-tools.toml がある → .ron ではなく common_tags を書き換え
+fwaun-tools dataset add-tag ./dataset --tags=himeko,-red_hair
+fwaun-tools dataset remove-tag ./dataset --tags=-red_hair
+```
+
+**サブディレクトリ**はデータセットの一部でしかないので、従来どおり
+サイドカーを書き換えます。ルートでも従来の挙動にしたい場合は
+`--per-image` を付けます。`--dry-run` は設定ファイルを書かずに結果だけ
+表示します。ルートでの `remove-tag` は個別画像側のコピーには手を付けず
+（意図的な打ち消しの可能性があるため）、該当件数を知らせます。
+
+GUI でも同じルールです。設定ファイルを持つフォルダで**全画像**を選択して
+いるときのタグ追加・削除は `fwaun-tools.toml` を編集します。1枚でも選択を
+外せばサイドカー編集に戻ります。共通レイヤー由来のタグは専用の色のチップ
+（単一画像表示では `[C]` 付き）で表示され、クリックすると選択中の画像だけ
+で打ち消せます。
+
+この経路の設定ファイル書き換えはピンポイントで行われるため、手書きの
+`fwaun-tools.toml` のコメントやレイアウトはそのまま残ります。
 
 ## タググループ
 

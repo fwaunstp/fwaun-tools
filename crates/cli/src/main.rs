@@ -7,6 +7,7 @@ use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::{Captioner, CaptionerError};
 use fwaun_tools_comfyui::Client as ComfyClient;
 use fwaun_tools_comfyui::upscale::{Options as UpscaleOptions, Upscaler};
+use fwaun_tools_core::common_tags;
 use fwaun_tools_core::config::ProjectConfig;
 use fwaun_tools_core::export;
 use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
@@ -221,6 +222,12 @@ enum DatasetCommand {
     /// (`--tags=-foo`) so it isn't parsed as a flag. Paired with
     /// `remove-tag`, this covers a directory-wide tag rename
     /// (`remove-tag old` + `add-tag new`).
+    ///
+    /// When <DIR> is the dataset root (it holds the `fwaun-tools.toml`), the
+    /// edit covers the whole dataset, so it is written to that file's
+    /// `common_tags` list instead of to every sidecar — one line, and images
+    /// added later are covered too. Use `--per-image` to force the old
+    /// per-sidecar behaviour.
     AddTag {
         /// Directory to scan (recursively).
         dir: PathBuf,
@@ -232,9 +239,12 @@ enum DatasetCommand {
             allow_hyphen_values = true
         )]
         tags: Vec<String>,
-        /// List what would change without writing any sidecar.
+        /// List what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Always write to each image's sidecar, even at the dataset root.
+        #[arg(long)]
+        per_image: bool,
     },
     /// Remove manual tag(s) from every image's sidecar in a directory.
     /// Deletes the existing manual entry only (case-insensitive match),
@@ -242,6 +252,11 @@ enum DatasetCommand {
     /// adds a suppression marker and never touches auto/booru tags — to
     /// hide a model-produced tag, add `-foo` with `add-tag` instead. Images
     /// without the tag are left unchanged; sidecars are never created.
+    ///
+    /// When <DIR> is the dataset root (it holds the `fwaun-tools.toml`), the
+    /// tags are dropped from that file's `common_tags` list instead of from
+    /// the sidecars; per-image copies are reported but left alone, since
+    /// they may be deliberate overrides. Use `--per-image` to clear those.
     RemoveTag {
         /// Directory to scan (recursively).
         dir: PathBuf,
@@ -254,9 +269,12 @@ enum DatasetCommand {
             allow_hyphen_values = true
         )]
         tags: Vec<String>,
-        /// List what would change without writing any sidecar.
+        /// List what would change without writing anything.
         #[arg(long)]
         dry_run: bool,
+        /// Always write to each image's sidecar, even at the dataset root.
+        #[arg(long)]
+        per_image: bool,
     },
     /// Show sidecar status for images in a directory.
     Status { dir: PathBuf },
@@ -360,8 +378,18 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             tags,
             dry_run,
         } => cmd_mv(dir, dest, tags, dry_run),
-        DatasetCommand::AddTag { dir, tags, dry_run } => cmd_add_tag(dir, tags, dry_run),
-        DatasetCommand::RemoveTag { dir, tags, dry_run } => cmd_remove_tag(dir, tags, dry_run),
+        DatasetCommand::AddTag {
+            dir,
+            tags,
+            dry_run,
+            per_image,
+        } => cmd_add_tag(dir, tags, dry_run, per_image),
+        DatasetCommand::RemoveTag {
+            dir,
+            tags,
+            dry_run,
+            per_image,
+        } => cmd_remove_tag(dir, tags, dry_run, per_image),
         DatasetCommand::Status { dir } => cmd_status(dir),
         DatasetCommand::ValidateTagGroup {
             dir,
@@ -425,6 +453,7 @@ fn cmd_caption(
 ) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
+    let common = cfg.resolve_common_tags();
     let (resolved_name, mut profile) = cfg.resolve_captioner(model_name.as_deref());
     if let Some(names) = prompts_override {
         profile.set_prompt_names(names);
@@ -484,9 +513,11 @@ fn cmd_caption(
         // present, and resolve the tag-group caption prefix. The prefix is
         // embedded in the prompt (see `build_user_text`) so the model
         // continues from what export will prepend.
-        let extra_hints = fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups);
+        let extra_hints =
+            fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups, &common);
         let hint = sc.caption_hint_prompt_with(&extra_hints);
-        let prefix = fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups);
+        let prefix =
+            fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups, &common);
         let prefix = (!prefix.is_empty()).then_some(prefix);
         if pending.is_empty() {
             skipped += 1;
@@ -764,6 +795,7 @@ fn cmd_upscale_models(profile_name: Option<String>, base_url: Option<String>) ->
 fn cmd_export(dir: PathBuf, profile_name: Option<String>, threshold: Option<f32>) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
+    let common = cfg.resolve_common_tags();
     let mut profile = cfg.resolve_profile(profile_name.as_deref());
     if let Some(t) = threshold {
         profile.threshold = t;
@@ -779,7 +811,7 @@ fn cmd_export(dir: PathBuf, profile_name: Option<String>, threshold: Option<f32>
                 continue;
             }
         };
-        let out = export::export_image(&image, &sidecar, &profile)?;
+        let out = export::export_image(&image, &sidecar, &profile, &common)?;
         println!("wrote {}", out.display());
         written += 1;
     }
@@ -796,6 +828,7 @@ fn cmd_metadata(
 ) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
+    let common = cfg.resolve_common_tags();
     let mut profile = cfg.resolve_profile(profile_name.as_deref());
     if let Some(t) = threshold {
         profile.threshold = t;
@@ -805,9 +838,11 @@ fn cmd_metadata(
 
     match format {
         MetadataFormat::SdScripts => {
-            cmd_metadata_sd_scripts(&dir, &profile, &cfg.tag_groups, output)
+            cmd_metadata_sd_scripts(&dir, &profile, &cfg.tag_groups, &common, output)
         }
-        MetadataFormat::Musubi => cmd_metadata_musubi(&dir, &profile, &cfg.tag_groups, output),
+        MetadataFormat::Musubi => {
+            cmd_metadata_musubi(&dir, &profile, &cfg.tag_groups, &common, output)
+        }
     }
 }
 
@@ -815,6 +850,7 @@ fn cmd_metadata_sd_scripts(
     dir: &std::path::Path,
     profile: &fwaun_tools_core::config::ExportProfile,
     tag_groups: &std::collections::BTreeMap<String, fwaun_tools_core::config::TagGroup>,
+    common: &fwaun_tools_core::common_tags::CommonTags,
     output: Option<PathBuf>,
 ) -> Result<()> {
     use std::collections::BTreeMap;
@@ -831,7 +867,7 @@ fn cmd_metadata_sd_scripts(
                 continue;
             }
         };
-        let tags = export::build_tags(&sidecar, profile);
+        let tags = export::build_tags(&sidecar, profile, common);
         let mut entry = serde_json::Map::new();
         if !tags.is_empty() {
             let joined = tags
@@ -841,7 +877,7 @@ fn cmd_metadata_sd_scripts(
                 .join(", ");
             entry.insert("tags".to_string(), serde_json::Value::String(joined));
         }
-        if let Some(cap) = export::build_caption(&sidecar, profile, tag_groups) {
+        if let Some(cap) = export::build_caption(&sidecar, profile, tag_groups, common) {
             entry.insert("caption".to_string(), serde_json::Value::String(cap));
         }
         if entry.is_empty() {
@@ -866,6 +902,7 @@ fn cmd_metadata_musubi(
     dir: &std::path::Path,
     profile: &fwaun_tools_core::config::ExportProfile,
     tag_groups: &std::collections::BTreeMap<String, fwaun_tools_core::config::TagGroup>,
+    common: &fwaun_tools_core::common_tags::CommonTags,
     output: Option<PathBuf>,
 ) -> Result<()> {
     // (image_path, caption) pairs, sorted by path so the JSONL is stable
@@ -884,7 +921,7 @@ fn cmd_metadata_musubi(
         };
         // musubi training here is caption-only: an image without a caption
         // has nothing to contribute, so skip it rather than emit a blank.
-        match export::build_caption(&sidecar, profile, tag_groups) {
+        match export::build_caption(&sidecar, profile, tag_groups, common) {
             Some(cap) => rows.push((metadata_image_key(&image), cap)),
             None => no_caption += 1,
         }
@@ -923,6 +960,12 @@ fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Resu
     use fwaun_tools_core::sidecar::sidecar_path_for;
     use fwaun_tools_core::tag_group::effective_tag_set;
 
+    // Matching honours the dataset-wide `common_tags` layer, so `mv --tags
+    // <trigger>` selects everything when the trigger is declared there.
+    let common = ProjectConfig::load_or_default(&dir)
+        .with_context(|| format!("loading config in {}", dir.display()))?
+        .resolve_common_tags();
+
     // Normalize query tags the same way the effective tag set is keyed:
     // trimmed + lowercased. Empty entries (e.g. from a trailing comma) are
     // dropped so they don't silently match everything.
@@ -944,7 +987,7 @@ fn cmd_mv(dir: PathBuf, dest: PathBuf, tags: Vec<String>, dry_run: bool) -> Resu
         // No sidecar → no tags → can't match, so load_or_default is fine
         // (an empty effective set never contains a wanted tag).
         let sc = Sidecar::load_or_default(&image)?;
-        let eff = effective_tag_set(&sc);
+        let eff = effective_tag_set(&sc, &common);
         if wanted.iter().all(|t| eff.contains(t)) {
             matches.push(image);
         }
@@ -1033,10 +1076,111 @@ fn normalize_tag_args(tags: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn cmd_add_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
+/// Route a whole-dataset bulk tag edit into `fwaun-tools.toml`'s
+/// `common_tags` instead of into every sidecar.
+///
+/// `dir` being a dataset root means the edit covers the entire dataset, and
+/// a dataset-wide tag belongs in the shared layer: one line in the config
+/// instead of a copy in every `.ron`, and images added later are covered
+/// without re-running the command. A subdirectory, or `--per-image`, falls
+/// through to the per-sidecar path.
+///
+/// Returns `Ok(true)` when the config handled it.
+fn try_common_tag_edit(
+    dir: &std::path::Path,
+    tags: &[String],
+    dry_run: bool,
+    per_image: bool,
+    remove: bool,
+) -> Result<bool> {
+    if per_image {
+        return Ok(false);
+    }
+    let Some(path) = ProjectConfig::dataset_root_config(dir) else {
+        return Ok(false);
+    };
+
+    let edit = if remove {
+        common_tags::remove_from_config_file(&path, tags, dry_run)
+    } else {
+        common_tags::add_to_config_file(&path, tags, dry_run)
+    }
+    .with_context(|| format!("editing common_tags in {}", path.display()))?;
+
+    let verb = match (remove, dry_run) {
+        (false, false) => "added to",
+        (false, true) => "would add to",
+        (true, false) => "removed from",
+        (true, true) => "would remove from",
+    };
+    println!(
+        "{} is the dataset root — editing the shared tag layer, not the sidecars.",
+        dir.display()
+    );
+    if edit.applied.is_empty() {
+        // Distinguish "the config already says this" from "these were never
+        // in the config" — for `remove` the latter is the common case, and
+        // the follow-up note below is what the user actually needs.
+        let reason = if remove {
+            "not in common_tags"
+        } else {
+            "already in common_tags"
+        };
+        println!("nothing to do: {} — {reason}", edit.unchanged.join(", "));
+    } else {
+        println!(
+            "{verb} {} common_tags: {}",
+            path.display(),
+            edit.applied.join(", "),
+        );
+        if !edit.unchanged.is_empty() {
+            println!("unchanged: {}", edit.unchanged.join(", "));
+        }
+    }
+    println!("common_tags is now [{}]", edit.result.join(", "));
+
+    // A dataset-wide remove leaves per-image copies untouched: they may be
+    // deliberate per-image overrides. Say so rather than silently half-doing
+    // the job.
+    if remove {
+        let stale = count_images_with_manual_tags(dir, tags)?;
+        if stale > 0 {
+            println!(
+                "note: {stale} image(s) still carry one of these in their own manual_tags \
+                 — re-run with --per-image to clear those too"
+            );
+        }
+    }
+    Ok(true)
+}
+
+/// How many images under `dir` have any of `tags` as their own manual entry
+/// (case-insensitive, exact form).
+fn count_images_with_manual_tags(dir: &std::path::Path, tags: &[String]) -> Result<usize> {
+    let keys: Vec<String> = tags.iter().map(|t| t.trim().to_lowercase()).collect();
+    let mut n = 0usize;
+    for image in iter_images(dir) {
+        let Some(sc) = Sidecar::load(&image)? else {
+            continue;
+        };
+        if sc
+            .manual_tags
+            .iter()
+            .any(|m| keys.contains(&m.trim().to_lowercase()))
+        {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+fn cmd_add_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool, per_image: bool) -> Result<()> {
     let wanted = normalize_tag_args(&tags);
     if wanted.is_empty() {
         anyhow::bail!("--tags must contain at least one non-empty tag");
+    }
+    if try_common_tag_edit(&dir, &wanted, dry_run, per_image, false)? {
+        return Ok(());
     }
 
     let mut changed = 0usize;
@@ -1074,10 +1218,13 @@ fn cmd_add_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_remove_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool) -> Result<()> {
+fn cmd_remove_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool, per_image: bool) -> Result<()> {
     let wanted = normalize_tag_args(&tags);
     if wanted.is_empty() {
         anyhow::bail!("--tags must contain at least one non-empty tag");
+    }
+    if try_common_tag_edit(&dir, &wanted, dry_run, per_image, true)? {
+        return Ok(());
     }
 
     let mut changed = 0usize;
@@ -1143,6 +1290,7 @@ fn cmd_validate_tag_group(
 
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
+    let common = cfg.resolve_common_tags();
     let group = cfg.tag_groups.get(&group_name).with_context(|| {
         format!(
             "tag_group `{group_name}` is not defined in any fwaun-tools.toml \
@@ -1156,7 +1304,7 @@ fn cmd_validate_tag_group(
 
     for image in iter_images(&dir) {
         let sc = Sidecar::load_or_default(&image)?;
-        let classification = classify(&sc, group);
+        let classification = classify(&sc, group, &common);
         let (state_text, state_json) = match &classification {
             Classification::Tag(t) => {
                 tagged += 1;
@@ -1220,6 +1368,7 @@ fn cmd_tokens(
 
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
+    let common = cfg.resolve_common_tags();
     let mut profile = cfg.resolve_profile(profile_name.as_deref());
     if let Some(t) = threshold {
         profile.threshold = t;
@@ -1252,14 +1401,14 @@ fn cmd_tokens(
             no_sidecar += 1;
             continue;
         };
-        let tags = fwaun_tools_core::export::build_tags(&sidecar, &profile);
+        let tags = fwaun_tools_core::export::build_tags(&sidecar, &profile, &common);
         let tags_text = tags
             .iter()
             .map(|t| t.replace('_', " "))
             .collect::<Vec<_>>()
             .join(", ");
         let caption_text =
-            export::build_caption(&sidecar, &profile, &cfg.tag_groups).unwrap_or_default();
+            export::build_caption(&sidecar, &profile, &cfg.tag_groups, &common).unwrap_or_default();
 
         let tag_tok = count(&tags_text)?;
         let cap_tok = count(&caption_text)?;

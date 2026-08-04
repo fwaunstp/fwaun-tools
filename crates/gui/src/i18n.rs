@@ -294,11 +294,38 @@ impl T {
     pub fn section_manual_entries(self) -> &'static str {
         self.pair("Manual entries (union)", "手動エントリ（和集合）")
     }
-    pub fn section_common_tags(self) -> &'static str {
+    pub fn section_shared_tags(self) -> &'static str {
         self.pair(
-            "Common tags (auto/booru, ≥2 images)",
-            "共通タグ（自動/Booru、2件以上）",
+            "Shared by selection (auto/booru, ≥2 images)",
+            "選択内で共通（自動/Booru、2件以上）",
         )
+    }
+    /// The dataset-wide `common_tags` layer from `fwaun-tools.toml` — not to
+    /// be confused with [`section_shared_tags`], which counts tags the
+    /// current selection happens to share.
+    pub fn section_dataset_tags(self) -> &'static str {
+        self.pair(
+            "Dataset tags (fwaun-tools.toml)",
+            "データセット共通タグ（fwaun-tools.toml）",
+        )
+    }
+    pub fn dataset_tags_root_hint(self) -> &'static str {
+        self.pair(
+            "All images selected at the dataset root — adding or removing a tag edits fwaun-tools.toml, not the sidecars.",
+            "データセットルートで全画像を選択中 — タグの追加・削除はサイドカーではなく fwaun-tools.toml を編集します。",
+        )
+    }
+    pub fn dataset_tags_override_hint(self) -> &'static str {
+        self.pair(
+            "Click a tag to override it for the selected image(s) only.",
+            "タグをクリックすると、選択中の画像だけで打ち消します。",
+        )
+    }
+    pub fn common_tag_write_failed(self, path: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Failed to update common_tags in {path}: {err}"),
+            Lang::Ja => format!("{path} の common_tags 更新に失敗: {err}"),
+        }
     }
     pub fn section_bulk_manual_caption(self) -> &'static str {
         self.pair("Manual caption (bulk)", "手動キャプション（一括）")
@@ -448,6 +475,18 @@ impl T {
         self.pair(
             "Defaults are picked when no `--profile` / `--tagger` / `--captioner` is passed. Leaving these unset falls back to the built-in models.",
             "`--profile` / `--tagger` / `--captioner` を指定しなかった場合に使用される既定値です。未指定なら組込みモデルが使われます。",
+        )
+    }
+    pub fn cfg_common_tags(self) -> &'static str {
+        self.pair(
+            "Dataset tags (common_tags)",
+            "データセット共通タグ（common_tags）",
+        )
+    }
+    pub fn cfg_common_tags_help(self) -> &'static str {
+        self.pair(
+            "One per line, applied to every image without touching any sidecar: `foo` positive, `-foo` suppression, `_foo` curation-only. Typically the character trigger word plus suppressions for the traits it should absorb (hair/eye colour). An image opts out by setting the tag itself.",
+            "1行に1エントリ。サイドカーを書き換えずに全画像へ適用されます（`foo` 通常、`-foo` 抑制、`_foo` 整理用）。通常はキャラ名のトリガーワードと、そこに吸収させたい特徴（髪色・目色など）の抑制を並べます。個別画像側で同じタグを指定すれば打ち消せます。",
         )
     }
     pub fn cfg_unnamed(self) -> &'static str {

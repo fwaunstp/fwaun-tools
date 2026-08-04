@@ -38,6 +38,33 @@ pub fn is_organizational(tag: &str) -> bool {
     tag.trim().starts_with(ORGANIZATIONAL_PREFIX)
 }
 
+/// Positive entries of a manual tag list (suppression markers skipped).
+///
+/// Free function rather than a [`Sidecar`] method so it also works on the
+/// merged list produced by
+/// [`CommonTags::merged_manual_tags`](crate::common_tags::CommonTags::merged_manual_tags),
+/// which layers the dataset-wide common tags underneath an image's own.
+pub fn positive_entries(entries: &[String]) -> impl Iterator<Item = &str> {
+    entries
+        .iter()
+        .map(String::as_str)
+        .filter(|t| !t.trim().starts_with(NEGATIVE_PREFIX))
+}
+
+/// Lowercase stems suppressed by the `-foo` entries of a manual tag list.
+/// Companion to [`positive_entries`]; see that function on why it's free.
+pub fn suppressed_stems(entries: &[String]) -> HashSet<String> {
+    entries
+        .iter()
+        .filter_map(|t| {
+            t.trim()
+                .strip_prefix(NEGATIVE_PREFIX)
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "SidecarOnDisk")]
 pub struct Sidecar {
@@ -417,24 +444,20 @@ impl Sidecar {
     }
 
     /// Iterates positive manual entries (skipping suppression markers).
+    ///
+    /// This is the image's *own* layer only. Consumers that must honour the
+    /// dataset-wide `common_tags` layer go through
+    /// [`CommonTags::merged_manual_tags`](crate::common_tags::CommonTags::merged_manual_tags)
+    /// and [`positive_entries`] instead.
     pub fn manual_positive_tags(&self) -> impl Iterator<Item = &str> {
-        self.manual_tags
-            .iter()
-            .filter(|t| !t.trim().starts_with(NEGATIVE_PREFIX))
-            .map(|t| t.as_str())
+        positive_entries(&self.manual_tags)
     }
 
-    /// Returns lowercase stems suppressed by `-foo` manual entries.
+    /// Returns lowercase stems suppressed by this image's own `-foo` manual
+    /// entries. See [`manual_positive_tags`](Self::manual_positive_tags) on
+    /// the dataset-wide layer.
     pub fn suppressed_set(&self) -> HashSet<String> {
-        self.manual_tags
-            .iter()
-            .filter_map(|t| {
-                t.trim()
-                    .strip_prefix(NEGATIVE_PREFIX)
-                    .map(|s| s.trim().to_lowercase())
-                    .filter(|s| !s.is_empty())
-            })
-            .collect()
+        suppressed_stems(&self.manual_tags)
     }
 
     pub fn is_suppressed(&self, tag: &str) -> bool {

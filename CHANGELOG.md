@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Dataset-wide `common_tags`.** A top-level `common_tags = [...]` list in
+  `fwaun-tools.toml` applies manual entries to every image in the dataset
+  without writing anything into the sidecars. Same syntax as `manual_tags`
+  (`foo` positive, `-foo` suppression, `_foo` curation-only), so the usual
+  character-LoRA setup — the trigger word plus suppressions for the traits it
+  should absorb (`-red_hair`, `-yellow_eyes`, …) — is declared once instead of
+  re-applied every time images are added.
+  - Common positives are emitted first, so the trigger word heads the exported
+    tag string.
+  - An image opts out of any entry by naming the same tag itself in any form: a
+    per-image `red_hair` cancels a dataset-wide `-red_hair`, and a per-image
+    `-himeko` drops the trigger from a shot the character isn't in.
+  - The layer participates everywhere an image's tags are read — export,
+    metadata, caption prefixes/suffixes, tag-group classification, the Kanban
+    view, and `mv --tags`.
+  - Unlike the profile tables, the list does not merge across config levels: a
+    non-empty project list replaces the user-level one outright.
+
+- **Whole-dataset tag edits go to the config, not the sidecars.** When a bulk
+  add/remove covers the entire dataset, it is written to `common_tags` in the
+  dataset root's `fwaun-tools.toml` — one line instead of a copy in every
+  `.ron`, and images added later inherit it.
+  - CLI: `add-tag` / `remove-tag` take this path when `<DIR>` is the dataset
+    root (the directory holding the config). A subdirectory, or the new
+    `--per-image` flag, keeps the previous per-sidecar behaviour. `--dry-run`
+    reports the config edit without writing it. A dataset-wide `remove-tag`
+    leaves per-image copies alone (they may be deliberate overrides) and says
+    how many it found.
+  - GUI: adding or removing a tag with **every** image selected in a folder
+    that owns the config edits `fwaun-tools.toml`; deselecting one image is the
+    escape hatch back to per-sidecar edits.
+  - The config rewrite is surgical, so comments and layout in a hand-maintained
+    `fwaun-tools.toml` survive an edit made from the GUI.
+
+- **GUI: dataset tags are visible and editable.** Inherited `common_tags`
+  entries render as their own chip colour (marked `[C]` in the single-image
+  detail) so it's clear why a tag is present or struck through without being in
+  the sidecar. Clicking one overrides it for the selected image(s), or removes
+  it from the config when the whole dataset is selected. The config modal's
+  General tab gains a `common_tags` editor.
+
+### Changed
+
+- The bulk panel's "Common tags" readout is now labelled **"Shared by
+  selection"**, to keep it distinct from the new dataset-wide `common_tags`.
+
 ## [0.6.0] - 2026-07-29
 
 ### Added

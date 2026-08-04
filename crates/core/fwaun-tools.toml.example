@@ -15,6 +15,34 @@ default_profile   = "anima"
 default_tagger    = "wd-eva02-large-v3"
 default_captioner = "qwen3-vl-4b"
 
+# Dataset-wide manual tags. Same syntax as a sidecar's `manual_tags`:
+# `foo` positive, `-foo` suppression, `_foo` curation-only (never exported).
+# They apply to EVERY image in the dataset without being written into any
+# `.ron`, so images added later are covered automatically and removing an
+# entry here removes it everywhere.
+#
+# The typical character-LoRA setup: the trigger word, plus suppressions for
+# the traits that should be absorbed INTO that trigger rather than learned as
+# separate tags. Without them the tagger re-adds `red_hair` to every new
+# image and the model ties the appearance to the colour tag instead of the
+# character name.
+#
+# Common positives are emitted first, so the trigger word heads the exported
+# tag string. An image opts out of any entry by naming the same tag itself,
+# in any form — a per-image `red_hair` cancels the `-red_hair` below for that
+# image alone, and a per-image `-himeko` drops the trigger from a shot the
+# character isn't in.
+#
+# This list does NOT merge across config levels: a non-empty project-level
+# list replaces the user-level one outright.
+#
+# Editing: a bulk tag edit covering the whole dataset lands here rather than
+# in the sidecars — `dataset add-tag <root> --tags=...` (pass `--per-image`
+# to force the old per-sidecar behaviour), or the GUI's tag input with every
+# image selected. Those edits are surgical, so the comments above survive.
+common_tags = []
+# common_tags = ["himeko", "-red_hair", "-yellow_eyes", "-slit_pupils", "-horns"]
+
 # ---------------------------------------------------------------------------
 # Export profiles — control how tags/captions are filtered/formatted on
 # `export` (one .txt per image) and `metadata`. `metadata --format

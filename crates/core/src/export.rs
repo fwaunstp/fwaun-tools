@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
+use crate::common_tags::CommonTags;
 use crate::config::{ExportProfile, TagGroup};
-use crate::sidecar::{Sidecar, is_organizational};
+use crate::sidecar::{Sidecar, is_organizational, positive_entries, suppressed_stems};
 
 #[derive(Debug, Error)]
 pub enum ExportError {
@@ -23,6 +24,7 @@ pub fn export_text_path(image: &Path) -> PathBuf {
 }
 
 /// Build the final ordered tag list for a single image, applying:
+/// - the dataset-wide `common` layer underneath the image's own manual tags
 /// - threshold + category exclusion to auto tags
 /// - suppression of any auto/booru tag named in a `-foo` manual entry
 /// - category prefix formatting (e.g. ANIMA artist `@`)
@@ -32,12 +34,17 @@ pub fn export_text_path(image: &Path) -> PathBuf {
 /// Negative manual entries (`-foo`) are never emitted as positive tags.
 /// Organizational manual entries (`_foo`) are curation-only and never
 /// exported either, though they still count for tag-group classification.
-pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
+///
+/// Common-layer positives lead the list, so a trigger word declared in
+/// `common_tags` heads every exported caption. Pass
+/// [`CommonTags::default`] for no shared layer.
+pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile, common: &CommonTags) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
-    let suppressed = sidecar.suppressed_set();
+    let manual = common.merged_manual_tags(sidecar);
+    let suppressed = suppressed_stems(&manual);
 
-    for raw in sidecar.manual_positive_tags() {
+    for raw in positive_entries(&manual) {
         let trimmed = raw.trim();
         if trimmed.is_empty() || is_organizational(trimmed) {
             continue;
@@ -95,7 +102,9 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile) -> Vec<String> {
 /// case-insensitively, ignoring a leading organizational `_` — the affix is
 /// prepended (`caption_prefixes`) or appended (`caption_suffixes`) verbatim.
 /// Matched affixes are emitted in the profile's key order (BTreeMap =
-/// sorted), so output is deterministic even if several rules match.
+/// sorted), so output is deterministic even if several rules match. Tags
+/// from the dataset-wide `common` layer match too, so a trigger word
+/// declared once there can drive a caption affix on every image.
 ///
 /// Returns `None` when the image has no caption body at all: a bare affix
 /// without a caption isn't a useful training caption, so such images are
@@ -104,14 +113,15 @@ pub fn build_caption(
     sidecar: &Sidecar,
     profile: &ExportProfile,
     tag_groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
 ) -> Option<String> {
     let body = sidecar.export_caption()?;
-    let present = present_caption_stems(sidecar, profile);
+    let present = present_caption_stems(sidecar, profile, common);
     // Tag-group affixes (keyed on a tag *combination*, priority-ordered) sit
     // outermost; legacy per-tag export-profile affixes nest just inside the
     // caption body. Both are honored so existing configs keep working.
-    let group_prefix = crate::tag_group::resolved_caption_prefix(sidecar, tag_groups);
-    let group_suffix = crate::tag_group::resolved_caption_suffix(sidecar, tag_groups);
+    let group_prefix = crate::tag_group::resolved_caption_prefix(sidecar, tag_groups, common);
+    let group_suffix = crate::tag_group::resolved_caption_suffix(sidecar, tag_groups, common);
     let legacy_prefix = matched_affixes(&profile.caption_prefixes, &present);
     let legacy_suffix = matched_affixes(&profile.caption_suffixes, &present);
     let prefix = format!("{group_prefix}{legacy_prefix}");
@@ -123,14 +133,19 @@ pub fn build_caption(
     }
 }
 
-/// Stems of the image's positive manual tags, normalized for affix
-/// matching. Empty (and cheap) when neither affix table is configured.
-fn present_caption_stems(sidecar: &Sidecar, profile: &ExportProfile) -> HashSet<String> {
+/// Stems of the image's positive manual tags (common layer included),
+/// normalized for affix matching. Empty (and cheap) when neither affix table
+/// is configured.
+fn present_caption_stems(
+    sidecar: &Sidecar,
+    profile: &ExportProfile,
+    common: &CommonTags,
+) -> HashSet<String> {
     if profile.caption_prefixes.is_empty() && profile.caption_suffixes.is_empty() {
         return HashSet::new();
     }
-    sidecar
-        .manual_positive_tags()
+    let manual = common.merged_manual_tags(sidecar);
+    positive_entries(&manual)
         .map(caption_prefix_stem)
         .filter(|s| !s.is_empty())
         .collect()
@@ -165,8 +180,9 @@ pub fn export_image(
     image: &Path,
     sidecar: &Sidecar,
     profile: &ExportProfile,
+    common: &CommonTags,
 ) -> Result<PathBuf, ExportError> {
-    let tags = build_tags(sidecar, profile);
+    let tags = build_tags(sidecar, profile, common);
     let body = tags
         .iter()
         .map(|t| t.replace('_', " "))
@@ -228,7 +244,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::anima());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["tezuka_osamu".to_string(), "1girl".to_string()]);
     }
 
@@ -243,7 +259,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::anima());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["@tezuka_osamu".to_string()]);
     }
 
@@ -266,7 +282,7 @@ mod tests {
         };
         let mut profile = no_shuffle(ExportProfile::default());
         profile.threshold = 0.5;
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["high".to_string()]);
     }
 
@@ -289,7 +305,7 @@ mod tests {
         };
         let mut profile = no_shuffle(ExportProfile::default());
         profile.exclude_categories = vec!["meta".into()];
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["1girl".to_string()]);
     }
 
@@ -305,7 +321,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(
             tags,
             vec![
@@ -335,7 +351,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["1girl".to_string()]);
     }
 
@@ -346,7 +362,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["bar".to_string()]);
     }
 
@@ -357,7 +373,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["1girl".to_string()]);
     }
 
@@ -375,7 +391,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags, vec!["watermark".to_string()]);
     }
 
@@ -395,7 +411,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::anima());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert_eq!(tags.len(), 2);
         assert!(tags.contains(&"@tezuka_osamu".to_string()));
         assert!(tags.contains(&"astro_boy".to_string()));
@@ -420,7 +436,7 @@ mod tests {
         sidecar.set_caption("a", "a girl standing in a field");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("realistic proportions, a girl standing in a field")
         );
     }
@@ -435,7 +451,7 @@ mod tests {
         ]);
         // No proportion tag → bare caption (the default house style).
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("a girl standing in a field")
         );
     }
@@ -449,7 +465,7 @@ mod tests {
         sidecar.set_caption("a", "a cat");
         let profile = with_caption_prefixes(&[("super_deformed", "super deformed, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("super deformed, a cat")
         );
     }
@@ -464,7 +480,7 @@ mod tests {
         sidecar.set_manual_caption("hand-edited body");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("realistic proportions, hand-edited body")
         );
     }
@@ -478,7 +494,10 @@ mod tests {
             ..Default::default()
         };
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
-        assert_eq!(build_caption(&sidecar, &profile, &BTreeMap::new()), None);
+        assert_eq!(
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()),
+            None
+        );
     }
 
     #[test]
@@ -498,7 +517,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("a girl standing in a field, realistic proportions")
         );
     }
@@ -520,7 +539,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()).as_deref(),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
             Some("PRE a cat SUF")
         );
     }
@@ -531,7 +550,7 @@ mod tests {
         sidecar.set_caption("a", "plain caption");
         let profile = ExportProfile::default();
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new()),
+            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()),
             sidecar.export_caption()
         );
     }
@@ -571,7 +590,7 @@ mod tests {
         );
         let profile = ExportProfile::default();
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups).as_deref(),
+            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
             Some("Sayaka from Saru getchu. She wears her Fantasy Knight costume. she stands ready")
         );
     }
@@ -600,14 +619,92 @@ mod tests {
         let profile = ExportProfile::default();
         // Only `1girl` present → group does not fire.
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups).as_deref(),
+            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
             Some("a scene")
         );
         // Add the concept tag → both present → prefix folds in.
         sidecar.add_manual_tag("breaking_through_fourth_wall");
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups).as_deref(),
+            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
             Some("PRE a scene")
+        );
+    }
+
+    #[test]
+    fn common_trigger_leads_and_common_suppression_drops_auto_tag() {
+        // The dataset-wide layer as a character LoRA uses it: trigger word in
+        // front, appearance traits folded into it rather than tagged.
+        let sidecar = Sidecar {
+            manual_tags: vec!["smile".into()],
+            auto_tags: vec![
+                AutoTag {
+                    tag: "red_hair".into(),
+                    score: 0.9,
+                    category: "general".into(),
+                },
+                AutoTag {
+                    tag: "1girl".into(),
+                    score: 0.9,
+                    category: "general".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let common = CommonTags::new(["himeko", "-red_hair"]);
+        let profile = no_shuffle(ExportProfile::default());
+        assert_eq!(
+            build_tags(&sidecar, &profile, &common),
+            vec![
+                "himeko".to_string(),
+                "smile".to_string(),
+                "1girl".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn per_image_entry_overrides_common_layer() {
+        // This shot is genuinely about the hair, and isn't the character.
+        let sidecar = Sidecar {
+            manual_tags: vec!["red_hair".into(), "-himeko".into()],
+            ..Default::default()
+        };
+        let common = CommonTags::new(["himeko", "-red_hair"]);
+        let profile = no_shuffle(ExportProfile::default());
+        assert_eq!(
+            build_tags(&sidecar, &profile, &common),
+            vec!["red_hair".to_string()]
+        );
+    }
+
+    #[test]
+    fn common_organizational_tag_is_not_exported() {
+        let sidecar = Sidecar {
+            manual_tags: vec!["1girl".into()],
+            ..Default::default()
+        };
+        let common = CommonTags::new(["_reviewed"]);
+        let profile = no_shuffle(ExportProfile::default());
+        assert_eq!(
+            build_tags(&sidecar, &profile, &common),
+            vec!["1girl".to_string()]
+        );
+    }
+
+    #[test]
+    fn common_tag_drives_caption_prefix() {
+        let mut sidecar = Sidecar::default();
+        sidecar.set_caption("a", "a girl standing in a field");
+        let profile = with_caption_prefixes(&[("himeko", "Himeko. ")]);
+        assert_eq!(
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::new(["himeko"])
+            )
+            .as_deref(),
+            Some("Himeko. a girl standing in a field")
         );
     }
 
@@ -627,7 +724,7 @@ mod tests {
             ..Default::default()
         };
         let profile = no_shuffle(ExportProfile::default());
-        let tags = build_tags(&sidecar, &profile);
+        let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert!(tags.is_empty());
     }
 }

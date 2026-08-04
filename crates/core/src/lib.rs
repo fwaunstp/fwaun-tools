@@ -1,3 +1,4 @@
+pub mod common_tags;
 pub mod config;
 pub mod export;
 pub mod hub;

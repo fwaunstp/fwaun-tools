@@ -71,6 +71,23 @@ pub struct ProjectConfig {
     pub default_captioner: Option<String>,
     #[serde(default)]
     pub default_upscaler: Option<String>,
+    /// Manual entries applied to every image in the dataset without being
+    /// written into any sidecar — the trigger word for a character LoRA plus
+    /// the `-foo` suppressions that fold its traits (hair colour, eye colour,
+    /// …) into that trigger. Uses the manual-tag syntax verbatim: `foo`
+    /// positive, `-foo` suppression, `_foo` curation-only.
+    ///
+    /// An image opts out of any entry by naming the same tag itself in any
+    /// form, so a common `-red_hair` is cancelled by a per-image `red_hair`.
+    /// Resolve with [`resolve_common_tags`](Self::resolve_common_tags); see
+    /// [`crate::common_tags`] for the full semantics.
+    ///
+    /// Unlike the profile tables this does not union across config levels: a
+    /// non-empty project list replaces the user-level one outright, since the
+    /// set is dataset-specific and a half-inherited list would be worse than
+    /// either.
+    #[serde(default)]
+    pub common_tags: Vec<String>,
     #[serde(default)]
     pub export: BTreeMap<String, ExportProfile>,
     #[serde(default)]
@@ -594,6 +611,7 @@ impl Default for ProjectConfig {
             default_tagger: None,
             default_captioner: None,
             default_upscaler: None,
+            common_tags: Vec::new(),
             export,
             tagger: BTreeMap::new(),
             captioner: BTreeMap::new(),
@@ -704,6 +722,36 @@ impl ProjectConfig {
         None
     }
 
+    /// The config file `dir` owns *directly*, if any — i.e. `dir` is the
+    /// dataset root rather than a subdirectory covered by an ancestor's
+    /// config. Accepts the legacy filenames on the same terms as
+    /// [`find_project_config`](Self::find_project_config).
+    ///
+    /// This is the test for "does a dataset-wide edit belong in the config
+    /// file?": a bulk tag operation spanning the whole dataset writes to
+    /// `common_tags` here instead of to every sidecar. A subdirectory
+    /// deliberately fails the test — an edit there covers only part of the
+    /// dataset, so it has to live in the individual sidecars.
+    /// Deliberately does not canonicalize: the returned path is echoed back
+    /// to the user, and on Windows `canonicalize` yields a `\\?\` verbatim
+    /// path. A plain join is enough to test `dir` itself.
+    pub fn dataset_root_config(dir: &Path) -> Option<PathBuf> {
+        let primary = dir.join(CONFIG_FILE);
+        if primary.is_file() {
+            return Some(primary);
+        }
+        LEGACY_CONFIG_FILES
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|p| p.is_file())
+    }
+
+    /// True when `dir` is a dataset root (see
+    /// [`dataset_root_config`](Self::dataset_root_config)).
+    pub fn is_dataset_root(dir: &Path) -> bool {
+        Self::dataset_root_config(dir).is_some()
+    }
+
     /// Load the project `fwaun-tools.toml`, searching `dir` and its
     /// ancestors. Ignores the user config. Returns `None` if no project
     /// config exists anywhere up the tree.
@@ -769,6 +817,10 @@ impl ProjectConfig {
         if other.default_upscaler.is_some() {
             self.default_upscaler = other.default_upscaler;
         }
+        // Replace rather than union: see the field docs on `common_tags`.
+        if !other.common_tags.is_empty() {
+            self.common_tags = other.common_tags;
+        }
         for (k, v) in other.export {
             self.export.insert(k, v);
         }
@@ -798,6 +850,13 @@ impl ProjectConfig {
             lib.insert(k.clone(), v.clone());
         }
         lib
+    }
+
+    /// Resolve the dataset-wide manual tag layer declared by `common_tags`.
+    /// Cheap enough to call once per command / folder load; pass the result
+    /// down to `export::*` and `tag_group::*`.
+    pub fn resolve_common_tags(&self) -> crate::common_tags::CommonTags {
+        crate::common_tags::CommonTags::new(&self.common_tags)
     }
 
     pub fn resolve_profile(&self, name: Option<&str>) -> ExportProfile {
@@ -1118,6 +1177,7 @@ mod tests {
             "default_profile",
             "default_tagger",
             "default_captioner",
+            "common_tags",
             "captioner_prompts",
         ] {
             assert!(
@@ -1339,6 +1399,34 @@ mod tests {
             .get("official_costumes")
             .expect("group survives round-trip");
         assert_eq!(group.tags, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn common_tags_project_list_replaces_user_list() {
+        let user = ProjectConfig {
+            common_tags: vec!["user_trigger".into(), "-blue_hair".into()],
+            ..Default::default()
+        };
+        let project = ProjectConfig {
+            common_tags: vec!["himeko".into()],
+            ..Default::default()
+        };
+        let mut merged = ProjectConfig::default();
+        merged.merge_from(user);
+        merged.merge_from(project);
+        assert_eq!(merged.common_tags, vec!["himeko".to_string()]);
+    }
+
+    #[test]
+    fn common_tags_empty_project_list_keeps_user_list() {
+        let user = ProjectConfig {
+            common_tags: vec!["user_trigger".into()],
+            ..Default::default()
+        };
+        let mut merged = ProjectConfig::default();
+        merged.merge_from(user);
+        merged.merge_from(ProjectConfig::default());
+        assert_eq!(merged.common_tags, vec!["user_trigger".to_string()]);
     }
 
     #[test]

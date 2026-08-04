@@ -34,6 +34,10 @@ stacks is not tested.
 - **Negative-tag suppression that survives model swaps.** Mark `-foo`
   once; re-running the tagger preserves the suppression even with a
   different model.
+- **Dataset-wide tags in one line.** `common_tags` in `fwaun-tools.toml`
+  applies the trigger word and its `-hair_colour` suppressions to every
+  image without touching a single sidecar — including images added
+  later. Any image can opt out individually.
 - **Curation-only organizational tags.** A positive manual tag starting
   with an underscore (`_foo`) is kept in the data and counted for
   tag-group sorting but never exported — so you can mark "reviewed,
@@ -198,6 +202,9 @@ default_profile   = "anima"
 default_tagger    = "wd-eva02-large-v3"
 default_captioner = "qwen3-vl-4b"
 
+# Applied to every image in the dataset; never written to a sidecar.
+common_tags = ["himeko", "-red_hair", "-yellow_eyes"]
+
 [export.anima]
 threshold = 0.35
 shuffle = false
@@ -224,8 +231,8 @@ fwaun-tools dataset caption <dir>  [--model NAME] [--force]
 fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
 fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
-fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run]
-fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run]
+fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
+fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tools dataset status <dir>
 fwaun-tools dataset tokens <dir>
@@ -260,6 +267,60 @@ suppression marker), `remove-tag` deletes matching manual entries
 case-insensitively (pass `--tags=-foo` to drop a suppression marker).
 Together they perform a directory-wide tag rename
 (`remove-tag <dir> --tags old` then `add-tag <dir> --tags new`).
+
+When `<dir>` is the dataset root, both commands edit `common_tags` instead —
+see [Dataset-wide tags](#dataset-wide-tags).
+
+## Dataset-wide tags
+
+A character LoRA wants the same manual entries on *every* image: the trigger
+word, plus `-foo` suppressions for the traits that should be absorbed into
+that trigger rather than learned as separate tags. Declare them once:
+
+```toml
+common_tags = ["himeko", "-red_hair", "-yellow_eyes", "-slit_pupils"]
+```
+
+Same syntax as a sidecar's `manual_tags` (`foo` positive, `-foo`
+suppression, `_foo` curation-only). The list is applied as a virtual layer
+under each image's own entries and is **never written into a sidecar**, so
+images added to the directory later are covered without re-running anything,
+and deleting a line here removes it everywhere. Common positives are emitted
+first, so the trigger word heads the exported tag string.
+
+An image opts out by naming the same tag itself, in any form — a per-image
+`red_hair` cancels the dataset-wide `-red_hair` for that image alone, and a
+per-image `-himeko` drops the trigger from a shot the character isn't in.
+
+The layer counts everywhere an image's tags are read: export, `metadata`,
+caption prefixes/suffixes, tag-group classification, the Kanban view, and
+`mv --tags`.
+
+### Editing the list
+
+A bulk tag edit that covers the whole dataset is a statement about the
+dataset, so it lands in the config rather than in every sidecar:
+
+```sh
+# <dir> holds fwaun-tools.toml → writes common_tags, not the .ron files
+fwaun-tools dataset add-tag ./dataset --tags=himeko,-red_hair
+fwaun-tools dataset remove-tag ./dataset --tags=-red_hair
+```
+
+A **subdirectory** is only part of the dataset, so it keeps the per-sidecar
+behaviour; `--per-image` forces that at the root too. `--dry-run` reports the
+config edit without writing it. A dataset-wide `remove-tag` leaves per-image
+copies of the tag alone — they may be deliberate overrides — and tells you how
+many it found.
+
+In the GUI the same rule applies to the tag input and the bulk panel's chips:
+with **every** image selected in a folder that owns the config, adding or
+removing a tag edits `fwaun-tools.toml`. Deselect one image to go back to
+editing sidecars. Inherited entries show up as their own chip colour (`[C]` in
+the single-image detail), and clicking one overrides it for the selection.
+
+Config edits made this way are surgical — comments and layout in a
+hand-maintained `fwaun-tools.toml` survive.
 
 ## Tag groups
 

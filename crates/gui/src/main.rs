@@ -20,6 +20,7 @@ use eframe::egui;
 use egui::{ColorImage, Key, TextureHandle};
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::Captioner;
+use fwaun_tools_core::common_tags::{self, CommonTags};
 use fwaun_tools_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
 use fwaun_tools_core::sidecar::{
     AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, is_organizational, sidecar_path_for,
@@ -263,6 +264,16 @@ struct AnimaTaggerApp {
     // re-parsing TOML each frame. `None` when no folder is loaded or
     // the config failed to load (treated as empty).
     project_config: Option<ProjectConfig>,
+    // Dataset-wide tag layer from the effective config's `common_tags`,
+    // resolved alongside `project_config`. Applied to every image without
+    // touching sidecars, so it has to be passed to every core call that
+    // reads an image's tags.
+    common_tags: CommonTags,
+    // The config file the loaded folder owns directly, when it owns one —
+    // i.e. the folder is the dataset root. `Some` enables the "edit the
+    // shared layer instead of every sidecar" path for whole-dataset bulk
+    // tag edits.
+    root_config_path: Option<PathBuf>,
     // Current main-area view mode.
     view_mode: ViewMode,
     // Active drag in the Kanban view, if any. The payload carries one or
@@ -316,6 +327,8 @@ impl AnimaTaggerApp {
             cancel_flag: None,
             pending_delete: None,
             project_config: None,
+            common_tags: CommonTags::default(),
+            root_config_path: None,
             view_mode: ViewMode::Grid,
             kanban_drag: None,
         }
@@ -340,12 +353,17 @@ impl AnimaTaggerApp {
         // Best-effort config load. A broken TOML is reported in the
         // banner; the app still functions in Grid mode without groups.
         match ProjectConfig::load_or_default(dir) {
-            Ok(cfg) => self.project_config = Some(cfg),
+            Ok(cfg) => {
+                self.common_tags = cfg.resolve_common_tags();
+                self.project_config = Some(cfg);
+            }
             Err(e) => {
                 self.project_config = None;
+                self.common_tags = CommonTags::default();
                 self.error_msg = Some(format!("config load failed: {e}"));
             }
         }
+        self.root_config_path = ProjectConfig::dataset_root_config(dir);
         // Drop a stale Kanban view if its group no longer exists in the
         // newly-loaded config.
         if let ViewMode::Kanban { group } = &self.view_mode {
@@ -854,7 +872,7 @@ impl AnimaTaggerApp {
             if !tag_filter.is_empty() && !matches_tag_query(item, &tag_filter) {
                 continue;
             }
-            match tag_group::classify(&item.sidecar, &group) {
+            match tag_group::classify(&item.sidecar, &group, &self.common_tags) {
                 Classification::Tag(tag) => {
                     if let Some(slot) = by_tag.iter_mut().find(|(name, _)| *name == tag) {
                         slot.1.push(item.path.clone());
@@ -1072,11 +1090,12 @@ impl AnimaTaggerApp {
     /// a single broken file doesn't abort the whole drop.
     fn apply_kanban_drop(&mut self, group: &TagGroup, target: &DropTarget, paths: &[PathBuf]) {
         let t = self.t();
+        let common = self.common_tags.clone();
         for path in paths {
             let Some(item) = self.images.iter_mut().find(|i| i.path == *path) else {
                 continue;
             };
-            tag_group::apply_drop(&mut item.sidecar, group, target);
+            tag_group::apply_drop(&mut item.sidecar, group, target, &common);
             let save_result = item.sidecar.save(&item.path);
             let path_str = item.path.display().to_string();
             if let Err(e) = save_result {
@@ -1168,7 +1187,72 @@ impl AnimaTaggerApp {
         });
     }
 
+    /// True when the current selection *is* the whole dataset: the open
+    /// folder owns the config (so it's the dataset root, not a subdirectory)
+    /// and every loaded image is selected.
+    ///
+    /// This is the condition under which a bulk tag edit is a statement
+    /// about the dataset rather than about a set of images, so it belongs in
+    /// `common_tags` — see [`common_tags`](fwaun_tools_core::common_tags).
+    /// Deselecting a single image is the escape hatch back to per-sidecar
+    /// edits.
+    fn is_whole_dataset_selection(&self) -> bool {
+        self.root_config_path.is_some()
+            && !self.images.is_empty()
+            && self.selected.len() == self.images.len()
+    }
+
+    /// Add or remove `tag` in the dataset root config's `common_tags`, then
+    /// reload the layer so the UI reflects it immediately. Returns `false`
+    /// (having set the error banner) if the edit couldn't be written.
+    fn edit_common_tag(&mut self, tag: &str, remove: bool) -> bool {
+        let Some(path) = self.root_config_path.clone() else {
+            return false;
+        };
+        let tags = [tag.to_string()];
+        let result = if remove {
+            common_tags::remove_from_config_file(&path, &tags, false)
+        } else {
+            common_tags::add_to_config_file(&path, &tags, false)
+        };
+        match result {
+            Ok(_) => {
+                self.reload_project_config();
+                true
+            }
+            Err(e) => {
+                self.error_msg = Some(
+                    self.t()
+                        .common_tag_write_failed(&path.display().to_string(), &e.to_string()),
+                );
+                false
+            }
+        }
+    }
+
+    /// Re-read the effective config for the open folder. Called after the
+    /// app itself rewrites `common_tags`, so the in-memory layer, the Kanban
+    /// buckets and the chip lists all pick the change up.
+    fn reload_project_config(&mut self) {
+        let Some(dir) = self.folder.clone() else {
+            return;
+        };
+        match ProjectConfig::load_or_default(&dir) {
+            Ok(cfg) => {
+                self.common_tags = cfg.resolve_common_tags();
+                self.project_config = Some(cfg);
+            }
+            Err(e) => self.error_msg = Some(format!("config load failed: {e}")),
+        }
+    }
+
     fn add_manual_tag_to_selected(&mut self, tag: &str) {
+        // A tag added to every image in the dataset is a property of the
+        // dataset: write it once to `common_tags` rather than copying it
+        // into every sidecar, so images added later inherit it too.
+        if self.is_whole_dataset_selection() && self.edit_common_tag(tag, false) {
+            return;
+        }
         let sel = self.selected.clone();
         for img in self.images.iter_mut() {
             if !sel.contains(&img.path) {
@@ -1239,7 +1323,18 @@ impl AnimaTaggerApp {
             .manual_positive_tags()
             .map(|s| s.to_string())
             .collect();
+        // Entries from the dataset-wide layer this image doesn't override.
+        // They aren't in the sidecar, so they'd otherwise be invisible here
+        // while silently steering the export.
+        let inherited = self.inherited_common_entries(&item.sidecar);
+        // Suppression state has to consider both layers, or a tag hidden by
+        // a `common_tags` `-foo` would still render un-struck.
+        let merged = self.common_tags.merged_manual_tags(&item.sidecar);
+        let suppressed_stems = fwaun_tools_core::sidecar::suppressed_stems(&merged);
+        let is_suppressed = |tag: &str| suppressed_stems.contains(&tag.trim().to_lowercase());
+
         if manual_positives.is_empty()
+            && inherited.is_empty()
             && item.sidecar.auto_tags.is_empty()
             && item.sidecar.booru_tags.is_empty()
         {
@@ -1247,30 +1342,49 @@ impl AnimaTaggerApp {
         } else {
             let mut to_remove_manual: Vec<String> = Vec::new();
             let mut to_toggle_suppression: Vec<String> = Vec::new();
+            let mut to_override_common: Vec<String> = Vec::new();
             ui.horizontal_wrapped(|ui| {
+                for entry in &inherited {
+                    if chip(ui, &format!("{entry} [C]"), ChipKind::Common, false) {
+                        to_override_common.push(entry.clone());
+                    }
+                }
                 for tag in &manual_positives {
                     if chip(ui, tag, manual_chip_kind(tag), false) {
                         to_remove_manual.push(tag.clone());
                     }
                 }
                 for at in &item.sidecar.auto_tags {
-                    let suppressed = item.sidecar.is_suppressed(&at.tag);
                     if chip(
                         ui,
                         &format!("{} ({:.2})", at.tag, at.score),
                         ChipKind::Auto,
-                        suppressed,
+                        is_suppressed(&at.tag),
                     ) {
                         to_toggle_suppression.push(at.tag.clone());
                     }
                 }
                 for bt in &item.sidecar.booru_tags {
-                    let suppressed = item.sidecar.is_suppressed(&bt.tag);
-                    if chip(ui, &format!("{} [B]", bt.tag), ChipKind::Booru, suppressed) {
+                    if chip(
+                        ui,
+                        &format!("{} [B]", bt.tag),
+                        ChipKind::Booru,
+                        is_suppressed(&bt.tag),
+                    ) {
                         to_toggle_suppression.push(bt.tag.clone());
                     }
                 }
             });
+            if !inherited.is_empty() {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(t.dataset_tags_override_hint())
+                        .small()
+                        .weak(),
+                ));
+            }
+            for entry in to_override_common {
+                self.override_common_entry_at(path, &entry);
+            }
             for tag in to_remove_manual {
                 self.remove_manual_at(path, &tag);
             }
@@ -1460,6 +1574,47 @@ impl AnimaTaggerApp {
         }
         self.ui_caption_hint_add_input(ui);
 
+        // The dataset-wide layer, listed before the per-image entries so the
+        // "these apply to everything" tags read first. Only entries no
+        // selected image overrides are shown — an overridden one isn't in
+        // effect across the selection.
+        let inherited: Vec<String> = {
+            let mut common_entries: Option<Vec<String>> = None;
+            for item in &selected_items {
+                let entries = self.inherited_common_entries(&item.sidecar);
+                common_entries = Some(match common_entries {
+                    None => entries,
+                    Some(prev) => prev.into_iter().filter(|e| entries.contains(e)).collect(),
+                });
+            }
+            common_entries.unwrap_or_default()
+        };
+        if !inherited.is_empty() {
+            ui.add_space(6.0);
+            section_title(ui, t.section_dataset_tags());
+            let whole_dataset = self.is_whole_dataset_selection();
+            let mut clicked: Vec<String> = Vec::new();
+            ui.horizontal_wrapped(|ui| {
+                for entry in &inherited {
+                    if chip(ui, entry, ChipKind::Common, false) {
+                        clicked.push(entry.clone());
+                    }
+                }
+            });
+            ui.add(egui::Label::new(
+                egui::RichText::new(if whole_dataset {
+                    t.dataset_tags_root_hint()
+                } else {
+                    t.dataset_tags_override_hint()
+                })
+                .small()
+                .weak(),
+            ));
+            for entry in clicked {
+                self.bulk_common_entry_action(sel, &entry);
+            }
+        }
+
         ui.add_space(6.0);
         section_title(ui, t.section_manual_entries());
         let mut manual_order: Vec<String> = Vec::new();
@@ -1496,8 +1651,8 @@ impl AnimaTaggerApp {
         }
 
         ui.add_space(6.0);
-        section_title(ui, t.section_common_tags());
-        let common = compute_common_tags(&selected_items);
+        section_title(ui, t.section_shared_tags());
+        let common = compute_shared_tags(&selected_items);
         if common.is_empty() {
             ui.add(egui::Label::new(
                 egui::RichText::new(t.empty_simple()).small().weak(),
@@ -1962,12 +2117,13 @@ impl AnimaTaggerApp {
             .as_ref()
             .map(|c| c.tag_groups.clone())
             .unwrap_or_default();
+        let common = self.common_tags.clone();
         let hints: HashMap<PathBuf, Option<String>> = self
             .images
             .iter()
             .filter(|i| sel.contains(&i.path))
             .map(|i| {
-                let extra = tag_group::resolved_caption_hints(&i.sidecar, &tag_groups);
+                let extra = tag_group::resolved_caption_hints(&i.sidecar, &tag_groups, &common);
                 (i.path.clone(), i.sidecar.caption_hint_prompt_with(&extra))
             })
             .collect();
@@ -1976,7 +2132,7 @@ impl AnimaTaggerApp {
             .iter()
             .filter(|i| sel.contains(&i.path))
             .map(|i| {
-                let p = tag_group::resolved_caption_prefix(&i.sidecar, &tag_groups);
+                let p = tag_group::resolved_caption_prefix(&i.sidecar, &tag_groups, &common);
                 (i.path.clone(), (!p.is_empty()).then_some(p))
             })
             .collect();
@@ -2337,14 +2493,84 @@ impl AnimaTaggerApp {
             let _ = img.sidecar.save(&img.path);
         }
     }
+    /// Toggle whether `tag` (an auto/booru entry) is suppressed on one image,
+    /// accounting for the dataset-wide layer.
+    ///
+    /// A `common_tags` `-foo` can't be undone by dropping a marker the
+    /// sidecar doesn't have, so un-suppressing against the shared layer
+    /// writes a positive per-image entry instead — the same override the
+    /// core merge rule looks for.
     fn toggle_suppression_at(&mut self, path: &Path, tag: &str) {
-        if let Some(img) = self.images.iter_mut().find(|i| i.path == path) {
-            let changed = if img.sidecar.is_suppressed(tag) {
-                img.sidecar.unsuppress(tag)
-            } else {
-                img.sidecar.suppress(tag)
-            };
-            if changed {
+        let common_suppresses = self
+            .common_tags
+            .entry_for(tag)
+            .is_some_and(|e| e.trim_start().starts_with('-'));
+        let Some(img) = self.images.iter_mut().find(|i| i.path == path) else {
+            return;
+        };
+        let merged = self.common_tags.merged_manual_tags(&img.sidecar);
+        let effective_suppressed = fwaun_tools_core::sidecar::suppressed_stems(&merged)
+            .contains(&tag.trim().to_lowercase());
+
+        let mut changed = false;
+        if effective_suppressed {
+            changed |= img.sidecar.unsuppress(tag);
+            if common_suppresses {
+                changed |= img.sidecar.add_manual_tag(tag);
+            }
+        } else {
+            changed |= img.sidecar.remove_manual_tag_ci(tag) > 0;
+            changed |= img.sidecar.suppress(tag);
+        }
+        if changed {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+
+    /// The dataset-wide entries in effect for `sc` — those it doesn't
+    /// already override with an entry of its own.
+    fn inherited_common_entries(&self, sc: &Sidecar) -> Vec<String> {
+        if self.common_tags.is_empty() {
+            return Vec::new();
+        }
+        let owned: HashSet<String> = sc
+            .manual_tags
+            .iter()
+            .map(|t| common_tags::tag_stem(t))
+            .collect();
+        self.common_tags
+            .entries()
+            .iter()
+            .filter(|e| !owned.contains(&common_tags::tag_stem(e)))
+            .cloned()
+            .collect()
+    }
+
+    /// Cancel a dataset-wide entry for `path` alone by writing the opposite
+    /// form into its sidecar.
+    fn override_common_entry_at(&mut self, path: &Path, entry: &str) {
+        let override_entry = common_override_entry(entry);
+        if let Some(img) = self.images.iter_mut().find(|i| i.path == path)
+            && img.sidecar.add_manual_tag(override_entry)
+        {
+            let _ = img.sidecar.save(&img.path);
+        }
+    }
+
+    /// Handle a click on a dataset-tag chip in the bulk panel: remove it
+    /// from the config when the selection is the whole dataset (the edit is
+    /// about the dataset), otherwise override it across the selection.
+    fn bulk_common_entry_action(&mut self, paths: &[PathBuf], entry: &str) {
+        if self.is_whole_dataset_selection() {
+            self.edit_common_tag(entry, true);
+            return;
+        }
+        let override_entry = common_override_entry(entry);
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.add_manual_tag(override_entry.clone()) {
                 let _ = img.sidecar.save(&img.path);
             }
         }
@@ -2427,6 +2653,11 @@ enum ChipKind {
     Organizational,
     Auto,
     Booru,
+    /// Entry from the dataset-wide `common_tags` layer in
+    /// `fwaun-tools.toml`. Not stored in this image's sidecar, so it gets
+    /// its own colour — clicking it either overrides it for the selection
+    /// or (at the dataset root, everything selected) edits the config.
+    Common,
 }
 
 impl ChipKind {
@@ -2437,6 +2668,7 @@ impl ChipKind {
             Self::Organizational => egui::Color32::from_rgb(74, 58, 100),
             Self::Auto => egui::Color32::from_rgb(58, 58, 58),
             Self::Booru => egui::Color32::from_rgb(45, 90, 58),
+            Self::Common => egui::Color32::from_rgb(96, 74, 40),
         }
     }
     fn fg(self) -> egui::Color32 {
@@ -2446,7 +2678,19 @@ impl ChipKind {
             Self::Organizational => egui::Color32::from_rgb(226, 213, 255),
             Self::Auto => egui::Color32::from_rgb(204, 204, 204),
             Self::Booru => egui::Color32::from_rgb(207, 229, 208),
+            Self::Common => egui::Color32::from_rgb(255, 226, 184),
         }
+    }
+}
+
+/// The per-image manual entry that cancels a dataset-wide `entry` for one
+/// image: the opposite form of the same tag, which the core merge rule
+/// treats as an override.
+fn common_override_entry(entry: &str) -> String {
+    let t = entry.trim();
+    match t.strip_prefix('-') {
+        Some(positive) => positive.trim().to_string(),
+        None => format!("-{}", t.trim_start_matches('_')),
     }
 }
 
@@ -2536,7 +2780,10 @@ fn matches_tag_query(item: &ImageItem, needle_lower: &str) -> bool {
         .any(|bt| bt.tag.to_lowercase().contains(needle_lower))
 }
 
-fn compute_common_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
+/// Tags that at least two of the selected images share, most-frequent first.
+/// A read-only curation aid — distinct from the dataset-wide `common_tags`
+/// layer, which comes from the config and actually affects the export.
+fn compute_shared_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
     let mut order: Vec<String> = Vec::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
     let mut display: HashMap<String, String> = HashMap::new();

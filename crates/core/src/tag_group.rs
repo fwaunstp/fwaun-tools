@@ -12,8 +12,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use crate::common_tags::CommonTags;
 use crate::config::{CaptionAffix, TagGroup};
-use crate::sidecar::{ORGANIZATIONAL_PREFIX, Sidecar};
+use crate::sidecar::{ORGANIZATIONAL_PREFIX, Sidecar, positive_entries, suppressed_stems};
 
 /// Classification result for one image against one tag group.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,12 +38,16 @@ pub enum DropTarget {
     Unset,
 }
 
-/// Build the lowercase-stem effective tag set for `sc`. Suppressed
-/// (`-foo`) entries are removed.
-pub fn effective_tag_set(sc: &Sidecar) -> HashSet<String> {
-    let suppressed = sc.suppressed_set();
+/// Build the lowercase-stem effective tag set for `sc`, with the
+/// dataset-wide `common` layer merged underneath its own manual tags.
+/// Suppressed (`-foo`) entries are removed — from either layer, so a
+/// `common_tags` suppression drops the tag out of Kanban classification and
+/// `mv` matching just as a per-image one does.
+pub fn effective_tag_set(sc: &Sidecar, common: &CommonTags) -> HashSet<String> {
+    let manual = common.merged_manual_tags(sc);
+    let suppressed = suppressed_stems(&manual);
     let mut set: HashSet<String> = HashSet::new();
-    for t in sc.manual_positive_tags() {
+    for t in positive_entries(&manual) {
         let key = t.trim().to_lowercase();
         if !key.is_empty() {
             set.insert(key);
@@ -67,8 +72,8 @@ pub fn effective_tag_set(sc: &Sidecar) -> HashSet<String> {
 }
 
 /// Classify `sc` against `group`.
-pub fn classify(sc: &Sidecar, group: &TagGroup) -> Classification {
-    let eff = effective_tag_set(sc);
+pub fn classify(sc: &Sidecar, group: &TagGroup, common: &CommonTags) -> Classification {
+    let eff = effective_tag_set(sc, common);
     let present: Vec<String> = group
         .tags
         .iter()
@@ -89,7 +94,9 @@ pub fn classify(sc: &Sidecar, group: &TagGroup) -> Classification {
 // Matching keys on the image's positive *manual* tags only — consistent
 // with export caption-affix matching, and the deliberate choice for
 // curation-driven steering — normalized the same way (trim, drop a single
-// leading organizational `_`, lowercase).
+// leading organizational `_`, lowercase). The dataset-wide `common_tags`
+// layer counts as manual here, so a shared trigger word can steer captions
+// across the whole set.
 
 /// Normalize a tag for caption-steering matching.
 fn caption_match_stem(s: &str) -> String {
@@ -99,9 +106,11 @@ fn caption_match_stem(s: &str) -> String {
         .to_lowercase()
 }
 
-/// Lowercase, `_`-stripped stems of the image's positive manual tags.
-fn manual_caption_stems(sc: &Sidecar) -> HashSet<String> {
-    sc.manual_positive_tags()
+/// Lowercase, `_`-stripped stems of the image's positive manual tags, with
+/// the dataset-wide common layer merged in.
+fn manual_caption_stems(sc: &Sidecar, common: &CommonTags) -> HashSet<String> {
+    let manual = common.merged_manual_tags(sc);
+    positive_entries(&manual)
         .map(caption_match_stem)
         .filter(|s| !s.is_empty())
         .collect()
@@ -119,8 +128,12 @@ fn group_all_present(group: &TagGroup, stems: &HashSet<String>) -> bool {
 /// Caption hints contributed by every tag group all of whose tags are
 /// present on `sc`. Ordered by group name (BTreeMap iteration) for
 /// determinism. Blank hints are skipped.
-pub fn resolved_caption_hints(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> Vec<String> {
-    let stems = manual_caption_stems(sc);
+pub fn resolved_caption_hints(
+    sc: &Sidecar,
+    groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+) -> Vec<String> {
+    let stems = manual_caption_stems(sc, common);
     groups
         .values()
         .filter(|g| group_all_present(g, &stems))
@@ -134,22 +147,31 @@ pub fn resolved_caption_hints(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>)
 /// Concatenated caption prefix from every matching tag group, ordered by
 /// ascending `priority` (ties broken by group name). Empty when nothing
 /// matches.
-pub fn resolved_caption_prefix(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> String {
-    resolved_affix(sc, groups, |g| g.caption_prefix.as_ref())
+pub fn resolved_caption_prefix(
+    sc: &Sidecar,
+    groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+) -> String {
+    resolved_affix(sc, groups, common, |g| g.caption_prefix.as_ref())
 }
 
 /// Concatenated caption suffix from every matching tag group. Same ordering
 /// as [`resolved_caption_prefix`].
-pub fn resolved_caption_suffix(sc: &Sidecar, groups: &BTreeMap<String, TagGroup>) -> String {
-    resolved_affix(sc, groups, |g| g.caption_suffix.as_ref())
+pub fn resolved_caption_suffix(
+    sc: &Sidecar,
+    groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+) -> String {
+    resolved_affix(sc, groups, common, |g| g.caption_suffix.as_ref())
 }
 
 fn resolved_affix(
     sc: &Sidecar,
     groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
     pick: impl Fn(&TagGroup) -> Option<&CaptionAffix>,
 ) -> String {
-    let stems = manual_caption_stems(sc);
+    let stems = manual_caption_stems(sc, common);
     let mut matched: Vec<(&str, &CaptionAffix)> = groups
         .iter()
         .filter(|(_, g)| group_all_present(g, &stems))
@@ -175,8 +197,12 @@ fn resolved_affix(
 ///
 /// On `Unset`: same as above but applied to *every* group tag currently
 /// in the effective set.
-pub fn apply_drop(sc: &mut Sidecar, group: &TagGroup, target: &DropTarget) {
-    let eff = effective_tag_set(sc);
+///
+/// A group tag supplied by the dataset-wide `common` layer is handled the
+/// same way — dropping the image elsewhere writes a per-image `-Y` marker
+/// that overrides the shared entry for that image alone.
+pub fn apply_drop(sc: &mut Sidecar, group: &TagGroup, target: &DropTarget, common: &CommonTags) {
+    let eff = effective_tag_set(sc, common);
     match target {
         DropTarget::Tag(x) => {
             let x_trimmed = x.trim();
@@ -184,9 +210,13 @@ pub fn apply_drop(sc: &mut Sidecar, group: &TagGroup, target: &DropTarget) {
                 return;
             }
             sc.unsuppress(x_trimmed);
-            // Add as positive only if not already a positive manual
-            // entry. `add_manual_tag` is a no-op for duplicates.
-            sc.add_manual_tag(x_trimmed);
+            // Add as positive only if not already effective: the common
+            // layer may already supply it, in which case clearing any `-x`
+            // above is enough and a per-image copy would just be noise.
+            // `add_manual_tag` is a no-op for duplicates.
+            if !common.provides_positive(x_trimmed) {
+                sc.add_manual_tag(x_trimmed);
+            }
 
             let x_key = x_trimmed.to_lowercase();
             for other in &group.tags {
@@ -253,7 +283,7 @@ mod tests {
         sc.manual_tags.push("alpha".into());
         sc.auto_tags.push(auto("beta"));
         sc.booru_tags.push(booru("gamma"));
-        let set = effective_tag_set(&sc);
+        let set = effective_tag_set(&sc, &CommonTags::default());
         assert!(set.contains("alpha"));
         assert!(set.contains("beta"));
         assert!(set.contains("gamma"));
@@ -264,7 +294,7 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.auto_tags.push(auto("watermark"));
         sc.manual_tags.push("-watermark".into());
-        let set = effective_tag_set(&sc);
+        let set = effective_tag_set(&sc, &CommonTags::default());
         assert!(!set.contains("watermark"));
     }
 
@@ -272,7 +302,10 @@ mod tests {
     fn classify_returns_unset_when_none_present() {
         let sc = Sidecar::default();
         let g = group(&["a", "b"]);
-        assert_eq!(classify(&sc, &g), Classification::Unset);
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Unset
+        );
     }
 
     #[test]
@@ -280,7 +313,10 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("a".into());
         let g = group(&["a", "b"]);
-        assert_eq!(classify(&sc, &g), Classification::Tag("a".into()));
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("a".into())
+        );
     }
 
     #[test]
@@ -290,7 +326,7 @@ mod tests {
         sc.auto_tags.push(auto("b"));
         sc.booru_tags.push(booru("a"));
         let g = group(&["a", "b"]);
-        match classify(&sc, &g) {
+        match classify(&sc, &g, &CommonTags::default()) {
             Classification::Violation(tags) => {
                 assert_eq!(tags, vec!["a".to_string(), "b".to_string()]);
             }
@@ -306,7 +342,10 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("_none".into());
         let g = group(&["char_a", "char_b", "_none"]);
-        assert_eq!(classify(&sc, &g), Classification::Tag("_none".into()));
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("_none".into())
+        );
     }
 
     #[test]
@@ -316,7 +355,10 @@ mod tests {
         sc.manual_tags.push("-a".into());
         sc.manual_tags.push("b".into());
         let g = group(&["a", "b"]);
-        assert_eq!(classify(&sc, &g), Classification::Tag("b".into()));
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("b".into())
+        );
     }
 
     #[test]
@@ -324,13 +366,21 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.auto_tags.push(auto("y"));
         let g = group(&["x", "y", "z"]);
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
 
         assert!(sc.manual_tags.contains(&"x".to_string()));
         assert!(sc.manual_tags.contains(&"-y".to_string()));
         // z was nowhere, so no `-z` written
         assert!(!sc.manual_tags.iter().any(|t| t == "-z"));
-        assert_eq!(classify(&sc, &g), Classification::Tag("x".into()));
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("x".into())
+        );
     }
 
     #[test]
@@ -338,7 +388,12 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("-x".into());
         let g = group(&["x", "y"]);
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
         assert!(!sc.manual_tags.iter().any(|t| t == "-x"));
         assert!(sc.manual_tags.contains(&"x".to_string()));
     }
@@ -348,7 +403,12 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("y".into());
         let g = group(&["x", "y"]);
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
         assert!(!sc.manual_tags.iter().any(|t| t == "y"));
         assert!(sc.manual_tags.contains(&"-y".to_string()));
         assert!(sc.manual_tags.contains(&"x".to_string()));
@@ -359,13 +419,16 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.auto_tags.push(auto("y"));
         let g = group(&["x", "y", "z"]);
-        apply_drop(&mut sc, &g, &DropTarget::Unset);
+        apply_drop(&mut sc, &g, &DropTarget::Unset, &CommonTags::default());
 
         assert!(sc.manual_tags.contains(&"-y".to_string()));
         // x, z were absent → no eager suppression
         assert!(!sc.manual_tags.iter().any(|t| t == "-x"));
         assert!(!sc.manual_tags.iter().any(|t| t == "-z"));
-        assert_eq!(classify(&sc, &g), Classification::Unset);
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Unset
+        );
     }
 
     #[test]
@@ -373,9 +436,19 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.auto_tags.push(auto("y"));
         let g = group(&["x", "y"]);
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
         let after_once = sc.manual_tags.clone();
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
         assert_eq!(sc.manual_tags, after_once);
     }
 
@@ -394,10 +467,10 @@ mod tests {
             },
         );
         // Only one of the two tags present → no hint.
-        assert!(resolved_caption_hints(&sc, &groups).is_empty());
+        assert!(resolved_caption_hints(&sc, &groups, &CommonTags::default()).is_empty());
         sc.manual_tags.push("breaking_through_fourth_wall".into());
         assert_eq!(
-            resolved_caption_hints(&sc, &groups),
+            resolved_caption_hints(&sc, &groups, &CommonTags::default()),
             vec!["A girl is breaking through the fourth wall.".to_string()]
         );
     }
@@ -432,7 +505,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(resolved_caption_prefix(&sc, &groups), "AB");
+        assert_eq!(
+            resolved_caption_prefix(&sc, &groups, &CommonTags::default()),
+            "AB"
+        );
     }
 
     #[test]
@@ -452,9 +528,57 @@ mod tests {
             },
         );
         assert_eq!(
-            resolved_caption_prefix(&sc, &groups),
+            resolved_caption_prefix(&sc, &groups, &CommonTags::default()),
             "realistic proportions, "
         );
+    }
+
+    #[test]
+    fn common_layer_participates_in_classification() {
+        let sc = Sidecar::default();
+        let g = group(&["official_school_uniform", "official_lounge_wear"]);
+        let common = CommonTags::new(["official_school_uniform"]);
+        assert_eq!(
+            classify(&sc, &g, &common),
+            Classification::Tag("official_school_uniform".into())
+        );
+    }
+
+    #[test]
+    fn common_suppression_hides_auto_tag_from_classification() {
+        let mut sc = Sidecar::default();
+        sc.auto_tags.push(auto("a"));
+        let g = group(&["a", "b"]);
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::new(["-a"])),
+            Classification::Unset
+        );
+    }
+
+    #[test]
+    fn apply_drop_writes_per_image_override_against_common_layer() {
+        // `y` comes from the shared layer; dropping the image into `x` has to
+        // override it for this image only.
+        let mut sc = Sidecar::default();
+        let g = group(&["x", "y"]);
+        let common = CommonTags::new(["y"]);
+        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()), &common);
+        assert!(sc.manual_tags.contains(&"x".to_string()));
+        assert!(sc.manual_tags.contains(&"-y".to_string()));
+        assert_eq!(classify(&sc, &g, &common), Classification::Tag("x".into()));
+    }
+
+    #[test]
+    fn apply_drop_onto_common_positive_only_clears_the_override() {
+        // `x` is already supplied by the shared layer, so re-selecting it
+        // just drops the `-x` marker instead of writing a redundant copy.
+        let mut sc = Sidecar::default();
+        sc.manual_tags.push("-x".into());
+        let g = group(&["x", "y"]);
+        let common = CommonTags::new(["x"]);
+        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()), &common);
+        assert!(sc.manual_tags.is_empty());
+        assert_eq!(classify(&sc, &g, &common), Classification::Tag("x".into()));
     }
 
     #[test]
@@ -463,11 +587,27 @@ mod tests {
         sc.auto_tags.push(auto("y"));
         let g = group(&["x", "y"]);
 
-        apply_drop(&mut sc, &g, &DropTarget::Tag("x".into()));
-        assert_eq!(classify(&sc, &g), Classification::Tag("x".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("x".into()),
+            &CommonTags::default(),
+        );
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("x".into())
+        );
 
-        apply_drop(&mut sc, &g, &DropTarget::Tag("y".into()));
-        assert_eq!(classify(&sc, &g), Classification::Tag("y".into()));
+        apply_drop(
+            &mut sc,
+            &g,
+            &DropTarget::Tag("y".into()),
+            &CommonTags::default(),
+        );
+        assert_eq!(
+            classify(&sc, &g, &CommonTags::default()),
+            Classification::Tag("y".into())
+        );
         // After flipping back, `-x` should be present (since x was just
         // a positive manual tag) and `y` positive.
         assert!(sc.manual_tags.contains(&"y".to_string()));

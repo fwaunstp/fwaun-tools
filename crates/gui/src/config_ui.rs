@@ -19,6 +19,10 @@ use crate::i18n::T;
 #[derive(Debug, Clone)]
 pub struct ConfigDraft {
     pub default_profile: Option<String>,
+    /// Dataset-wide manual tags (`common_tags`). Edited as one entry per
+    /// line in the General tab; carried through a save either way so a
+    /// config written from the GUI never silently drops the layer.
+    pub common_tags: Vec<String>,
     pub default_tagger: Option<String>,
     pub default_captioner: Option<String>,
     pub export: Vec<(String, ExportProfileDraft)>,
@@ -60,6 +64,7 @@ impl ConfigDraft {
     pub fn from_config(cfg: ProjectConfig) -> Self {
         Self {
             default_profile: cfg.default_profile,
+            common_tags: cfg.common_tags,
             default_tagger: cfg.default_tagger,
             default_captioner: cfg.default_captioner,
             export: cfg.export.into_iter().map(|(k, v)| (k, v.into())).collect(),
@@ -167,6 +172,12 @@ impl ConfigDraft {
                 .default_upscaler
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
+            common_tags: self
+                .common_tags
+                .iter()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect(),
             export,
             tagger,
             captioner,
@@ -299,6 +310,28 @@ fn ui_general(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
             );
             ui.end_row();
         });
+
+    // `common_tags` as free text, one entry per line — the list is edited
+    // far more often than it is structured, and a line-per-tag box beats a
+    // row of add/remove buttons for pasting a dozen suppressions at once.
+    ui.add_space(10.0);
+    ui.label(t.cfg_common_tags());
+    ui.label(egui::RichText::new(t.cfg_common_tags_help()).small().weak());
+    let mut text = draft.common_tags.join("\n");
+    let resp = ui.add(
+        egui::TextEdit::multiline(&mut text)
+            .desired_width(f32::INFINITY)
+            .desired_rows(5)
+            .hint_text("himeko\n-red_hair\n-yellow_eyes"),
+    );
+    if resp.changed() {
+        draft.common_tags = text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+    }
+
     ui.add_space(8.0);
     ui.label(egui::RichText::new(t.cfg_general_note()).weak());
 }

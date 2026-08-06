@@ -222,9 +222,9 @@ enum DatasetCommand {
     /// tag, `-foo` a suppression marker (removes a matching auto/booru tag
     /// from the export). Entries already present are left as-is; a sidecar
     /// is created for images that don't have one. Pass `-foo` after `=`
-    /// (`--tags=-foo`) so it isn't parsed as a flag. Paired with
-    /// `remove-tag`, this covers a directory-wide tag rename
-    /// (`remove-tag old` + `add-tag new`).
+    /// (`--tags=-foo`) so it isn't parsed as a flag. To rename a tag, reach
+    /// for `replace-tag` rather than this plus `remove-tag`: it keeps the
+    /// entry's position and touches only the images that have it.
     ///
     /// When <DIR> is the dataset root (it holds the `fwaun-tools.toml`), the
     /// edit covers the whole dataset, so it is written to that file's
@@ -276,6 +276,51 @@ enum DatasetCommand {
         #[arg(long)]
         dry_run: bool,
         /// Always write to each image's sidecar, even at the dataset root.
+        #[arg(long)]
+        per_image: bool,
+    },
+    /// Rename manual tag(s) across a directory: `--from OLD --to NEW`.
+    ///
+    /// Each match is rewritten where it sits, so the entry keeps its place in
+    /// `manual_tags`, and images that don't carry OLD are left alone — the
+    /// two things `remove-tag` + `add-tag` can't do. A NEW that an image
+    /// already has absorbs the renamed entry instead of duplicating it.
+    ///
+    /// Matching is case-insensitive on the entry as written, like
+    /// `remove-tag`: the leading `-` counts, so renaming `foo` never touches
+    /// `-foo` (pass `--from=-foo --to=-bar` for that), and `--from Foo --to
+    /// foo` fixes the casing of an entry. Repeat the pair (or comma-separate
+    /// both lists) to run a whole rename table in one pass; the Nth `--from`
+    /// goes with the Nth `--to`.
+    ///
+    /// Unlike `add-tag` / `remove-tag`, this always walks the sidecars — a
+    /// rename has no whole-directory side effect to guard against. When <DIR>
+    /// is the dataset root it *also* renames the entry in that config's
+    /// `common_tags`; `--per-image` leaves the config alone.
+    ReplaceTag {
+        /// Directory to scan (recursively).
+        dir: PathBuf,
+        /// Tag(s) to rename. Comma-separated or repeated; pass a suppression
+        /// marker after `=` (`--from=-foo`).
+        #[arg(
+            long,
+            value_delimiter = ',',
+            required = true,
+            allow_hyphen_values = true
+        )]
+        from: Vec<String>,
+        /// What each `--from` becomes, in the same order. Case preserved.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            required = true,
+            allow_hyphen_values = true
+        )]
+        to: Vec<String>,
+        /// List what would change without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip the dataset root's `common_tags`; edit sidecars only.
         #[arg(long)]
         per_image: bool,
     },
@@ -393,6 +438,13 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             dry_run,
             per_image,
         } => cmd_remove_tag(dir, tags, dry_run, per_image),
+        DatasetCommand::ReplaceTag {
+            dir,
+            from,
+            to,
+            dry_run,
+            per_image,
+        } => cmd_replace_tag(dir, from, to, dry_run, per_image),
         DatasetCommand::Status { dir } => cmd_status(dir),
         DatasetCommand::ValidateTagGroup {
             dir,
@@ -1290,6 +1342,95 @@ fn cmd_remove_tag(dir: PathBuf, tags: Vec<String>, dry_run: bool, per_image: boo
         println!("done: {changed} changed, {unchanged} unchanged");
     }
     Ok(())
+}
+
+fn cmd_replace_tag(
+    dir: PathBuf,
+    from: Vec<String>,
+    to: Vec<String>,
+    dry_run: bool,
+    per_image: bool,
+) -> Result<()> {
+    let pairs = rename_pairs(&from, &to)?;
+
+    // The config edit comes first so a `--dry-run` reads top-down: the shared
+    // layer, then the sidecars. Unlike add/remove-tag it doesn't *replace* the
+    // per-image pass — an entry can live in both places, and a rename that
+    // half-applied would leave the two disagreeing.
+    if !per_image && let Some(path) = ProjectConfig::dataset_root_config(&dir) {
+        let edit = common_tags::replace_in_config_file(&path, &pairs, dry_run)
+            .with_context(|| format!("editing common_tags in {}", path.display()))?;
+        if edit.changed() {
+            println!(
+                "{} {} common_tags: {}",
+                if dry_run {
+                    "would rename in"
+                } else {
+                    "renamed in"
+                },
+                path.display(),
+                edit.applied.join(", "),
+            );
+            println!("common_tags is now [{}]", edit.result.join(", "));
+        }
+    }
+
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    for image in iter_images(&dir) {
+        // Only an existing sidecar can carry the old tag, so a rename never
+        // creates one just to change nothing.
+        let Some(mut sc) = Sidecar::load(&image)? else {
+            continue;
+        };
+        let renamed: Vec<String> = pairs
+            .iter()
+            .filter(|(f, t)| sc.replace_manual_tag_ci(f, t) > 0)
+            .map(|(f, t)| format!("{f} -> {t}"))
+            .collect();
+        if renamed.is_empty() {
+            unchanged += 1;
+            continue;
+        }
+        if !dry_run {
+            sc.save(&image)?;
+        }
+        changed += 1;
+        println!(
+            "{} {} ({})",
+            if dry_run { "would rename" } else { "renamed" },
+            image.display(),
+            renamed.join(", "),
+        );
+    }
+
+    if dry_run {
+        println!("dry run: {changed} would change, {unchanged} without the tag(s)");
+    } else {
+        println!("done: {changed} changed, {unchanged} unchanged");
+    }
+    Ok(())
+}
+
+/// Zip `--from` / `--to` into rename pairs, rejecting the argument shapes
+/// that would silently rename the wrong thing (a lopsided list, a blank
+/// half). The pairing is positional, so `--from a,b --to x,y` is `a -> x`
+/// and `b -> y`.
+fn rename_pairs(from: &[String], to: &[String]) -> Result<Vec<(String, String)>> {
+    let from = normalize_tag_args(from);
+    let to = normalize_tag_args(to);
+    if from.is_empty() || to.is_empty() {
+        anyhow::bail!("--from and --to must each contain at least one non-empty tag");
+    }
+    if from.len() != to.len() {
+        anyhow::bail!(
+            "--from and --to must have the same number of tags \
+             ({} vs {}) — they are paired in order",
+            from.len(),
+            to.len(),
+        );
+    }
+    Ok(from.into_iter().zip(to).collect())
 }
 
 fn cmd_status(dir: PathBuf) -> Result<()> {

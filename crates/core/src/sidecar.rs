@@ -511,6 +511,80 @@ impl Sidecar {
         before - self.manual_tags.len()
     }
 
+    /// Rename a manual entry: every `from` becomes `to`, **in place**.
+    ///
+    /// This is `remove` + `add` minus both of that pair's problems: the entry
+    /// keeps the slot it already had (so the export order doesn't change),
+    /// and an image that doesn't carry `from` is left alone instead of
+    /// gaining `to`. If `to` is already present, the renamed entry collapses
+    /// onto its first slot rather than duplicating it.
+    ///
+    /// Matching is exact, mirroring [`remove_manual_tag`](Self::remove_manual_tag)
+    /// — the GUI passes chip text it read out of this very list. The CLI's
+    /// `replace-tag` wants the looser rule and uses
+    /// [`replace_manual_tag_ci`](Self::replace_manual_tag_ci) instead.
+    ///
+    /// The leading `-` of a suppression marker is part of the compared
+    /// string, so renaming `foo` never touches `-foo`; pass `-foo` → `-bar`
+    /// to rename the marker. Returns `true` if anything changed. An empty
+    /// `from` or `to` is a no-op — dropping an entry is `remove`'s job.
+    pub fn replace_manual_tag(&mut self, from: &str, to: &str) -> bool {
+        self.replace_manual_entries(from, to, false) > 0
+    }
+
+    /// Case-insensitive [`replace_manual_tag`](Self::replace_manual_tag),
+    /// returning the number of manual entries changed (renames plus the
+    /// duplicates a rename collapsed). Matches `remove-tag`'s rule so the
+    /// CLI's bulk tag verbs all treat case the same way; `to` is written in
+    /// the exact case given, which makes `--from Foo --to foo` a case fix.
+    pub fn replace_manual_tag_ci(&mut self, from: &str, to: &str) -> usize {
+        self.replace_manual_entries(from, to, true)
+    }
+
+    fn replace_manual_entries(&mut self, from: &str, to: &str, ignore_case: bool) -> usize {
+        let from = from.trim();
+        let to = to.trim();
+        if from.is_empty() || to.is_empty() {
+            return 0;
+        }
+        let key = |s: &str| {
+            let s = s.trim();
+            if ignore_case {
+                s.to_lowercase()
+            } else {
+                s.to_string()
+            }
+        };
+        let from_key = key(from);
+        let to_key = key(to);
+
+        let mut changed = 0usize;
+        let mut kept_target = false;
+        let mut out: Vec<String> = Vec::with_capacity(self.manual_tags.len());
+        for entry in std::mem::take(&mut self.manual_tags) {
+            let value = if key(&entry) == from_key {
+                to.to_string()
+            } else {
+                entry.clone()
+            };
+            // `to` keeps its earliest slot; any later copy — renamed or
+            // already there — is dropped instead of duplicated.
+            if key(&value) == to_key {
+                if kept_target {
+                    changed += 1;
+                    continue;
+                }
+                kept_target = true;
+            }
+            if value != entry {
+                changed += 1;
+            }
+            out.push(value);
+        }
+        self.manual_tags = out;
+        changed
+    }
+
     /// Add `-tag` as a suppression marker if not already present.
     pub fn suppress(&mut self, tag: &str) -> bool {
         let trimmed = tag.trim();
@@ -738,6 +812,88 @@ mod tests {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("x".into());
         assert_eq!(sc.remove_manual_tag_ci("   "), 0);
+        assert_eq!(sc.manual_tags, vec!["x".to_string()]);
+    }
+
+    fn with_manual(tags: &[&str]) -> Sidecar {
+        Sidecar {
+            manual_tags: tags.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn replace_manual_tag_keeps_the_original_slot() {
+        let mut sc = with_manual(&["a", "old", "b"]);
+        assert!(sc.replace_manual_tag("old", "new"));
+        assert_eq!(
+            sc.manual_tags,
+            vec!["a".to_string(), "new".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn replace_manual_tag_is_a_noop_without_the_source_tag() {
+        let mut sc = with_manual(&["a"]);
+        assert!(!sc.replace_manual_tag("old", "new"));
+        assert_eq!(sc.manual_tags, vec!["a".to_string()]);
+        // Exact by default: the CI variant is opt-in.
+        assert!(!sc.replace_manual_tag("A", "new"));
+        assert_eq!(sc.manual_tags, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn replace_manual_tag_collapses_onto_an_existing_target() {
+        let mut sc = with_manual(&["old", "keep", "new"]);
+        assert!(sc.replace_manual_tag("old", "new"));
+        assert_eq!(sc.manual_tags, vec!["new".to_string(), "keep".to_string()]);
+
+        // Target ahead of the source: the earlier slot is the one that wins.
+        let mut sc = with_manual(&["new", "keep", "old"]);
+        assert!(sc.replace_manual_tag("old", "new"));
+        assert_eq!(sc.manual_tags, vec!["new".to_string(), "keep".to_string()]);
+    }
+
+    #[test]
+    fn replace_manual_tag_leaves_the_suppression_marker_alone() {
+        let mut sc = with_manual(&["-watermark", "watermark"]);
+        assert!(sc.replace_manual_tag("watermark", "logo"));
+        assert_eq!(
+            sc.manual_tags,
+            vec!["-watermark".to_string(), "logo".to_string()]
+        );
+        assert!(sc.replace_manual_tag("-watermark", "-logo"));
+        assert_eq!(
+            sc.manual_tags,
+            vec!["-logo".to_string(), "logo".to_string()]
+        );
+    }
+
+    #[test]
+    fn replace_manual_tag_ci_matches_case_and_counts_collapses() {
+        let mut sc = with_manual(&["Short_Hair", "keep", "short_hair"]);
+        // One rename plus one duplicate folded into it.
+        assert_eq!(sc.replace_manual_tag_ci("SHORT_HAIR", "bob_cut"), 2);
+        assert_eq!(
+            sc.manual_tags,
+            vec!["bob_cut".to_string(), "keep".to_string()]
+        );
+    }
+
+    #[test]
+    fn replace_manual_tag_ci_rewrites_case_only_renames() {
+        let mut sc = with_manual(&["Foo"]);
+        assert_eq!(sc.replace_manual_tag_ci("foo", "foo"), 1);
+        assert_eq!(sc.manual_tags, vec!["foo".to_string()]);
+        // Already in the requested form — nothing left to change.
+        assert_eq!(sc.replace_manual_tag_ci("foo", "foo"), 0);
+    }
+
+    #[test]
+    fn replace_manual_tag_empty_argument_is_a_noop() {
+        let mut sc = with_manual(&["x"]);
+        assert!(!sc.replace_manual_tag("   ", "y"));
+        assert!(!sc.replace_manual_tag("x", "  "));
         assert_eq!(sc.manual_tags, vec!["x".to_string()]);
     }
 

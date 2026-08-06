@@ -243,6 +243,65 @@ pub fn remove_from_config_file(
     })
 }
 
+/// Rename entries in the `common_tags` array of the config at `path`:
+/// each `(from, to)` pair rewrites a matching entry **in place**, so the
+/// order of a hand-maintained list survives a rename. Matching follows
+/// [`remove_from_config_file`]'s rule (case-insensitive on the entry as
+/// written, `-foo` distinct from `foo`); `to` is written exactly as given.
+/// An entry already equal to `to` absorbs the renamed one instead of ending
+/// up with two copies of it.
+///
+/// Pairs whose `from` isn't in the array are reported in
+/// [`CommonTagEdit::unchanged`]; applied ones are reported as `"from -> to"`,
+/// since neither half alone describes what happened.
+pub fn replace_in_config_file(
+    path: &Path,
+    pairs: &[(String, String)],
+    dry_run: bool,
+) -> Result<CommonTagEdit, CommonTagsError> {
+    edit_config_file(path, dry_run, |arr, edit| {
+        for (from, to) in pairs {
+            let (from, to) = (from.trim(), to.trim());
+            if tag_stem(from).is_empty() || tag_stem(to).is_empty() {
+                continue;
+            }
+            let label = format!("{from} -> {to}");
+            let Some(i) = index_of_exact(arr, from) else {
+                edit.unchanged.push(label);
+                continue;
+            };
+            // `i` is the first entry naming this tag, so an exact hit here
+            // means the list already says what the rename asks for.
+            if arr
+                .get(i)
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.trim() == to)
+            {
+                edit.unchanged.push(label);
+                continue;
+            }
+            arr.replace(i, to);
+            // Fold any other copy of `to` (pre-existing, or a second entry
+            // that just got renamed onto it) into the slot we just wrote.
+            let key = to.to_lowercase();
+            let mut seen = false;
+            arr.retain(|v| {
+                let hit = v
+                    .as_str()
+                    .map(|s| s.trim().to_lowercase() == key)
+                    .unwrap_or(false);
+                if !hit {
+                    return true;
+                }
+                let first = !seen;
+                seen = true;
+                first
+            });
+            edit.applied.push(label);
+        }
+    })
+}
+
 /// Trim the caller's tag arguments and drop blanks / bare markers.
 fn normalized_args(tags: &[String]) -> Vec<String> {
     tags.iter()
@@ -493,6 +552,55 @@ mod tests {
         let edit = remove_from_config_file(cfg.path(), &args(&["-RED_HAIR"]), false).unwrap();
         assert_eq!(edit.applied, ["-RED_HAIR"]);
         assert_eq!(edit.result, ["himeko"]);
+    }
+
+    fn pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(f, t)| (f.to_string(), t.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn replace_renames_in_place_and_keeps_the_order() {
+        let cfg = TempConfig::new("ren", "common_tags = [\"himeko\", \"-red_hair\"]\n");
+        let edit =
+            replace_in_config_file(cfg.path(), &pairs(&[("HIMEKO", "himeko_v2")]), false).unwrap();
+        assert_eq!(edit.applied, ["HIMEKO -> himeko_v2"]);
+        assert_eq!(edit.result, ["himeko_v2", "-red_hair"]);
+    }
+
+    #[test]
+    fn replace_reports_a_missing_source_without_adding_it() {
+        let cfg = TempConfig::new("ren-miss", "common_tags = [\"himeko\"]\n");
+        let edit =
+            replace_in_config_file(cfg.path(), &pairs(&[("nope", "something")]), false).unwrap();
+        assert!(!edit.changed());
+        assert_eq!(edit.unchanged, ["nope -> something"]);
+        assert_eq!(edit.result, ["himeko"]);
+    }
+
+    #[test]
+    fn replace_collapses_onto_an_existing_target() {
+        let cfg = TempConfig::new("ren-dup", "common_tags = [\"old\", \"keep\", \"new\"]\n");
+        let edit = replace_in_config_file(cfg.path(), &pairs(&[("old", "new")]), false).unwrap();
+        assert_eq!(edit.applied, ["old -> new"]);
+        assert_eq!(edit.result, ["new", "keep"]);
+    }
+
+    #[test]
+    fn replace_matches_the_written_form_only() {
+        let cfg = TempConfig::new("ren-form", "common_tags = [\"-red_hair\"]\n");
+        // The positive form isn't there, so this renames nothing …
+        let edit =
+            replace_in_config_file(cfg.path(), &pairs(&[("red_hair", "crimson_hair")]), false)
+                .unwrap();
+        assert!(!edit.changed());
+        // … and the marker is renamed only when its `-` is passed too.
+        let edit =
+            replace_in_config_file(cfg.path(), &pairs(&[("-red_hair", "-crimson_hair")]), false)
+                .unwrap();
+        assert_eq!(edit.result, ["-crimson_hair"]);
     }
 
     #[test]

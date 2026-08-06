@@ -242,6 +242,7 @@ fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]
+fwaun-tools dataset replace-tag <dir> --from OLD[,...] --to NEW[,...] [--dry-run] [--per-image]
 fwaun-tools dataset mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tools dataset status <dir>
 fwaun-tools dataset tokens <dir>
@@ -286,11 +287,32 @@ at the top of the window), for the same operations without the command line.
 directory: `add-tag` appends each tag verbatim (`foo` positive, `-foo`
 suppression marker), `remove-tag` deletes matching manual entries
 case-insensitively (pass `--tags=-foo` to drop a suppression marker).
-Together they perform a directory-wide tag rename
-(`remove-tag <dir> --tags old` then `add-tag <dir> --tags new`).
 
 When `<dir>` is the dataset root, both commands edit `common_tags` instead —
 see [Dataset-wide tags](#dataset-wide-tags).
+
+`replace-tag` renames one: each match is rewritten **where it sits**, so the
+entry keeps its place in `manual_tags`, and images that don't carry the old
+tag are left alone. That's what `remove-tag` + `add-tag` can't do — the pair
+moves the tag to the end of the list and lands the new one on the whole
+directory.
+
+```sh
+fwaun-tools dataset replace-tag ./dataset --from long_hair --to very_long_hair
+# a whole rename table in one pass — the Nth --from goes with the Nth --to
+fwaun-tools dataset replace-tag ./dataset --from cape,hat --to red_cape,straw_hat --dry-run
+```
+
+Matching follows `remove-tag`: case-insensitive, with the leading `-` part of
+the entry (`--from=-foo --to=-bar` renames a suppression marker; `--from Foo
+--to foo` fixes an entry's casing). A new tag the image already has absorbs
+the renamed entry instead of duplicating it. Unlike the other two this always
+walks the sidecars, and at the dataset root it *also* renames the entry in
+`common_tags` — `--per-image` leaves the config alone.
+
+The GUI has the same operation for a selection: right-click a manual chip in
+the bulk panel → **Rename this tag…**, or type the pair into the rename row
+under the chips.
 
 ## Dataset-wide tags
 

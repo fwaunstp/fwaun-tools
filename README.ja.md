@@ -241,6 +241,7 @@ fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]
+fwaun-tools dataset replace-tag <dir> --from 旧[,...] --to 新[,...] [--dry-run] [--per-image]
 fwaun-tools dataset mv <dir> <dest>  --tags TAG[,...] [--dry-run]
 fwaun-tools dataset status <dir>
 fwaun-tools dataset tokens <dir>
@@ -286,12 +287,32 @@ ConvRot レイアウトを書き出します。いずれも CPU/f32 でキー単
 します。`add-tag` は各タグをそのまま追加し（`foo` はポジティブ、`-foo`
 はサプレッションマーカー）、`remove-tag` は一致するマニュアルタグを
 大文字小文字を無視して削除します（サプレッションマーカーを消すには
-`--tags=-foo` のように渡します）。この2つを組み合わせると、ディレクトリ
-全体でのタグのリネームになります（`remove-tag <dir> --tags 旧タグ` の
-あとに `add-tag <dir> --tags 新タグ`）。
+`--tags=-foo` のように渡します）。
 
 `<dir>` がデータセットルートの場合、この2つは `common_tags` を編集します
 （後述の[データセット共通タグ](#データセット共通タグ)を参照）。
+
+`replace-tag` はタグをリネームします。一致したエントリは**その位置のまま**
+書き換わるので `manual_tags` の順序が保たれ、旧タグを持たない画像は変更され
+ません。`remove-tag` + `add-tag` ではこうはいきません（タグが末尾に移動し、
+新タグがディレクトリ全体に付いてしまいます）。
+
+```sh
+fwaun-tools dataset replace-tag ./dataset --from long_hair --to very_long_hair
+# 対応表を一括で流す — N 番目の --from と N 番目の --to が対になります
+fwaun-tools dataset replace-tag ./dataset --from cape,hat --to red_cape,straw_hat --dry-run
+```
+
+一致判定は `remove-tag` と同じで、大文字小文字を無視し、先頭の `-` は
+エントリの一部として扱います（`--from=-foo --to=-bar` でサプレッション
+マーカーをリネーム、`--from Foo --to foo` で表記ゆれの修正）。新タグを既に
+持っている画像では、リネームされたエントリは重複せずそこに畳まれます。
+他の2つと違い常にサイドカーを走査し、データセットルートでは `common_tags`
+のエントリも合わせてリネームします（`--per-image` で設定ファイルは対象外）。
+
+GUI にも選択範囲に対する同じ操作があります。一括パネルの手動タグチップを
+右クリックして **このタグをリネーム…**、またはチップ下のリネーム欄に
+旧タグ・新タグを入力します。
 
 ## データセット共通タグ
 

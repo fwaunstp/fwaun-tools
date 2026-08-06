@@ -274,6 +274,41 @@ Detail panel:
 - N selected: bulk-edit mode with text input. Type `foo` to add a positive
   tag to all selected, `-foo` to suppress.
 
+### Preview (`preview.rs`)
+
+The grid only holds `THUMB_SIZE` textures, which is enough to find an image
+and not enough to check a tag against it. Double-click (or the right-click
+menu, or the detail panel's button) opens an `egui::Modal` holding one
+re-decoded image, fit to the window; ← / → walk it, Esc closes.
+
+The decode runs on a throwaway thread per navigation and results carry a
+request id — holding an arrow key down queues decodes faster than they
+finish, and every result but the last is dropped. Only the image on screen is
+kept: a 4K RGBA texture is ~34 MB, so a history to make stepping instant
+would cost far more than the decode it saves. The previous image deliberately
+stays visible under a spinner while the next decodes, which is also what stops
+the overlay from collapsing and re-expanding on every step.
+
+Two smaller things worth not re-deriving: the overlay is drawn *first* in
+`ui()` even though it paints on top (`Order::Foreground`), because
+`consume_key` goes to whoever runs first in the frame and otherwise a panel
+underneath would act on the arrow keys too; and the header is laid out
+left-to-right rather than pinning buttons to the right edge, because a
+right-aligned layout claims the full available width — the whole screen —
+and the overlay stops hugging the image.
+
+Navigation walks `visible_paths()`, captured at open time. In Kanban mode
+that isn't the on-screen order (the columns regroup it), but it does cover
+each filtered image exactly once, which is what a verification pass wants.
+
+### Opening images outside the app
+
+Right-click menu and detail panel both offer **Open in default app** and
+**Show in folder**, via the `opener` crate. Both run on a throwaway thread:
+`opener::reveal` blocks on a COM round-trip to the shell that has no business
+freezing the UI. Errors come back over `external_err`, a channel held for the
+app's lifetime and drained each frame into the error banner.
+
 The GUI uses egui via eframe. The first cut was dioxus-desktop (chosen
 to share a framework with a separate mobile project), but webkit2gtk
 prevents Linux single-binary distribution and dioxus has no

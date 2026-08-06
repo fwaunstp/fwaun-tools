@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GUI: full-size preview.** Double-click a thumbnail (or use the new
+  right-click menu / the **Preview** button in the detail panel) to open the
+  image over the app at up to screen resolution, so you can actually check
+  whether a tag describes what's in the picture.
+  - ← / → step to the previous / next image in the *filtered* list, Esc or a
+    click on the backdrop closes. The list is captured when the preview
+    opens, so an edit that changes what the filter matches doesn't move the
+    ground under a verification pass.
+  - Decoding happens on a worker thread and only the image on screen is kept
+    — a 4K RGBA texture is ~34 MB, so caching a history of them would cost far
+    more than the decode it saves. The previous image stays up under a spinner
+    while the next one decodes.
+
+- **GUI: open images outside the app.** The thumbnail right-click menu and the
+  detail panel both offer **Open in default app** and **Show in folder**, for
+  the zoom / rotate / compare things a dedicated viewer already does better.
+  Runs off the UI thread — revealing a file blocks on the file manager — and
+  failures land in the error banner.
+
 - **GUI: differential folder reload.** A **Reload** button next to *Open
   folder* re-scans the folder that's already open instead of making you close
   and re-open it after adding images or running the CLI over the dataset.

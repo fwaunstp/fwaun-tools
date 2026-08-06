@@ -15,6 +15,8 @@ use fwaun_tools_core::config::{
 };
 
 use crate::i18n::T;
+use crate::prefs::GuiPrefs;
+use crate::thumb_cache::format_size;
 
 #[derive(Debug, Clone)]
 pub struct ConfigDraft {
@@ -199,6 +201,7 @@ pub enum ConfigTab {
     Prompts,
     Export,
     TagGroups,
+    App,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -206,6 +209,24 @@ pub enum ConfigAction {
     None,
     Save,
     Cancel,
+    /// App tab: wipe the thumbnail cache. Doesn't close the modal — the user
+    /// stays where they are and sees the size readout drop to zero.
+    ClearCache,
+    /// App tab: (re)measure the thumbnail cache on disk.
+    MeasureCache,
+}
+
+/// What the App tab needs: the machine-local prefs to edit, plus a read-only
+/// view of the thumbnail cache. `size` is `None` until measured, `root` is
+/// `None` when the platform has no cache directory.
+///
+/// Bundled rather than passed loose because it is the one part of this modal
+/// that isn't about `fwaun-tools.toml` — keeping it in a single parameter
+/// keeps that boundary visible at the call site.
+pub struct AppSettings<'a> {
+    pub prefs: &'a mut GuiPrefs,
+    pub cache_root: Option<&'a std::path::Path>,
+    pub cache_size: Option<u64>,
 }
 
 pub fn show_config_modal(
@@ -213,6 +234,7 @@ pub fn show_config_modal(
     t: T,
     target_label: &str,
     draft: &mut ConfigDraft,
+    app: &mut AppSettings<'_>,
     tab: &mut ConfigTab,
     error: &mut Option<String>,
 ) -> ConfigAction {
@@ -234,6 +256,7 @@ pub fn show_config_modal(
                 tab_button(ui, tab, ConfigTab::Prompts, t.cfg_tab_prompts());
                 tab_button(ui, tab, ConfigTab::Export, t.cfg_tab_export());
                 tab_button(ui, tab, ConfigTab::TagGroups, t.cfg_tab_tag_groups());
+                tab_button(ui, tab, ConfigTab::App, t.cfg_tab_app());
             });
             ui.separator();
             egui::ScrollArea::vertical()
@@ -246,6 +269,11 @@ pub fn show_config_modal(
                     ConfigTab::Prompts => ui_prompts(ui, t, draft),
                     ConfigTab::Export => ui_export(ui, t, draft),
                     ConfigTab::TagGroups => ui_tag_groups(ui, t, draft),
+                    ConfigTab::App => {
+                        if let Some(a) = ui_app(ui, t, app) {
+                            action = a;
+                        }
+                    }
                 });
             if let Some(err) = error.clone() {
                 ui.add_space(4.0);
@@ -334,6 +362,94 @@ fn ui_general(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {
 
     ui.add_space(8.0);
     ui.label(egui::RichText::new(t.cfg_general_note()).weak());
+}
+
+/// App tab — machine-local prefs, saved on change rather than on Save.
+///
+/// The rest of this modal edits `fwaun-tools.toml`, which belongs to the
+/// dataset; these settings belong to the install. Rather than have one Save
+/// button write two files with different lifetimes, the caller watches the
+/// `prefs` value for changes and persists it immediately. Returns an action
+/// for the operations the caller has to perform (they touch the filesystem).
+fn ui_app(ui: &mut egui::Ui, t: T, app: &mut AppSettings<'_>) -> Option<ConfigAction> {
+    let mut action = None;
+    ui.label(egui::RichText::new(t.cfg_app_note()).small().weak());
+    ui.add_space(10.0);
+
+    ui.heading(t.cfg_thumb_cache());
+    ui.add_space(4.0);
+    if app.cache_root.is_none() {
+        ui.colored_label(
+            egui::Color32::from_rgb(255, 200, 140),
+            t.cfg_thumb_cache_unavailable(),
+        );
+        return action;
+    }
+    ui.checkbox(
+        &mut app.prefs.thumb_cache.enabled,
+        t.cfg_thumb_cache_enabled(),
+    );
+    ui.label(egui::RichText::new(t.cfg_thumb_cache_help()).small().weak());
+    ui.add_space(8.0);
+
+    // Budget stays editable with the cache switched off: what's already on
+    // disk is still subject to it on the next prune.
+    egui::Grid::new("cfg_app_cache_grid")
+        .num_columns(3)
+        .spacing([12.0, 8.0])
+        .show(ui, |ui| {
+            ui.label(t.cfg_thumb_cache_limit());
+            ui.add(
+                egui::DragValue::new(&mut app.prefs.thumb_cache.limit_mb)
+                    .range(0..=1_048_576u64)
+                    .speed(8.0),
+            );
+            ui.label(
+                egui::RichText::new(t.cfg_thumb_cache_zero_off())
+                    .small()
+                    .weak(),
+            );
+            ui.end_row();
+
+            ui.label(t.cfg_thumb_cache_max_age());
+            ui.add(
+                egui::DragValue::new(&mut app.prefs.thumb_cache.max_age_days)
+                    .range(0..=3650u32)
+                    .speed(1.0),
+            );
+            ui.label(
+                egui::RichText::new(t.cfg_thumb_cache_zero_off())
+                    .small()
+                    .weak(),
+            );
+            ui.end_row();
+        });
+
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        let label = match app.cache_size {
+            Some(bytes) => t.cfg_thumb_cache_size(&format_size(bytes)),
+            None => t.cfg_thumb_cache_size_unknown().to_string(),
+        };
+        ui.label(label);
+        if ui.button(t.cfg_thumb_cache_measure()).clicked() {
+            action = Some(ConfigAction::MeasureCache);
+        }
+        if ui.button(t.cfg_thumb_cache_clear()).clicked() {
+            action = Some(ConfigAction::ClearCache);
+        }
+    });
+
+    if let Some(root) = app.cache_root {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(root.display().to_string())
+                .monospace()
+                .small()
+                .weak(),
+        );
+    }
+    action
 }
 
 fn ui_tagger(ui: &mut egui::Ui, t: T, draft: &mut ConfigDraft) {

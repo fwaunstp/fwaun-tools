@@ -212,11 +212,59 @@ fwaun-tools dataset status <dir>
 
 `cargo run -p fwaun-tools-gui --release`
 
-Toolbar: open folder, filter dropdown, Select visible / Clear sel., Run
-tagger / Run captioner / Fetch booru. The model loads lazily on first run
+Toolbar: open folder, Reload, filter dropdown, Select visible / Clear sel.,
+Run tagger / Run captioner / Fetch booru. The model loads lazily on first run
 (downloading the ONNX weights from HuggingFace if not already cached) and
 is reused for the app's lifetime; opening a different folder invalidates
 the cache (config might point at a different model).
+
+### Folder scanning
+
+`load_folder` and `reload_folder` share one `scan_folder`; the difference is
+what the caller cleared first. Both walk the directory, resolve a `ScanJob`
+per file on the UI thread (one `stat` each), and hand the list to the same
+background worker that already streams `WorkerMsg::ImageLoaded` with a
+progress overlay and a cancel flag.
+
+The per-file decision is `needs_thumbnail()`: decode again if this is a full
+load, if the path isn't in `images`, if no texture materialized for it (a
+cancelled earlier scan), or if its mtime/size moved since the texture was
+built (`stamps: HashMap<PathBuf, FileStamp>`). Everything else gets a
+`SidecarReloaded` instead — a differential reload always re-reads *every*
+sidecar, because a RON parse is free next to an image decode and external
+edits are the reason to reload at all. Since new files arrive at the end of
+the message stream, `reorder_to_scan_order` puts `images` back into
+directory order when the scan finishes.
+
+The two operations are deliberately separate from the on-disk cache below:
+the reload covers "changed while the app was open", the cache covers "changed
+between sessions", and a cache hit still costs a texture upload and a sidecar
+read that the reload skips entirely.
+
+### Thumbnail cache (`thumb_cache.rs`)
+
+Shrunk RGBA thumbnails persisted as PNGs under `dirs::cache_dir()`, sharded
+into 256 buckets by the first byte of the key. The key is a 128-bit FNV-1a
+over (absolute path, mtime, size, `THUMB_SIZE`), so invalidation is implicit —
+a changed source simply misses. FNV rather than `DefaultHasher` because the
+digest is a *filename*: `DefaultHasher`'s output isn't stable across Rust
+releases, and the whole cache would silently evaporate on a toolchain bump.
+
+Writes go through a `.tmp` + rename so two instances scanning the same dataset
+can't leave a half-written entry. `prune()` enforces the size limit and expiry
+from prefs — oldest-first by write time, since touching entries on read would
+turn the fast path into a write per image — and runs off the UI thread at
+startup and at the end of each scan.
+
+### Preferences (`prefs.rs`)
+
+`gui-prefs.toml` under `dirs::config_dir()` — machine-local settings, as
+opposed to `fwaun-tools.toml`, which describes a dataset. Currently the UI
+language and the thumbnail-cache settings. Read once at startup, rewritten
+whole on change. The config modal's **App** tab edits it and saves on every
+change rather than on the modal's Save button, which belongs to the dataset
+config; the tab says so, because one modal writing two files with different
+lifetimes needs to be explicit about it.
 
 Detail panel:
 - 0 selected: hint.
@@ -401,6 +449,9 @@ non-shuffled metadata file diffs cleanly across runs.
   tracker + Ctrl+Z would help.
 - **No image preview pane**. The thumbnail is the only visual. For
   detailed inspection users open the file externally.
+- **Reload is manual**. A `notify` watcher on the open folder could trigger
+  the differential scan automatically, but re-scanning under the user
+  mid-edit has its own hazards, so the trigger stays a button for now.
 - **Folder switch invalidates the model cache**, but doesn't preload the
   new folder's models. First action after switch always pays the load
   cost.

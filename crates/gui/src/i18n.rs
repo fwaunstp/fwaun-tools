@@ -1,11 +1,6 @@
 //! GUI internationalization. The app supports English and Japanese; default
-//! is the host locale. The user's choice persists in `gui-prefs.toml` under
-//! the platform config directory (`%APPDATA%` on Windows,
-//! `$XDG_CONFIG_HOME` / `~/.config` on Linux, `~/Library/Application Support`
-//! on macOS).
-
-use std::fs;
-use std::path::PathBuf;
+//! is the host locale. The user's choice persists in `gui-prefs.toml`
+//! alongside the other machine-local settings — see [`crate::prefs`].
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
@@ -56,6 +51,17 @@ impl T {
     // Toolbar
     pub fn open_folder(self) -> &'static str {
         self.pair("Open folder…", "フォルダを開く…")
+    }
+    pub fn reload_folder(self) -> &'static str {
+        self.pair("Reload", "再読み込み")
+    }
+    pub fn reload_folder_title(self) -> &'static str {
+        self.pair(
+            "Re-scan the current folder. Thumbnails are regenerated only for \
+             new or modified images; sidecars are re-read for all of them.",
+            "現在のフォルダを再スキャンします。サムネイルは新規・変更された画像のみ\
+             作り直し、サイドカーは全件読み直します。",
+        )
     }
     pub fn config_button(self) -> &'static str {
         self.pair("Config…", "設定…")
@@ -456,6 +462,65 @@ impl T {
     pub fn cfg_tab_tag_groups(self) -> &'static str {
         self.pair("Tag groups", "タググループ")
     }
+    pub fn cfg_tab_app(self) -> &'static str {
+        self.pair("App", "アプリ")
+    }
+
+    // App tab (machine-local prefs, `gui-prefs.toml`)
+    pub fn cfg_app_note(self) -> &'static str {
+        self.pair(
+            "These settings belong to this machine, not to the dataset. They are saved to gui-prefs.toml as soon as you change them — Save / Cancel below only apply to the dataset config above.",
+            "ここの設定はデータセットではなくこのマシンに紐づきます。変更すると即座に gui-prefs.toml へ保存されます（下の「保存」「キャンセル」は上のデータセット設定にのみ適用されます）。",
+        )
+    }
+    pub fn cfg_thumb_cache(self) -> &'static str {
+        self.pair("Thumbnail cache", "サムネイルキャッシュ")
+    }
+    pub fn cfg_thumb_cache_enabled(self) -> &'static str {
+        self.pair("Cache thumbnails on disk", "サムネイルをディスクに保存する")
+    }
+    pub fn cfg_thumb_cache_help(self) -> &'static str {
+        self.pair(
+            "Keeps generated thumbnails under the OS cache directory so re-opening a folder skips decoding the full-size images. Entries are keyed by path + modification time, so an edited image regenerates automatically.",
+            "生成済みサムネイルを OS のキャッシュディレクトリに保存し、フォルダを開き直したときに元画像のデコードを省きます。エントリはパスと更新時刻で識別されるため、画像を差し替えれば自動的に作り直されます。",
+        )
+    }
+    pub fn cfg_thumb_cache_limit(self) -> &'static str {
+        self.pair("Size limit (MiB)", "上限サイズ（MiB）")
+    }
+    pub fn cfg_thumb_cache_max_age(self) -> &'static str {
+        self.pair("Expire after (days)", "有効期限（日）")
+    }
+    pub fn cfg_thumb_cache_zero_off(self) -> &'static str {
+        self.pair("0 = no limit", "0 で無制限")
+    }
+    pub fn cfg_thumb_cache_size(self, size: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Currently using {size}"),
+            Lang::Ja => format!("現在の使用量: {size}"),
+        }
+    }
+    pub fn cfg_thumb_cache_size_unknown(self) -> &'static str {
+        self.pair("Currently using —", "現在の使用量: —")
+    }
+    pub fn cfg_thumb_cache_measure(self) -> &'static str {
+        self.pair("Measure", "計測")
+    }
+    pub fn cfg_thumb_cache_clear(self) -> &'static str {
+        self.pair("Clear cache", "キャッシュを削除")
+    }
+    pub fn cfg_thumb_cache_unavailable(self) -> &'static str {
+        self.pair(
+            "This platform reports no cache directory; thumbnails cannot be cached.",
+            "このプラットフォームではキャッシュディレクトリを取得できないため、サムネイルを保存できません。",
+        )
+    }
+    pub fn cfg_thumb_cache_clear_failed(self, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Could not clear the thumbnail cache: {err}"),
+            Lang::Ja => format!("サムネイルキャッシュを削除できませんでした: {err}"),
+        }
+    }
     pub fn cfg_default_profile(self) -> &'static str {
         self.pair("Default export profile", "既定エクスポートプロファイル")
     }
@@ -811,39 +876,4 @@ impl T {
             Lang::Ja => format!("✖ {op} が失敗しました: {err}"),
         }
     }
-}
-
-// ───────── persistence ─────────
-
-fn prefs_path() -> Option<PathBuf> {
-    // `dirs::config_dir()` resolves the right per-platform location: `%APPDATA%`
-    // on Windows, `$XDG_CONFIG_HOME` (falling back to `~/.config`) on Linux, and
-    // `~/Library/Application Support` on macOS.
-    dirs::config_dir().map(|d| d.join("fwaun-tools").join("gui-prefs.toml"))
-}
-
-pub fn load_pref_or_detect() -> Lang {
-    let stored = prefs_path()
-        .as_ref()
-        .and_then(|p| fs::read_to_string(p).ok())
-        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("language")
-                .and_then(|l| l.as_str())
-                .map(|s| s.to_string())
-        });
-    match stored.as_deref() {
-        Some("ja") => Lang::Ja,
-        Some("en") => Lang::En,
-        _ => Lang::detect_host(),
-    }
-}
-
-pub fn save_pref(lang: Lang) {
-    let Some(path) = prefs_path() else { return };
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let body = format!("language = \"{}\"\n", lang.code());
-    let _ = fs::write(&path, body);
 }

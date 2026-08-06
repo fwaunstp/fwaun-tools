@@ -247,6 +247,18 @@ fwaun-tools dataset tokens <dir>
 fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
+`tag` / `caption` / `booru` / `upscale` は 1 枚ずつ処理するため、実行中は
+進捗カウンタを表示します:
+
+```
+caption [  12/340 ]   3.5%  1:04 elapsed  ETA 28:37  …_0013.png
+```
+
+出力先は stderr で、同じ行を上書きします。1 枚ごとの結果行（stdout）は
+従来どおりなので、`… > run.log` にはこれまでと同じ内容だけが残ります。
+stderr が端末でない場合（ファイルへのリダイレクト、CI）は上書きをやめ、
+全体の 5% ごとに 1 行ずつ出力します。
+
 チェックポイント操作（`fwaun-tools model <verb>`）— データセットではなく
 safetensors ファイルを対象にします:
 

@@ -7,6 +7,7 @@ mod config_ui;
 mod i18n;
 mod model_ui;
 mod prefs;
+mod preview;
 mod thumb_cache;
 
 use std::collections::{HashMap, HashSet};
@@ -14,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::Duration;
 
@@ -36,6 +37,7 @@ use crate::config_ui::{AppSettings, ConfigAction, ConfigDraft, ConfigTab, show_c
 use crate::i18n::{Lang, T};
 use crate::model_ui::ModelApp;
 use crate::prefs::GuiPrefs;
+use crate::preview::{Preview, PreviewAction};
 use crate::thumb_cache::{CacheKey, FileStamp, ThumbCache};
 
 /// Bundled CJK font so Japanese labels render out of the box without a
@@ -317,6 +319,15 @@ struct AnimaTaggerApp {
     // Active drag in the Kanban view, if any. The payload carries one or
     // more image paths (multi-select drag carries the whole selection).
     kanban_drag: Option<KanbanDrag>,
+
+    // Full-size preview overlay, `Some` while it's up. Owns its own decode
+    // thread and texture — see [`preview`].
+    preview: Option<Preview>,
+    // Failures from the OS handoff (`Open in default app` / `Show in
+    // folder`). Those calls run on a throwaway thread — `opener::reveal`
+    // blocks on a COM round-trip that has no business freezing the UI — so
+    // their errors need a way back to the error banner.
+    external_err: (Sender<String>, Receiver<String>),
 }
 
 /// Main-area view mode. `Grid` is the existing thumbnail grid; `Kanban`
@@ -385,6 +396,8 @@ impl AnimaTaggerApp {
             root_config_path: None,
             view_mode: ViewMode::Grid,
             kanban_drag: None,
+            preview: None,
+            external_err: channel(),
         }
     }
 
@@ -407,6 +420,7 @@ impl AnimaTaggerApp {
         self.last_single = None;
         self.hint_input.clear();
         self.kanban_drag = None;
+        self.preview = None;
         self.scan_folder(ctx, dir, true);
     }
 
@@ -598,12 +612,33 @@ impl AnimaTaggerApp {
         {
             self.last_single = None;
         }
+        // The preview holds a path list captured when it opened, so a file
+        // that just went away would sit there as a decode error the user
+        // can't do anything about.
+        if let Some(preview) = self.preview.as_ref()
+            && to_remove.contains(preview.path())
+        {
+            self.preview = None;
+        }
     }
 
     /// Rebuild the cache handle after a prefs change. The measured size is
     /// left alone: toggling the setting doesn't move a byte on disk.
     fn apply_cache_prefs(&mut self) {
         self.thumb_cache = cache_for(&self.prefs);
+    }
+
+    /// The images the current filter and tag query let through, in `images`
+    /// order. Both grid cells and preview navigation walk this, so "the next
+    /// image" means the same thing in each.
+    fn visible_paths(&self) -> Vec<PathBuf> {
+        let needle = self.tag_filter.trim().to_lowercase();
+        self.images
+            .iter()
+            .filter(|i| self.filter.matches(i))
+            .filter(|i| needle.is_empty() || matches_tag_query(i, &needle))
+            .map(|i| i.path.clone())
+            .collect()
     }
 
     fn measure_cache(&mut self) {
@@ -746,6 +781,12 @@ impl eframe::App for App {
 impl AnimaTaggerApp {
     fn ui(&mut self, ctx: &egui::Context) {
         self.poll_worker();
+        self.poll_external_errors();
+        // Drawn first, though it paints on top: the overlay claims the arrow
+        // keys with `consume_key`, and whoever runs first in the frame wins
+        // them. Everything below would otherwise scroll or move a caret while
+        // the user is stepping through images.
+        self.ui_preview(ctx);
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| self.ui_toolbar(ui, ctx));
         if let Some(err) = self.error_msg.clone() {
             egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
@@ -951,17 +992,7 @@ impl AnimaTaggerApp {
                 .add_enabled(folder_set, egui::Button::new(t.select_visible()))
                 .clicked()
             {
-                let visible: HashSet<PathBuf> = self
-                    .images
-                    .iter()
-                    .filter(|i| self.filter.matches(i))
-                    .filter(|i| {
-                        self.tag_filter.trim().is_empty()
-                            || matches_tag_query(i, &self.tag_filter.trim().to_lowercase())
-                    })
-                    .map(|i| i.path.clone())
-                    .collect();
-                self.selected = visible;
+                self.selected = self.visible_paths().into_iter().collect();
             }
             if ui
                 .add_enabled(has_sel, egui::Button::new(t.clear_selection()))
@@ -1004,19 +1035,19 @@ impl AnimaTaggerApp {
 
 // ───────── Grid ─────────
 
+/// Something a thumbnail's context menu (or a double click) asked for. Recorded
+/// inside the menu closure and applied after it, since the closure only has a
+/// borrowed `Response` to work with.
+enum ThumbAction {
+    Preview,
+    OpenExternal,
+    Reveal,
+}
+
 impl AnimaTaggerApp {
     fn ui_grid(&mut self, ui: &mut egui::Ui) {
         let t = self.t();
-        let visible: Vec<PathBuf> = self
-            .images
-            .iter()
-            .filter(|i| self.filter.matches(i))
-            .filter(|i| {
-                self.tag_filter.trim().is_empty()
-                    || matches_tag_query(i, &self.tag_filter.trim().to_lowercase())
-            })
-            .map(|i| i.path.clone())
-            .collect();
+        let visible = self.visible_paths();
 
         if visible.is_empty() {
             ui.centered_and_justified(|ui| ui.label(t.no_images()));
@@ -1044,14 +1075,26 @@ impl AnimaTaggerApp {
     }
 
     fn ui_thumb(&mut self, ui: &mut egui::Ui, path: &Path, mods: egui::Modifiers) {
-        let texture = match self.thumbnails.get(path) {
-            Some(t) => t.clone(),
-            None => return,
+        let Some(response) = self.thumb_card(ui, path, egui::Sense::click()) else {
+            return;
         };
-        let item = match self.images.iter().find(|i| i.path == path) {
-            Some(it) => it,
-            None => return,
-        };
+        self.handle_thumb_interaction(&response, path, mods);
+    }
+
+    /// Draw one thumbnail card — image, status flags, selection outline — and
+    /// return its response. `None` when the path has no texture yet (a scan
+    /// still in flight) or has dropped out of `images`.
+    ///
+    /// `sense` is the only thing the grid and the Kanban disagree on: the
+    /// latter needs drag sensing so a thumbnail can be thrown at a column.
+    fn thumb_card(
+        &self,
+        ui: &mut egui::Ui,
+        path: &Path,
+        sense: egui::Sense,
+    ) -> Option<egui::Response> {
+        let texture = self.thumbnails.get(path)?.clone();
+        let item = self.images.iter().find(|i| i.path == path)?;
         let is_selected = self.selected.contains(path);
 
         let frame = egui::Frame::group(ui.style())
@@ -1062,23 +1105,36 @@ impl AnimaTaggerApp {
                 egui::Stroke::new(2.0, egui::Color32::TRANSPARENT)
             });
 
-        let response = frame
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let img = egui::Image::new(&texture)
-                        .fit_to_exact_size(egui::vec2(THUMB_DRAW_PX, THUMB_DRAW_PX));
-                    ui.add(img);
-                    ui.label(
-                        egui::RichText::new(status_flags(&item.sidecar))
-                            .size(10.0)
-                            .monospace(),
-                    )
-                    .on_hover_text(self.t().thumb_status_title());
-                });
-            })
-            .response
-            .interact(egui::Sense::click());
+        Some(
+            frame
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        let img = egui::Image::new(&texture)
+                            .fit_to_exact_size(egui::vec2(THUMB_DRAW_PX, THUMB_DRAW_PX));
+                        ui.add(img);
+                        ui.label(
+                            egui::RichText::new(status_flags(&item.sidecar))
+                                .size(10.0)
+                                .monospace(),
+                        )
+                        .on_hover_text(self.t().thumb_status_title());
+                    });
+                })
+                .response
+                .interact(sense),
+        )
+    }
 
+    /// The interactions every thumbnail shares: click selects, double click
+    /// opens the preview, right click opens the context menu. The Kanban
+    /// layers its drag handling on top of this.
+    fn handle_thumb_interaction(
+        &mut self,
+        response: &egui::Response,
+        path: &Path,
+        mods: egui::Modifiers,
+    ) {
+        let is_selected = self.selected.contains(path);
         if response.clicked() {
             let multi = mods.command || mods.shift || mods.ctrl;
             if multi {
@@ -1091,6 +1147,48 @@ impl AnimaTaggerApp {
                 self.selected.clear();
                 self.selected.insert(path.to_path_buf());
             }
+        }
+        // Right-clicking something outside the selection makes it the
+        // selection first, so the menu that pops up is unambiguously about
+        // the thumbnail under the cursor. Right-clicking *inside* a
+        // multi-selection leaves it alone.
+        if response.secondary_clicked() && !is_selected {
+            self.selected.clear();
+            self.selected.insert(path.to_path_buf());
+        }
+
+        // The menu closure can't touch `self` — `response.context_menu` is
+        // called on a borrow of it — so it records an intent and we act on it
+        // once the closure is done.
+        let t = self.t();
+        let mut action = if response.double_clicked() {
+            Some(ThumbAction::Preview)
+        } else {
+            None
+        };
+        response.context_menu(|ui| {
+            if ui
+                .button(t.open_preview())
+                .on_hover_text(t.open_preview_title())
+                .clicked()
+            {
+                action = Some(ThumbAction::Preview);
+                ui.close();
+            }
+            if ui.button(t.open_external()).clicked() {
+                action = Some(ThumbAction::OpenExternal);
+                ui.close();
+            }
+            if ui.button(t.reveal_in_folder()).clicked() {
+                action = Some(ThumbAction::Reveal);
+                ui.close();
+            }
+        });
+        match action {
+            Some(ThumbAction::Preview) => self.open_preview(&response.ctx, path),
+            Some(ThumbAction::OpenExternal) => self.open_external(path, false),
+            Some(ThumbAction::Reveal) => self.open_external(path, true),
+            None => {}
         }
     }
 
@@ -1284,54 +1382,11 @@ impl AnimaTaggerApp {
     /// thumbnail starts a Kanban move. Click behavior (selection) is
     /// preserved — egui distinguishes click from drag automatically.
     fn ui_kanban_thumb(&mut self, ui: &mut egui::Ui, path: &Path, mods: egui::Modifiers) {
-        let texture = match self.thumbnails.get(path) {
-            Some(t) => t.clone(),
-            None => return,
-        };
-        let item = match self.images.iter().find(|i| i.path == path) {
-            Some(it) => it,
-            None => return,
+        let Some(response) = self.thumb_card(ui, path, egui::Sense::click_and_drag()) else {
+            return;
         };
         let is_selected = self.selected.contains(path);
-
-        let frame = egui::Frame::group(ui.style())
-            .inner_margin(2.0)
-            .stroke(if is_selected {
-                egui::Stroke::new(2.0, ui.visuals().selection.bg_fill)
-            } else {
-                egui::Stroke::new(2.0, egui::Color32::TRANSPARENT)
-            });
-
-        let response = frame
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    let img = egui::Image::new(&texture)
-                        .fit_to_exact_size(egui::vec2(THUMB_DRAW_PX, THUMB_DRAW_PX));
-                    ui.add(img);
-                    ui.label(
-                        egui::RichText::new(status_flags(&item.sidecar))
-                            .size(10.0)
-                            .monospace(),
-                    )
-                    .on_hover_text(self.t().thumb_status_title());
-                });
-            })
-            .response
-            .interact(egui::Sense::click_and_drag());
-
-        if response.clicked() {
-            let multi = mods.command || mods.shift || mods.ctrl;
-            if multi {
-                if is_selected {
-                    self.selected.remove(path);
-                } else {
-                    self.selected.insert(path.to_path_buf());
-                }
-            } else {
-                self.selected.clear();
-                self.selected.insert(path.to_path_buf());
-            }
-        }
+        self.handle_thumb_interaction(&response, path, mods);
         if response.drag_started() {
             // If the dragged thumb is one of several selected, carry
             // the whole selection. Otherwise carry just this one (and
@@ -1362,6 +1417,79 @@ impl AnimaTaggerApp {
             if let Err(e) = save_result {
                 self.error_msg = Some(t.kanban_drop_failed(&path_str, &e.to_string()));
             }
+        }
+    }
+}
+
+// ───────── Preview / OS handoff ─────────
+
+impl AnimaTaggerApp {
+    /// Open the full-size preview on `path`, with the currently visible images
+    /// as the list its arrow keys walk.
+    ///
+    /// The Kanban view groups those images into columns rather than listing
+    /// them in this order, so there the arrow keys step through the filtered
+    /// dataset rather than along the column under the cursor. Both orders are
+    /// defensible; this one keeps a verification pass covering everything
+    /// exactly once.
+    fn open_preview(&mut self, ctx: &egui::Context, path: &Path) {
+        let mut order = self.visible_paths();
+        // The detail panel can still be showing an image the active filter no
+        // longer matches — tagging it is exactly what stops it matching
+        // "Untagged". Preview it alone rather than refusing to open.
+        if !order.iter().any(|p| p == path) {
+            order = vec![path.to_path_buf()];
+        }
+        self.preview = Preview::open(ctx, order, path);
+    }
+
+    /// Hand `path` to the OS: the default viewer, or the file manager with the
+    /// file selected when `reveal`.
+    ///
+    /// Off the UI thread, because `opener::reveal` blocks on a COM round-trip
+    /// that can take a noticeable moment when the file manager isn't running
+    /// yet. Failures come back through `external_err` and land in the error
+    /// banner — there's no second thing worth trying automatically.
+    fn open_external(&mut self, path: &Path, reveal: bool) {
+        let path = path.to_path_buf();
+        let tx = self.external_err.0.clone();
+        let t = self.t();
+        thread::spawn(move || {
+            let result = if reveal {
+                opener::reveal(&path)
+            } else {
+                opener::open(&path)
+            };
+            if let Err(e) = result {
+                let _ = tx.send(t.err_open_external(&path.display().to_string(), &e.to_string()));
+            }
+        });
+    }
+
+    /// Drain whatever the OS-handoff threads reported since the last frame.
+    fn poll_external_errors(&mut self) {
+        while let Ok(err) = self.external_err.1.try_recv() {
+            self.error_msg = Some(err);
+        }
+    }
+
+    /// Draw the preview overlay and act on whatever the user did in it.
+    fn ui_preview(&mut self, ctx: &egui::Context) {
+        let t = self.t();
+        // The borrow of `self.preview` has to end before the actions below can
+        // touch the rest of `self`, hence collecting both results first.
+        let Some((action, path)) = self
+            .preview
+            .as_mut()
+            .map(|p| (p.show(ctx, t), p.path().to_path_buf()))
+        else {
+            return;
+        };
+        match action {
+            PreviewAction::Keep => {}
+            PreviewAction::Close => self.preview = None,
+            PreviewAction::OpenExternal => self.open_external(&path, false),
+            PreviewAction::Reveal => self.open_external(&path, true),
         }
     }
 }
@@ -1576,6 +1704,21 @@ impl AnimaTaggerApp {
 
         let filename = item.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         ui.label(egui::RichText::new(filename).monospace().weak());
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .small_button(t.open_preview())
+                .on_hover_text(t.open_preview_title())
+                .clicked()
+            {
+                self.open_preview(ui.ctx(), path);
+            }
+            if ui.small_button(t.open_external()).clicked() {
+                self.open_external(path, false);
+            }
+            if ui.small_button(t.reveal_in_folder()).clicked() {
+                self.open_external(path, true);
+            }
+        });
 
         ui.add_space(6.0);
         section_title(ui, t.section_tags());

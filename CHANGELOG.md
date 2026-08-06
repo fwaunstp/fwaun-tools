@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GUI: differential folder reload.** A **Reload** button next to *Open
+  folder* re-scans the folder that's already open instead of making you close
+  and re-open it after adding images or running the CLI over the dataset.
+  - Thumbnails are regenerated only for files that are new or whose
+    mtime/size changed; everything else keeps the texture already in memory,
+    so adding one image to a 3,000-image dataset costs one decode, not 3,000.
+  - Files deleted outside the app drop out of the grid.
+  - Sidecars are re-read for **every** image regardless — parsing one small
+    RON file is nothing next to decoding an image, and external edits (a CLI
+    `tag` run, a hand edit) are exactly what you reloaded to see.
+  - Selection, scroll position, view mode, and the loaded tagger/captioner
+    models all survive the reload; a full *Open folder* still resets them.
+  - Newly-discovered files land in their natural position in the grid rather
+    than being appended at the end.
+
+- **GUI: thumbnail cache.** Generated thumbnails are kept under the platform
+  cache directory (`%LOCALAPPDATA%` / `~/.cache` / `~/Library/Caches`), so
+  re-opening a dataset in a later session decodes a few KB per image instead
+  of the full-size original. On by default.
+  - Entries are keyed by absolute path + mtime + size + thumbnail size, so a
+    replaced or edited image misses and regenerates on its own — there is
+    nothing to invalidate by hand.
+  - New **App** tab in the config modal: enable/disable, a size limit
+    (default 512 MiB), an expiry in days (default 90; `0` disables either
+    check), the cache's current size on disk, and a one-click **Clear cache**.
+    Over-budget entries are dropped oldest-first, at startup and after each
+    folder scan.
+  - These settings are machine-local and live in `gui-prefs.toml` next to the
+    language preference, not in the dataset's `fwaun-tools.toml`. They save
+    the moment you change them; the modal's Save/Cancel still apply only to
+    the dataset config.
+
 - **Dataset-wide `common_tags`.** A top-level `common_tags = [...]` list in
   `fwaun-tools.toml` applies manual entries to every image in the dataset
   without writing anything into the sidecars. Same syntax as `manual_tags`

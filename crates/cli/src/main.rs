@@ -15,6 +15,9 @@ use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
 
 mod model;
+mod progress;
+
+use progress::Progress;
 
 /// Whether to copy the generated reference caption into `manual_caption`
 /// after captioning. Default depends on the resolved prompt count: a
@@ -421,9 +424,14 @@ fn cmd_tag(
     let mut tagger = Tagger::from_profile(&profile)?;
     eprintln!("model ready ({} tags)", tagger.num_tags());
 
+    // Collected up front so the progress counter has a total to divide by;
+    // the walk itself is a rounding error next to one inference per image.
+    let images: Vec<PathBuf> = iter_images(&dir).collect();
+    let progress = Progress::new("tag", images.len());
+
     let mut tagged = 0usize;
     let mut skipped = 0usize;
-    for image in iter_images(&dir) {
+    for image in progress.wrap(images) {
         let mut sc = Sidecar::load_or_default(&image)?;
         if !force && sc.is_auto_tagged() {
             skipped += 1;
@@ -438,8 +446,9 @@ fn cmd_tag(
         });
         sc.save(&image)?;
         tagged += 1;
-        println!("tagged {} ({n} tags)", image.display());
+        progress.println(format!("tagged {} ({n} tags)", image.display()));
     }
+    progress.finish();
     println!("done: {tagged} tagged, {skipped} skipped (use --force to retag)");
     Ok(())
 }
@@ -491,11 +500,14 @@ fn cmd_caption(
     let mut captioner = Captioner::from_profile(&profile)?;
     eprintln!("captioner ready");
 
+    let images: Vec<PathBuf> = iter_images(&dir).collect();
+    let progress = Progress::new("caption", images.len());
+
     let mut captioned = 0usize;
     let mut skipped = 0usize;
     let mut promoted = 0usize;
     let mut empty_failures = 0usize;
-    for image in iter_images(&dir) {
+    for image in progress.wrap(images) {
         let mut sc = Sidecar::load_or_default(&image)?;
         let pending: Vec<(String, String, String)> = prompts
             .iter()
@@ -536,10 +548,10 @@ fn cmd_caption(
                     // retries it. Don't abort the whole batch for one image.
                     Err(CaptionerError::EmptyCaption { attempts }) => {
                         empty_failures += 1;
-                        eprintln!(
+                        progress.eprintln(format!(
                             "skipped {} [{pname}]: empty caption after {attempts} attempt(s)",
                             image.display()
-                        );
+                        ));
                         continue;
                     }
                     Err(e) => {
@@ -551,7 +563,10 @@ fn cmd_caption(
                 sc.set_caption(key, caption);
                 dirty = true;
                 generated_any = true;
-                println!("captioned {} [{pname}] — \"{preview}…\"", image.display());
+                progress.println(format!(
+                    "captioned {} [{pname}] — \"{preview}…\"",
+                    image.display()
+                ));
             }
             if generated_any {
                 captioned += 1;
@@ -580,7 +595,7 @@ fn cmd_caption(
                 sc.set_manual_caption(&text);
                 dirty = true;
                 promoted += 1;
-                println!("promoted {} → manual ({key})", image.display());
+                progress.println(format!("promoted {} → manual ({key})", image.display()));
             }
         }
 
@@ -588,6 +603,7 @@ fn cmd_caption(
             sc.save(&image)?;
         }
     }
+    progress.finish();
     println!(
         "done: {captioned} captioned, {skipped} skipped, {promoted} promoted to manual, \
          {empty_failures} empty (not saved) (use --force to recaption)",
@@ -603,10 +619,13 @@ fn cmd_booru(dir: PathBuf, source: String, force: bool) -> Result<()> {
         }
     };
 
+    let images: Vec<PathBuf> = iter_images(&dir).collect();
+    let progress = Progress::new("booru", images.len());
+
     let mut fetched = 0usize;
     let mut not_found = 0usize;
     let mut skipped = 0usize;
-    for image in iter_images(&dir) {
+    for image in progress.wrap(images) {
         let mut sc = Sidecar::load_or_default(&image)?;
         if !force && sc.has_booru() {
             skipped += 1;
@@ -619,17 +638,18 @@ fn cmd_booru(dir: PathBuf, source: String, force: bool) -> Result<()> {
                 sc.booru = Some(info);
                 sc.save(&image)?;
                 fetched += 1;
-                println!("fetched {} ({n} tags)", image.display());
+                progress.println(format!("fetched {} ({n} tags)", image.display()));
             }
             Err(BooruError::NotFound(_)) => {
                 not_found += 1;
-                println!("not on booru: {}", image.display());
+                progress.println(format!("not on booru: {}", image.display()));
             }
             Err(e) => {
-                eprintln!("error: {}: {e}", image.display());
+                progress.eprintln(format!("error: {}: {e}", image.display()));
             }
         }
     }
+    progress.finish();
     println!("done: {fetched} fetched, {not_found} not found, {skipped} skipped");
     Ok(())
 }
@@ -698,16 +718,19 @@ fn cmd_upscale(
         out_root.display(),
     );
 
+    // Never descend into our own output (matters when `out_root` sits inside
+    // `dir`, e.g. the no-file-name fallback). Filtered here rather than in
+    // the loop so the progress total counts only what will be worked on.
+    let images: Vec<PathBuf> = iter_images(&dir)
+        .filter(|image| !image.starts_with(&out_root))
+        .collect();
+    let progress = Progress::new("upscale", images.len());
+
     let mut done = 0usize;
     let mut would = 0usize;
     let mut skipped = 0usize;
     let mut errors = 0usize;
-    for image in iter_images(&dir) {
-        // Never descend into our own output (matters when `out_root` sits
-        // inside `dir`, e.g. the no-file-name fallback).
-        if image.starts_with(&out_root) {
-            continue;
-        }
+    for image in progress.wrap(images) {
         let rel = image.strip_prefix(&dir).unwrap_or(&image);
         // ComfyUI hands back PNG bytes regardless of the source format, so the
         // output always carries a `.png` extension. Sidecars are extension-
@@ -720,7 +743,11 @@ fn cmd_upscale(
         }
         if dry_run {
             would += 1;
-            println!("would upscale {} → {}", rel.display(), target.display());
+            progress.println(format!(
+                "would upscale {} → {}",
+                rel.display(),
+                target.display()
+            ));
             continue;
         }
 
@@ -747,14 +774,15 @@ fn cmd_upscale(
                     })?;
                 }
                 done += 1;
-                println!("upscaled {} → {}", rel.display(), target.display());
+                progress.println(format!("upscaled {} → {}", rel.display(), target.display()));
             }
             Err(e) => {
                 errors += 1;
-                eprintln!("error: {}: {e}", image.display());
+                progress.eprintln(format!("error: {}: {e}", image.display()));
             }
         }
     }
+    progress.finish();
 
     if dry_run {
         println!("dry run: {would} would upscale, {skipped} already present");

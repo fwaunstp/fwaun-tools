@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CLI: progress counter for the long-running commands.** `dataset tag`,
+  `caption`, `booru`, and `upscale` now show where they are in the folder
+  instead of only printing a line per finished image:
+
+  ```
+  caption [  12/340 ]   3.5%  1:04 elapsed  ETA 28:37  …_0013.png
+  ```
+
+  Captioning takes seconds to minutes per image, so a big folder previously
+  gave no way to tell a slow run from a stuck one, or to decide whether to
+  wait for it. The ETA is extrapolated from the images done so far.
+  - The counter is written to stderr and rewritten in place; the per-image
+    result lines on stdout are unchanged, so `dataset tag . > tagged.log`
+    still collects exactly those lines.
+  - When stderr isn't a terminal (redirected to a file, CI) the in-place
+    rewrite is replaced by one plain line per ~5% of the run.
+  - No new dependency, and the lighter commands (`export`, `metadata`,
+    `add-tag`, …) are untouched — they finish before a counter would render.
+
 - **GUI: full-size preview.** Double-click a thumbnail (or use the new
   right-click menu / the **Preview** button in the detail panel) to open the
   image over the app at up to screen resolution, so you can actually check

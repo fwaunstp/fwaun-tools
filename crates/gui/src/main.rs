@@ -6,6 +6,8 @@
 mod config_ui;
 mod i18n;
 mod model_ui;
+mod prefs;
+mod thumb_cache;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -14,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use eframe::egui;
@@ -29,9 +32,11 @@ use fwaun_tools_core::tag_group::{self, Classification, DropTarget};
 use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
 
-use crate::config_ui::{ConfigAction, ConfigDraft, ConfigTab, show_config_modal};
-use crate::i18n::{Lang, T, load_pref_or_detect, save_pref};
+use crate::config_ui::{AppSettings, ConfigAction, ConfigDraft, ConfigTab, show_config_modal};
+use crate::i18n::{Lang, T};
 use crate::model_ui::ModelApp;
+use crate::prefs::GuiPrefs;
+use crate::thumb_cache::{CacheKey, FileStamp, ThumbCache};
 
 /// Bundled CJK font so Japanese labels render out of the box without a
 /// system font fallback. Subset OTF, ~4.5 MB. If a third script
@@ -177,11 +182,21 @@ enum WorkerMsg {
     /// One image finished loading during a folder scan: its sidecar plus a
     /// pre-built thumbnail texture (built on the worker thread — egui's
     /// `Context::load_texture` is internally synchronized, so this keeps the
-    /// decode + upload off the UI thread).
+    /// decode + upload off the UI thread). The stamp travels with it so the
+    /// next differential scan knows which source version this texture is of.
     ImageLoaded {
         path: PathBuf,
         sidecar: Box<Sidecar>,
         thumbnail: Option<TextureHandle>,
+        stamp: Option<FileStamp>,
+    },
+    /// An already-loaded image whose bytes are unchanged: only its sidecar is
+    /// re-read, since another process (the CLI, an editor) may have rewritten
+    /// it. Parsing one small RON file is nothing next to decoding an image, so
+    /// a differential reload does this for every surviving path.
+    SidecarReloaded {
+        path: PathBuf,
+        sidecar: Box<Sidecar>,
     },
     TaggerResult {
         path: PathBuf,
@@ -231,6 +246,17 @@ struct AnimaTaggerApp {
     // Localization
     lang: Lang,
 
+    // Machine-local preferences (`gui-prefs.toml`): language plus the
+    // thumbnail-cache settings. Held in full so a write of one field doesn't
+    // drop the others.
+    prefs: GuiPrefs,
+    // Live cache handle, `None` when disabled in prefs or the platform has no
+    // cache directory. Rebuilt by `apply_cache_prefs` whenever prefs change.
+    thumb_cache: Option<ThumbCache>,
+    // Cache size for the settings readout, measured on demand (it stats every
+    // entry, so not per-frame).
+    cache_size: Option<u64>,
+
     // Per-image text-edit buffers, persisted across frames so the user's
     // typing isn't clobbered every redraw. Re-initialized from the
     // sidecar when the selected image changes.
@@ -243,6 +269,18 @@ struct AnimaTaggerApp {
 
     // GPU texture handles for thumbnails.
     thumbnails: HashMap<PathBuf, TextureHandle>,
+    // Source mtime+size each live thumbnail was built from. A differential
+    // reload regenerates only the paths whose stamp moved (or that have no
+    // texture yet); everything else keeps the texture it already has.
+    stamps: HashMap<PathBuf, FileStamp>,
+    // Scan order of the in-flight folder scan. `images` is rebuilt in this
+    // order when the scan finishes, so files added since the last scan land
+    // in their natural position rather than appended at the end.
+    scan_order: Option<Vec<PathBuf>>,
+    // True while a *full* (re)load is in flight. Full loads start from an
+    // empty `images`, so each ImageLoaded is unconditionally a push; a
+    // differential scan has to look for an existing entry first.
+    scan_full: bool,
 
     // Background-worker progress feed. `worker_rx.is_some()` is the
     // single source of truth for "an op is in flight"; once Done lands
@@ -301,6 +339,16 @@ struct KanbanDrag {
 
 impl AnimaTaggerApp {
     fn new() -> Self {
+        let prefs = prefs::load();
+        let lang = prefs.lang();
+        let thumb_cache = cache_for(&prefs);
+        // Enforce the budget once per launch, off the UI thread: `prune`
+        // stats every entry, and at startup nothing is waiting on it.
+        if let Some(cache) = thumb_cache.clone() {
+            let limit = prefs.thumb_cache.limit_mb.saturating_mul(1024 * 1024);
+            let max_age = age_limit(&prefs);
+            thread::spawn(move || cache.prune(limit, max_age));
+        }
         Self {
             folder: None,
             images: Vec::new(),
@@ -317,11 +365,17 @@ impl AnimaTaggerApp {
             config_tab: ConfigTab::default(),
             config_error: None,
             config_path: None,
-            lang: load_pref_or_detect(),
+            lang,
+            prefs,
+            thumb_cache,
+            cache_size: None,
             manual_caption_buf: HashMap::new(),
             last_single: None,
             hint_input: String::new(),
             thumbnails: HashMap::new(),
+            stamps: HashMap::new(),
+            scan_order: None,
+            scan_full: false,
             progress: None,
             worker_rx: None,
             cancel_flag: None,
@@ -338,10 +392,14 @@ impl AnimaTaggerApp {
         T::new(self.lang)
     }
 
+    /// Open a folder from scratch: drop everything the previous folder owned
+    /// (including the model cache — the new folder's config may point at a
+    /// different model) and scan it in full.
     fn load_folder(&mut self, ctx: &egui::Context, dir: &Path) {
         self.folder = Some(dir.to_path_buf());
         self.images.clear();
         self.thumbnails.clear();
+        self.stamps.clear();
         self.selected.clear();
         self.tagger = None;
         self.captioner = None;
@@ -349,7 +407,40 @@ impl AnimaTaggerApp {
         self.last_single = None;
         self.hint_input.clear();
         self.kanban_drag = None;
+        self.scan_folder(ctx, dir, true);
+    }
 
+    /// Re-scan the folder already open, keeping everything that hasn't
+    /// changed on disk.
+    ///
+    /// The point is to make "I added images / ran the CLI over this dataset"
+    /// cheap: the thumbnail textures the app already holds are reused, so only
+    /// genuinely new or rewritten files pay for a decode. Selection, scroll
+    /// position, view mode and the loaded models all survive, which a
+    /// close-and-reopen loses.
+    fn reload_folder(&mut self, ctx: &egui::Context) {
+        let Some(dir) = self.folder.clone() else {
+            self.error_msg = Some(self.t().err_open_folder_first());
+            return;
+        };
+        // A drag can't survive the images under it being re-shuffled.
+        self.kanban_drag = None;
+        // Sidecars are about to be re-read, and the whole point of a reload is
+        // that they may have changed underneath us. Drop the manual-caption
+        // edit buffers so they re-seed from what's now on disk instead of
+        // writing a pre-reload copy back over an external edit; `last_single`
+        // is what triggers that re-seed.
+        self.manual_caption_buf.clear();
+        self.last_single = None;
+        self.scan_folder(ctx, &dir, false);
+    }
+
+    /// Shared body of [`Self::load_folder`] and [`Self::reload_folder`].
+    ///
+    /// `full` is only a statement about what the caller already cleared —
+    /// the per-file decisions below would reach the same conclusion either
+    /// way, it just skips the bookkeeping when nothing is retained.
+    fn scan_folder(&mut self, ctx: &egui::Context, dir: &Path, full: bool) {
         // Best-effort config load. A broken TOML is reported in the
         // banner; the app still functions in Grid mode without groups.
         match ProjectConfig::load_or_default(dir) {
@@ -383,14 +474,53 @@ impl AnimaTaggerApp {
         // overlay shows how far along we are, images appear as they load, and
         // the Cancel button can stop a huge folder mid-scan.
         let paths: Vec<PathBuf> = iter_images(dir).collect();
-        let total = paths.len();
+
+        if !full {
+            // Files that vanished from disk. Same bookkeeping as a delete,
+            // minus the `fs::remove_file` — the removal already happened
+            // outside the app.
+            let scanned: HashSet<&PathBuf> = paths.iter().collect();
+            let gone: Vec<PathBuf> = self
+                .images
+                .iter()
+                .map(|i| i.path.clone())
+                .filter(|p| !scanned.contains(p))
+                .collect();
+            self.forget_paths(&gone);
+        }
+
+        // Split the scan into "needs a new thumbnail" and "sidecar only".
+        let loaded: HashSet<&PathBuf> = self.images.iter().map(|i| &i.path).collect();
+        let jobs: Vec<ScanJob> = paths
+            .iter()
+            .map(|path| {
+                let stamp = FileStamp::of(path);
+                let needs_thumb = needs_thumbnail(
+                    full,
+                    loaded.contains(path),
+                    self.thumbnails.contains_key(path),
+                    self.stamps.get(path),
+                    stamp.as_ref(),
+                );
+                ScanJob {
+                    path: path.clone(),
+                    stamp,
+                    needs_thumb,
+                }
+            })
+            .collect();
+
+        let total = jobs.len();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel.clone();
         let ctx_clone = ctx.clone();
+        let cache = self.thumb_cache.clone();
+        let cache_limit = self.prefs.thumb_cache.limit_mb.saturating_mul(1024 * 1024);
+        let cache_age = age_limit(&self.prefs);
         let (tx, rx) = channel::<WorkerMsg>();
 
         thread::spawn(move || {
-            for (i, path) in paths.iter().enumerate() {
+            for (i, job) in jobs.iter().enumerate() {
                 if cancel_worker.load(Ordering::Relaxed) {
                     break;
                 }
@@ -399,13 +529,28 @@ impl AnimaTaggerApp {
                     current: i,
                     total,
                 }));
-                let sidecar = Sidecar::load_or_default(path).unwrap_or_default();
-                let thumbnail = make_thumbnail_texture(path, THUMB_SIZE, &ctx_clone);
-                let _ = tx.send(WorkerMsg::ImageLoaded {
-                    path: path.clone(),
-                    sidecar: Box::new(sidecar),
-                    thumbnail,
-                });
+                let sidecar = Box::new(Sidecar::load_or_default(&job.path).unwrap_or_default());
+                let msg = if job.needs_thumb {
+                    let thumbnail = make_thumbnail_texture(
+                        &job.path,
+                        job.stamp,
+                        THUMB_SIZE,
+                        &ctx_clone,
+                        cache.as_ref(),
+                    );
+                    WorkerMsg::ImageLoaded {
+                        path: job.path.clone(),
+                        sidecar,
+                        thumbnail,
+                        stamp: job.stamp,
+                    }
+                } else {
+                    WorkerMsg::SidecarReloaded {
+                        path: job.path.clone(),
+                        sidecar,
+                    }
+                };
+                let _ = tx.send(msg);
                 ctx_clone.request_repaint();
             }
             let _ = tx.send(WorkerMsg::Progress(Progress {
@@ -415,8 +560,15 @@ impl AnimaTaggerApp {
             }));
             let _ = tx.send(WorkerMsg::Done(DoneKind::LoadFolder));
             ctx_clone.request_repaint();
+            // Entries this scan just wrote may have pushed the cache over
+            // budget. Trim after the UI is already unblocked.
+            if let Some(cache) = cache {
+                cache.prune(cache_limit, cache_age);
+            }
         });
 
+        self.scan_order = Some(paths);
+        self.scan_full = full;
         self.worker_rx = Some(rx);
         self.cancel_flag = Some(cancel);
         self.loading = true;
@@ -425,6 +577,101 @@ impl AnimaTaggerApp {
             current: 0,
             total,
         });
+    }
+
+    /// Drop everything the app holds for these paths, without touching disk.
+    /// Shared by the delete flow and by a reload that finds files gone.
+    fn forget_paths(&mut self, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let to_remove: HashSet<PathBuf> = paths.iter().cloned().collect();
+        self.images.retain(|i| !to_remove.contains(&i.path));
+        self.selected.retain(|p| !to_remove.contains(p));
+        for p in &to_remove {
+            self.thumbnails.remove(p);
+            self.stamps.remove(p);
+            self.manual_caption_buf.remove(p);
+        }
+        if let Some(last) = self.last_single.as_ref()
+            && to_remove.contains(last)
+        {
+            self.last_single = None;
+        }
+    }
+
+    /// Rebuild the cache handle after a prefs change. The measured size is
+    /// left alone: toggling the setting doesn't move a byte on disk.
+    fn apply_cache_prefs(&mut self) {
+        self.thumb_cache = cache_for(&self.prefs);
+    }
+
+    fn measure_cache(&mut self) {
+        // Measure through a handle built from the *path*, not the enabled
+        // flag: after turning the cache off the user still wants to see what
+        // is sitting on disk and be able to clear it.
+        self.cache_size = ThumbCache::open().map(|c| c.total_size());
+    }
+}
+
+/// One entry in a folder scan, resolved on the UI thread (a `stat` each) so
+/// the worker only has to execute the decisions.
+struct ScanJob {
+    path: PathBuf,
+    stamp: Option<FileStamp>,
+    needs_thumb: bool,
+}
+
+/// Whether a scanned path has to be decoded again, or can keep the texture
+/// the app already holds.
+///
+/// The expensive answer is `true`, so every case that isn't provably
+/// unchanged has to land there: a file the app doesn't know yet, one whose
+/// texture never materialized (a cancelled or failed earlier scan), one whose
+/// mtime/size moved, and one where either stamp is missing — an unreadable
+/// `stat` gives nothing to compare, and reusing a texture on that basis would
+/// silently pin a stale thumbnail with no way to ever refresh it.
+fn needs_thumbnail(
+    full: bool,
+    is_loaded: bool,
+    has_texture: bool,
+    known_stamp: Option<&FileStamp>,
+    current_stamp: Option<&FileStamp>,
+) -> bool {
+    if full || !is_loaded || !has_texture {
+        return true;
+    }
+    match (known_stamp, current_stamp) {
+        (Some(known), Some(current)) => known != current,
+        _ => true,
+    }
+}
+
+/// Put `images` back into the order the scan walked the directory in.
+///
+/// A differential scan appends each newly-discovered file as it finishes
+/// loading, which would otherwise leave everything added since the last scan
+/// clustered at the end of the grid instead of sitting next to its
+/// neighbours. Anything the scan didn't cover — a run the user cancelled —
+/// keeps its relative order at the end rather than being dropped.
+fn reorder_to_scan_order(images: &mut [ImageItem], order: &[PathBuf]) {
+    let rank: HashMap<&PathBuf, usize> = order.iter().enumerate().map(|(i, p)| (p, i)).collect();
+    images.sort_by_key(|item| rank.get(&item.path).copied().unwrap_or(usize::MAX));
+}
+
+fn cache_for(prefs: &GuiPrefs) -> Option<ThumbCache> {
+    if prefs.thumb_cache.enabled {
+        ThumbCache::open()
+    } else {
+        None
+    }
+}
+
+/// Prefs' `max_age_days` as a duration, or `None` for "no expiry".
+fn age_limit(prefs: &GuiPrefs) -> Option<Duration> {
+    match prefs.thumb_cache.max_age_days {
+        0 => None,
+        days => Some(Duration::from_secs(u64::from(days) * 24 * 60 * 60)),
     }
 }
 
@@ -480,7 +727,8 @@ impl eframe::App for App {
                             ui.selectable_value(&mut new_lang, Lang::Ja, "日本語");
                             if new_lang != self.dataset.lang {
                                 self.dataset.lang = new_lang;
-                                save_pref(new_lang);
+                                self.dataset.prefs.set_lang(new_lang);
+                                prefs::save(&self.dataset.prefs);
                             }
                         });
                 });
@@ -564,6 +812,19 @@ impl AnimaTaggerApp {
                 && let Some(picked) = rfd::FileDialog::new().pick_folder()
             {
                 self.load_folder(ctx, &picked);
+            }
+            // Manual, not automatic: a filesystem watcher (`notify`) would be
+            // the obvious next step, but re-scanning under the user mid-edit
+            // is its own hazard, so the trigger stays explicit for now.
+            if ui
+                .add_enabled(
+                    self.folder.is_some() && !self.loading,
+                    egui::Button::new(t.reload_folder()),
+                )
+                .on_hover_text(t.reload_folder_title())
+                .clicked()
+            {
+                self.reload_folder(ctx);
             }
             let cfg_btn = ui
                 .button(t.config_button())
@@ -1759,21 +2020,52 @@ impl AnimaTaggerApp {
             Some(p) => p.display().to_string(),
             None => t.no_folder().to_string(),
         };
-        let Some(draft) = self.config_draft.as_mut() else {
+        if self.config_draft.is_none() {
             // Defensive: modal should only be open with a draft present.
             self.config_open = false;
             return;
+        }
+        // The App tab edits `prefs` in place; anything it changed is persisted
+        // right after the frame, so machine-local settings don't ride on the
+        // dataset config's Save button.
+        let prefs_before = self.prefs.clone();
+        let cache_root = ThumbCache::open();
+        let action = {
+            let mut app = AppSettings {
+                prefs: &mut self.prefs,
+                cache_root: cache_root.as_ref().map(|c| c.root()),
+                cache_size: self.cache_size,
+            };
+            let draft = self.config_draft.as_mut().expect("checked above");
+            show_config_modal(
+                ctx,
+                t,
+                &target_label,
+                draft,
+                &mut app,
+                &mut self.config_tab,
+                &mut self.config_error,
+            )
         };
-        let action = show_config_modal(
-            ctx,
-            t,
-            &target_label,
-            draft,
-            &mut self.config_tab,
-            &mut self.config_error,
-        );
+        if self.prefs != prefs_before {
+            prefs::save(&self.prefs);
+            self.apply_cache_prefs();
+        }
+        // Measure once on landing on the App tab rather than on every modal
+        // open: it stats every cache entry, and most visits here are for the
+        // dataset tabs.
+        if self.config_tab == ConfigTab::App && self.cache_size.is_none() {
+            self.measure_cache();
+        }
         match action {
             ConfigAction::None => {}
+            ConfigAction::MeasureCache => self.measure_cache(),
+            ConfigAction::ClearCache => {
+                if let Some(Err(e)) = cache_root.as_ref().map(|c| c.clear()) {
+                    self.config_error = Some(t.cfg_thumb_cache_clear_failed(&e.to_string()));
+                }
+                self.measure_cache();
+            }
             ConfigAction::Cancel => {
                 self.config_open = false;
                 self.config_error = None;
@@ -1910,18 +2202,7 @@ impl AnimaTaggerApp {
                 }
             }
         }
-        let to_remove: HashSet<PathBuf> = paths.iter().cloned().collect();
-        self.images.retain(|i| !to_remove.contains(&i.path));
-        self.selected.retain(|p| !to_remove.contains(p));
-        for p in &to_remove {
-            self.thumbnails.remove(p);
-            self.manual_caption_buf.remove(p);
-        }
-        if let Some(last) = self.last_single.as_ref()
-            && to_remove.contains(last)
-        {
-            self.last_single = None;
-        }
+        self.forget_paths(paths);
         if !errors.is_empty() {
             self.error_msg = Some(errors.join("; "));
         }
@@ -2316,6 +2597,8 @@ impl AnimaTaggerApp {
                     self.progress = None;
                     self.loading = false;
                     self.cancel_flag = None;
+                    self.scan_order = None;
+                    self.scan_full = false;
                     break;
                 }
             };
@@ -2330,14 +2613,39 @@ impl AnimaTaggerApp {
                 path,
                 sidecar,
                 thumbnail,
+                stamp,
             } => {
                 if let Some(tex) = thumbnail {
                     self.thumbnails.insert(path.clone(), tex);
                 }
-                self.images.push(ImageItem {
-                    path,
-                    sidecar: *sidecar,
-                });
+                match stamp {
+                    // No stamp means the `stat` failed, so there's nothing to
+                    // compare against next time — forget any older one rather
+                    // than let it claim the new texture is current.
+                    Some(s) => self.stamps.insert(path.clone(), s),
+                    None => self.stamps.remove(&path),
+                };
+                // A full load starts from an empty `images`, so skip the
+                // linear search — over a few thousand files it would make
+                // opening a folder quadratic for no possible hit.
+                if self.scan_full {
+                    self.images.push(ImageItem {
+                        path,
+                        sidecar: *sidecar,
+                    });
+                } else if let Some(existing) = self.images.iter_mut().find(|i| i.path == path) {
+                    existing.sidecar = *sidecar;
+                } else {
+                    self.images.push(ImageItem {
+                        path,
+                        sidecar: *sidecar,
+                    });
+                }
+            }
+            WorkerMsg::SidecarReloaded { path, sidecar } => {
+                if let Some(existing) = self.images.iter_mut().find(|i| i.path == path) {
+                    existing.sidecar = *sidecar;
+                }
             }
             WorkerMsg::TaggerResult {
                 path,
@@ -2374,7 +2682,18 @@ impl AnimaTaggerApp {
             }
             WorkerMsg::Done(kind) => {
                 match kind {
-                    DoneKind::LoadFolder => {}
+                    DoneKind::LoadFolder => {
+                        // A differential scan appends new files as they load,
+                        // which would leave them clustered at the end of the
+                        // grid. Put `images` back into scan order — the order
+                        // the user sees in their file manager. Anything the
+                        // scan didn't cover (a cancelled run) keeps its
+                        // relative position at the end.
+                        if let Some(order) = self.scan_order.take() {
+                            reorder_to_scan_order(&mut self.images, &order);
+                        }
+                        self.scan_full = false;
+                    }
                     DoneKind::Tagger(t) => self.tagger = t,
                     DoneKind::Captioner(c) => self.captioner = c,
                     DoneKind::Booru => {}
@@ -2740,16 +3059,42 @@ fn section_title(ui: &mut egui::Ui, text: &str) {
     );
 }
 
-fn make_thumbnail_texture(
+/// Produce the thumbnail image for `path`, from the on-disk cache when it has
+/// one and by decoding the source when it doesn't.
+///
+/// A missing stamp (the `stat` failed) bypasses the cache in both directions
+/// rather than key an entry that could never be invalidated.
+fn make_thumbnail_image(
     path: &Path,
+    stamp: Option<FileStamp>,
     max_size: u32,
-    ctx: &egui::Context,
-) -> Option<TextureHandle> {
+    cache: Option<&ThumbCache>,
+) -> Option<ColorImage> {
+    let slot = cache.zip(stamp.map(|s| CacheKey::new(path, s, max_size)));
+    if let Some(cached) = slot.as_ref().and_then(|(c, k)| c.load(k)) {
+        return Some(cached);
+    }
     let img = image::open(path).ok()?;
     let thumb = img.thumbnail(max_size, max_size).to_rgba8();
     let size = [thumb.width() as usize, thumb.height() as usize];
     let pixels: Vec<u8> = thumb.into_raw();
-    let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+    if let Some((c, k)) = slot.as_ref() {
+        c.store(k, size, &pixels);
+    }
+    Some(ColorImage::from_rgba_unmultiplied(size, &pixels))
+}
+
+/// [`make_thumbnail_image`] plus the texture upload. Called from the scan
+/// worker: `Context::load_texture` is internally synchronized, so the whole
+/// decode-and-upload stays off the UI thread.
+fn make_thumbnail_texture(
+    path: &Path,
+    stamp: Option<FileStamp>,
+    max_size: u32,
+    ctx: &egui::Context,
+    cache: Option<&ThumbCache>,
+) -> Option<TextureHandle> {
+    let color_image = make_thumbnail_image(path, stamp, max_size, cache)?;
     Some(ctx.load_texture(
         format!("thumb::{}", path.display()),
         color_image,
@@ -2816,4 +3161,156 @@ fn compute_shared_tags(items: &[ImageItem]) -> Vec<(String, usize)> {
         .collect();
     out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp(mtime_ns: u128, size: u64) -> FileStamp {
+        FileStamp { mtime_ns, size }
+    }
+
+    fn item(path: &str) -> ImageItem {
+        ImageItem {
+            path: PathBuf::from(path),
+            sidecar: Sidecar::default(),
+        }
+    }
+
+    fn paths(names: &[&str]) -> Vec<PathBuf> {
+        names.iter().map(PathBuf::from).collect()
+    }
+
+    #[test]
+    fn full_scan_always_regenerates() {
+        let s = stamp(1, 1);
+        assert!(needs_thumbnail(true, true, true, Some(&s), Some(&s)));
+    }
+
+    #[test]
+    fn unchanged_file_keeps_its_texture() {
+        let s = stamp(1, 1);
+        assert!(!needs_thumbnail(false, true, true, Some(&s), Some(&s)));
+    }
+
+    #[test]
+    fn new_or_untextured_file_regenerates() {
+        let s = stamp(1, 1);
+        // Not in `images` yet — a file added since the last scan.
+        assert!(needs_thumbnail(false, false, false, None, Some(&s)));
+        // Known, but an earlier scan was cancelled before its texture landed.
+        assert!(needs_thumbnail(false, true, false, Some(&s), Some(&s)));
+    }
+
+    #[test]
+    fn moved_stamp_regenerates() {
+        let old = stamp(1, 100);
+        // Rewritten in place: same size, newer mtime.
+        assert!(needs_thumbnail(
+            false,
+            true,
+            true,
+            Some(&old),
+            Some(&stamp(2, 100))
+        ));
+        // Same mtime, different size — a copy that preserved timestamps.
+        assert!(needs_thumbnail(
+            false,
+            true,
+            true,
+            Some(&old),
+            Some(&stamp(1, 101))
+        ));
+    }
+
+    #[test]
+    fn missing_stamp_regenerates() {
+        let s = stamp(1, 1);
+        // `stat` failed now, or never succeeded before: nothing to compare, so
+        // don't let an unreadable file pin a stale thumbnail forever.
+        assert!(needs_thumbnail(false, true, true, Some(&s), None));
+        assert!(needs_thumbnail(false, true, true, None, Some(&s)));
+        assert!(needs_thumbnail(false, true, true, None, None));
+    }
+
+    #[test]
+    fn reorder_places_new_files_among_their_neighbours() {
+        // b.png appeared between a and c since the last scan, so it loaded
+        // last and got appended.
+        let mut images = vec![item("a.png"), item("c.png"), item("b.png")];
+        reorder_to_scan_order(&mut images, &paths(&["a.png", "b.png", "c.png"]));
+        let got: Vec<_> = images.iter().map(|i| i.path.to_str().unwrap()).collect();
+        assert_eq!(got, ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn reorder_keeps_unscanned_items_at_the_end() {
+        // A cancelled scan never reached c.png; it keeps its entry rather
+        // than vanishing from the grid.
+        let mut images = vec![item("c.png"), item("b.png"), item("a.png")];
+        reorder_to_scan_order(&mut images, &paths(&["a.png", "b.png"]));
+        let got: Vec<_> = images.iter().map(|i| i.path.to_str().unwrap()).collect();
+        assert_eq!(got, ["a.png", "b.png", "c.png"]);
+    }
+
+    #[test]
+    fn reorder_of_an_empty_order_is_a_no_op() {
+        let mut images = vec![item("b.png"), item("a.png")];
+        reorder_to_scan_order(&mut images, &[]);
+        let got: Vec<_> = images.iter().map(|i| i.path.to_str().unwrap()).collect();
+        assert_eq!(got, ["b.png", "a.png"]);
+    }
+
+    #[test]
+    fn age_limit_maps_zero_to_no_expiry() {
+        let mut prefs = GuiPrefs::default();
+        prefs.thumb_cache.max_age_days = 0;
+        assert_eq!(age_limit(&prefs), None);
+        prefs.thumb_cache.max_age_days = 2;
+        assert_eq!(age_limit(&prefs), Some(Duration::from_secs(2 * 86_400)));
+    }
+
+    #[test]
+    fn cache_handle_follows_the_enabled_flag() {
+        let mut prefs = GuiPrefs::default();
+        prefs.thumb_cache.enabled = false;
+        assert!(cache_for(&prefs).is_none());
+    }
+
+    /// End-to-end over the path a folder scan actually takes: decode a real
+    /// file, populate the cache, then serve the same request from it. The
+    /// second call must not touch the source, which the test enforces by
+    /// deleting it in between.
+    #[test]
+    fn thumbnail_falls_back_to_the_cache_when_the_source_is_gone() {
+        let dir = std::env::temp_dir().join(format!("fwaun-thumb-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("img.png");
+        image::RgbaImage::from_pixel(512, 256, image::Rgba([10, 20, 30, 255]))
+            .save(&src)
+            .unwrap();
+
+        let cache = ThumbCache::at(dir.join("cache"));
+        let stamp = FileStamp::of(&src);
+        assert!(stamp.is_some());
+
+        let first = make_thumbnail_image(&src, stamp, THUMB_SIZE, Some(&cache));
+        assert!(first.is_some());
+        assert!(cache.total_size() > 0, "the miss should have populated it");
+
+        fs::remove_file(&src).unwrap();
+        let second = make_thumbnail_image(&src, stamp, THUMB_SIZE, Some(&cache));
+        let second = second.expect("served from cache, source not needed");
+        // 512x256 shrunk to fit THUMB_SIZE, aspect preserved — the cached
+        // entry has to round-trip those dimensions, not the source's.
+        assert_eq!(second.size, [256, 128]);
+        assert_eq!(second.pixels, first.unwrap().pixels);
+
+        // Without a cache the same call has nothing to fall back on.
+        assert!(make_thumbnail_image(&src, stamp, THUMB_SIZE, None).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

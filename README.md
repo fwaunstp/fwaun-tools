@@ -50,6 +50,11 @@ stacks is not tested.
 - **Two output modes.** `export` writes one `<image>.txt` per image
   (sd-scripts DreamBooth/LoRA caption-file mode); `metadata` writes a
   single `meta.json` (sd-scripts fine-tune mode).
+- **Fast re-opening.** The GUI's **Reload** button re-scans the open folder
+  and only regenerates thumbnails for images that actually changed, so
+  picking up a CLI run or a handful of new files is instant instead of a
+  full rebuild. Across sessions, an on-disk thumbnail cache (bounded and
+  clearable from the config modal's **App** tab) does the same job.
 - **Bilingual GUI.** English / 日本語 toggle, defaults to host locale.
 - **CLI for batch operations**, GUI for curation. The GUI also has a
   **Model tools** tab (Dataset / Model tools mode switch) that front-ends

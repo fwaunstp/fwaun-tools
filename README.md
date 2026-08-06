@@ -45,6 +45,10 @@ stacks is not tested.
 - **Tag groups + Kanban view.** Declare mutually-exclusive tag sets
   (e.g. costume variants) in `fwaun-tools.toml`; the GUI shows one
   column per tag with drag-and-drop to switch.
+- **Full-size preview.** Double-click a thumbnail to check the image at
+  screen resolution, ← / → to step through the filtered list, Esc to
+  close — or hand it to your usual viewer with the right-click menu's
+  **Open in default app** / **Show in folder**.
 - **Per-folder configuration via `fwaun-tools.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
 - **Two output modes.** `export` writes one `<image>.txt` per image

@@ -187,6 +187,52 @@ impl T {
         )
     }
 
+    // Preview / open with the OS
+    pub fn open_preview(self) -> &'static str {
+        self.pair("Preview", "拡大表示")
+    }
+    pub fn open_preview_title(self) -> &'static str {
+        self.pair(
+            "Show this image full size (or double-click the thumbnail). \
+             ←/→ move between images, Esc closes.",
+            "この画像を原寸表示します（サムネイルのダブルクリックでも開きます）。\
+             ←/→ で前後の画像へ、Esc で閉じます。",
+        )
+    }
+    pub fn open_external(self) -> &'static str {
+        self.pair("Open in default app", "既定のアプリで開く")
+    }
+    pub fn reveal_in_folder(self) -> &'static str {
+        self.pair("Show in folder", "フォルダで表示")
+    }
+    pub fn close(self) -> &'static str {
+        self.pair("Close", "閉じる")
+    }
+    pub fn preview_prev(self) -> &'static str {
+        self.pair("Previous image (←)", "前の画像 (←)")
+    }
+    pub fn preview_next(self) -> &'static str {
+        self.pair("Next image (→)", "次の画像 (→)")
+    }
+    pub fn preview_position(self, current: usize, total: usize) -> String {
+        match self.lang {
+            Lang::En => format!("{current} / {total}"),
+            Lang::Ja => format!("{current} / {total} 件目"),
+        }
+    }
+    pub fn preview_decode_failed(self, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("Could not load this image: {err}"),
+            Lang::Ja => format!("この画像を読み込めませんでした: {err}"),
+        }
+    }
+    pub fn err_open_external(self, path: &str, err: &str) -> String {
+        match self.lang {
+            Lang::En => format!("could not hand {path} to the OS: {err}"),
+            Lang::Ja => format!("{path} をOSに渡せませんでした: {err}"),
+        }
+    }
+
     // Detail panel — empty
     pub fn select_to_edit(self) -> &'static str {
         self.pair(

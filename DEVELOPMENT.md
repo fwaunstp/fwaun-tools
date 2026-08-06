@@ -206,6 +206,40 @@ fwaun-tools dataset status <dir>
 - `status` — quick `[TCB] manual=N <path>` table per image (T=auto-tagged,
   C=captioned, B=booru-fetched).
 
+### Progress reporting (`cli/src/progress.rs`)
+
+The four per-image commands (`tag` / `caption` / `booru` / `upscale`) run
+inference or network I/O per image, so they wrap their loop in `Progress`:
+`[ 12/340 ] 3.5%` plus elapsed and an ETA extrapolated from the mean cost so
+far. The rest of the commands are a sidecar read plus a string join per
+image and finish before a counter would render, so they don't bother.
+
+Three things drive the design:
+
+- **stderr only.** The per-image result lines are stdout and stay
+  byte-identical, so redirecting them to a file still yields what it used
+  to. They're printed via `Progress::println`, which blanks the transient
+  counter first and redraws after — otherwise the two streams interleave
+  mid-line on a terminal.
+- **Not a terminal → not a bar.** `IsTerminal` on stderr picks between the
+  `\r` rewrite and one plain line per ~5% of the run, so a redirected log
+  doesn't collect thousands of counter updates.
+- **The loop can't forget to count.** `progress.wrap(images)` counts in the
+  iterator rather than exposing a `tick()`, because every one of these
+  commands has a `continue` path (already tagged, already present) that
+  would otherwise need its own call.
+
+The images are `collect()`ed before the loop — a percentage needs a total,
+and `iter_images` is a streaming `WalkDir`. The extra walk is nothing next
+to one model inference per image, and it matches what the GUI's
+`load_folder` already does.
+
+The line is kept under 80 columns (the file name is truncated to 20) because
+`\r` on a wrapped line returns to the start of the wrapped row, not the
+line, and leaves debris. Widths are counted in terminal columns, not chars:
+a CJK file name is two columns per char, and blanking the old line by char
+count would under-erase it.
+
 ---
 
 ## GUI

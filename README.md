@@ -248,6 +248,18 @@ fwaun-tools dataset tokens <dir>
 fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
+`tag`, `caption`, `booru`, and `upscale` work one image at a time, so they
+print a progress counter while they run:
+
+```
+caption [  12/340 ]   3.5%  1:04 elapsed  ETA 28:37  …_0013.png
+```
+
+It goes to stderr and is rewritten in place, so the per-image result lines
+on stdout are unchanged and `… > run.log` still gets exactly those. When
+stderr isn't a terminal (redirected to a file, CI) the counter switches to
+one plain line per 5% of the run instead.
+
 Checkpoint tools (`fwaun-tools model <verb>`) — operate on safetensors files,
 not a dataset directory:
 

@@ -41,3 +41,4 @@ image = { workspace = true }
 toml = { workspace = true }
 sys-locale = "0.3"
 dirs = "6"
+opener = { version = "0.8.5", features = ["reveal"] }

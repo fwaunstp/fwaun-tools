@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tag rename, as one operation.** Renaming a tag used to mean `remove-tag`
+  then `add-tag`, which loses the entry's position in `manual_tags`, puts the
+  new tag on *every* image in the directory, and leaves the tag simply deleted
+  if you stop in between.
+
+  ```sh
+  fwaun-tools dataset replace-tag ./dataset --from long_hair --to very_long_hair
+  # a rename table in one pass: the Nth --from goes with the Nth --to
+  fwaun-tools dataset replace-tag ./dataset --from cape,hat --to red_cape,straw_hat --dry-run
+  ```
+
+  - Each match is rewritten where it sits, and images without the old tag are
+    untouched. A new tag the image already carries absorbs the renamed entry
+    instead of appearing twice.
+  - Matching follows `remove-tag` — case-insensitive, with the leading `-`
+    part of the entry, so `--from=-foo --to=-bar` renames a suppression marker
+    and `--from Foo --to foo` fixes an entry's casing.
+  - Unlike `add-tag` / `remove-tag` it always walks the sidecars (a rename has
+    no whole-directory side effect to guard against); at the dataset root it
+    *also* renames the entry in `common_tags`, which `--per-image` skips.
+    `--dry-run` and the changed/unchanged summary work as they do there.
+  - GUI: right-click a manual chip in the multi-selection panel → **Rename
+    this tag…**, or type the pair into the rename row under the chips. It
+    applies to the selected images only.
+  - core: `Sidecar::replace_manual_tag` / `replace_manual_tag_ci` and
+    `common_tags::replace_in_config_file` back both front-ends.
+
 - **CLI: progress counter for the long-running commands.** `dataset tag`,
   `caption`, `booru`, and `upscale` now show where they are in the folder
   instead of only printing a line per finished image:

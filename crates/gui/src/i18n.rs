@@ -346,6 +346,34 @@ impl T {
     pub fn section_manual_entries(self) -> &'static str {
         self.pair("Manual entries (union)", "手動エントリ（和集合）")
     }
+    /// Bulk rename row under the manual entries — the in-place counterpart
+    /// to removing a chip and typing the tag back in.
+    pub fn rename_from_placeholder(self) -> &'static str {
+        self.pair("old tag", "旧タグ")
+    }
+    pub fn rename_to_placeholder(self) -> &'static str {
+        self.pair("new tag", "新タグ")
+    }
+    pub fn rename_button(self) -> &'static str {
+        self.pair("Rename", "リネーム")
+    }
+    pub fn rename_button_title(self) -> &'static str {
+        self.pair(
+            "Rename the manual entry across the selected images, keeping its position. \
+             Images without the old tag are left alone.",
+            "選択中の画像の手動エントリを、位置を保ったままリネームします。旧タグを持たない\
+             画像は変更しません。",
+        )
+    }
+    pub fn rename_tag_menu(self) -> &'static str {
+        self.pair("Rename this tag…", "このタグをリネーム…")
+    }
+    pub fn rename_tag_menu_title(self) -> &'static str {
+        self.pair(
+            "Fill this tag into the rename row below.",
+            "下のリネーム欄にこのタグを入れます。",
+        )
+    }
     pub fn section_shared_tags(self) -> &'static str {
         self.pair(
             "Shared by selection (auto/booru, ≥2 images)",

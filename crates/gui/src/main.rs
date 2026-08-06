@@ -226,6 +226,14 @@ struct AnimaTaggerApp {
     filter: Filter,
     tag_filter: String,
     tag_input: String,
+    // Bulk rename inputs (old → new) in the multi-selection tag panel. Kept
+    // on the app rather than rebuilt per frame so the pair survives the
+    // repaint after a chip's context menu fills `rename_from` in.
+    rename_from: String,
+    rename_to: String,
+    /// Set when the chip menu filled `rename_from` in, so the next frame can
+    /// put the cursor in the `to` field — the only thing left to type.
+    rename_focus_to: bool,
     loading: bool,
     error_msg: Option<String>,
     // Boxed: both models own ort sessions and are large; keeping them behind a
@@ -367,6 +375,9 @@ impl AnimaTaggerApp {
             filter: Filter::All,
             tag_filter: String::new(),
             tag_input: String::new(),
+            rename_from: String::new(),
+            rename_to: String::new(),
+            rename_focus_to: false,
             loading: false,
             error_msg: None,
             tagger: None,
@@ -1576,6 +1587,53 @@ impl AnimaTaggerApp {
         });
     }
 
+    /// The bulk panel's rename row (`old → new`). It rewrites the manual
+    /// entry in place across the selection, which is what tidying a tag
+    /// vocabulary actually wants: × on a chip plus a re-add would drop the
+    /// tag's position and put it on every selected image, including the ones
+    /// that never had it.
+    ///
+    /// The `from` field is filled in by the chips' right-click menu; typing
+    /// it by hand works too, for a tag not on every selected image.
+    fn ui_bulk_rename_row(&mut self, ui: &mut egui::Ui, sel: &[PathBuf]) {
+        let t = self.t();
+        let mut apply = false;
+        ui.horizontal(|ui| {
+            let field = ((ui.available_width() - 96.0) / 2.0).max(56.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.rename_from)
+                    .hint_text(t.rename_from_placeholder())
+                    .desired_width(field),
+            );
+            ui.label("→");
+            let to = ui.add(
+                egui::TextEdit::singleline(&mut self.rename_to)
+                    .hint_text(t.rename_to_placeholder())
+                    .desired_width(field),
+            );
+            if std::mem::take(&mut self.rename_focus_to) {
+                to.request_focus();
+            }
+            let enter = to.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            let clicked = ui
+                .button(t.rename_button())
+                .on_hover_text(t.rename_button_title())
+                .clicked();
+            apply = enter || clicked;
+        });
+        if !apply {
+            return;
+        }
+        let from = self.rename_from.trim().to_string();
+        let to = self.rename_to.trim().to_string();
+        if from.is_empty() || to.is_empty() {
+            return;
+        }
+        self.bulk_replace_manual(sel, &from, &to);
+        self.rename_from.clear();
+        self.rename_to.clear();
+    }
+
     /// True when the current selection *is* the whole dataset: the open
     /// folder owns the config (so it's the dataset root, not a subdirectory)
     /// and every loaded image is selected.
@@ -2035,6 +2093,9 @@ impl AnimaTaggerApp {
             ui.weak(t.empty_simple());
         } else {
             let mut to_remove: Vec<String> = Vec::new();
+            // The menu closure runs on a borrow of the chip's response, so it
+            // records the tag and the panel acts on it once the row is done.
+            let mut to_rename: Option<String> = None;
             ui.horizontal_wrapped(|ui| {
                 for tag in &manual_order {
                     let count = manual_counts[tag];
@@ -2044,14 +2105,31 @@ impl AnimaTaggerApp {
                         tag.clone()
                     };
                     let kind = manual_chip_kind(tag);
-                    if chip(ui, &label, kind, false) {
+                    let r = chip_response(ui, &label, kind, false);
+                    if r.clicked() {
                         to_remove.push(tag.clone());
                     }
+                    r.context_menu(|ui| {
+                        if ui
+                            .button(t.rename_tag_menu())
+                            .on_hover_text(t.rename_tag_menu_title())
+                            .clicked()
+                        {
+                            to_rename = Some(tag.clone());
+                            ui.close();
+                        }
+                    });
                 }
             });
+            if let Some(tag) = to_rename {
+                self.rename_from = tag;
+                self.rename_to.clear();
+                self.rename_focus_to = true;
+            }
             for tag in to_remove {
                 self.bulk_remove_manual(sel, &tag);
             }
+            self.ui_bulk_rename_row(ui, sel);
         }
 
         ui.add_space(6.0);
@@ -3047,6 +3125,19 @@ impl AnimaTaggerApp {
             }
         }
     }
+    /// Rename `from` to `to` in the manual entries of every selected image.
+    /// Images without `from` are untouched, and the ones that have it keep
+    /// the entry's position — see [`Sidecar::replace_manual_tag`].
+    fn bulk_replace_manual(&mut self, paths: &[PathBuf], from: &str, to: &str) {
+        for img in self.images.iter_mut() {
+            if !paths.contains(&img.path) {
+                continue;
+            }
+            if img.sidecar.replace_manual_tag(from, to) {
+                let _ = img.sidecar.save(&img.path);
+            }
+        }
+    }
     fn bulk_remove_caption(&mut self, paths: &[PathBuf], model: &str) {
         for img in self.images.iter_mut() {
             if !paths.contains(&img.path) {
@@ -3171,13 +3262,24 @@ fn manual_chip_kind(tag: &str) -> ChipKind {
 /// Render a tag chip. Returns `true` when the user clicked it
 /// (interpretation is up to the caller — usually "remove" or "toggle
 /// suppression").
+fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool) -> bool {
+    chip_response(ui, label, kind, suppressed).clicked()
+}
+
+/// [`chip`] for the callers that need more than "was it clicked" — the bulk
+/// panel hangs a right-click menu off the returned response.
 ///
 /// Implemented as a single `egui::Button` instead of a Frame + inner
 /// horizontal layout because nested layouts inside `horizontal_wrapped`
 /// suppress wrap-on-overflow — egui's wrap engine measures each child
 /// after placement, and a Frame's inner sublayout can over-allocate
 /// width and push subsequent chips off-screen.
-fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool) -> bool {
+fn chip_response(
+    ui: &mut egui::Ui,
+    label: &str,
+    kind: ChipKind,
+    suppressed: bool,
+) -> egui::Response {
     let mut text = egui::RichText::new(format!("{label}  ×"))
         .color(kind.fg())
         .size(12.0);
@@ -3190,7 +3292,6 @@ fn chip(ui: &mut egui::Ui, label: &str, kind: ChipKind, suppressed: bool) -> boo
             .corner_radius(egui::CornerRadius::same(8))
             .stroke(egui::Stroke::NONE),
     )
-    .clicked()
 }
 
 fn section_title(ui: &mut egui::Ui, text: &str) {

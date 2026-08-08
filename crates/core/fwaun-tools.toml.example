@@ -115,11 +115,33 @@ super_deformed = ", fwaun style, chibi proportions"
 # built-in. Per-image specifics (character names + positions) belong in
 # the sidecar's `caption_hints` list — edited like tags in the GUI, and
 # batch-added across a whole character — not in these prompts.
+#
+# Write ONLY the description task here. The hint / prefix machinery wraps
+# your prompt automatically at generation time, so instructions like "use
+# the names below" or "continue from this opening" must NOT be repeated in
+# the prompt text. The user turn is assembled as:
+#
+#   [when the image has caption_hints or a matching tag_group caption_hint]
+#     Use the following names and details when describing the image:
+#     - <hint>
+#     - <hint>
+#
+#   <your prompt text>
+#
+#   [when a tag_group caption_prefix matches]
+#     The caption has already been started with the exact text below. Write
+#     only what comes next, as one continuous description that flows on
+#     naturally from it. Do not repeat or rephrase this opening, and do not
+#     add any preamble before your continuation:
+#
+#     <prefix>
 # ---------------------------------------------------------------------------
 
 [captioner_prompts]
-# Override the built-in default if you want a different baseline.
-# default = "Describe this image briefly."
+# The built-in `default`, spelled out. Leave it commented to keep this exact
+# text; uncomment and edit to override the baseline for every profile that
+# lists `"default"`. It is sized to fit inside ANIMA's 512-token ceiling.
+# default = "Describe this image in detail in 3-5 sentences (under 200 words)."
 
 # Character-focused prompt: useful for character LoRAs where you want
 # the model to weave per-character details into the description.

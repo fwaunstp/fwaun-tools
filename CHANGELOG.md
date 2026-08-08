@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-08
+
 ### Added
 
 - **Tag rename, as one operation.** Renaming a tag used to mean `remove-tag`
@@ -151,6 +153,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The bulk panel's "Common tags" readout is now labelled **"Shared by
   selection"**, to keep it distinct from the new dataset-wide `common_tags`.
+
+- **New GUI application icon.** Replaces the previous artwork; the window
+  icon and the bundled app icon come from the same source, so no rebuild of
+  anything but the GUI crate is involved.
 
 ## [0.6.0] - 2026-07-29
 
@@ -574,7 +580,8 @@ versions will list deltas from here.
 - Windows builds are produced by CI but not regularly tested by the
   maintainer.
 
-[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/fwaunstp/fwaun-tools/compare/v0.3.0...v0.4.0

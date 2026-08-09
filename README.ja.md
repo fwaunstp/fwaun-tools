@@ -248,7 +248,35 @@ fwaun-tools dataset tokens <dir>
 fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
-`tag` / `caption` / `booru` / `upscale` は 1 枚ずつ処理するため、実行中は
+既存の ComfyUI サーバーを使う一括処理。いずれも結果を別ディレクトリ
+（既定では `<dir>_upscaled` / `<dir>_edited` の兄弟ディレクトリ）に書き出し、
+`.ron` サイドカーを一緒に複製し、出力が既にある画像はスキップします。
+中断した実行はそのまま再開できます:
+
+```
+fwaun-tools dataset upscale <dir> [--profile NAME] [--upscale-model FILE] [--workflow JSON] [--max-edge N] [--force] [--dry-run]
+fwaun-tools dataset upscale-models     [--profile NAME] [--base-url URL]
+fwaun-tools dataset edit <dir>    [--profile NAME] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
+fwaun-tools dataset edit-models        [--profile NAME] [--base-url URL]
+```
+
+`edit` は Gemini image（Nano Banana）API ノード経由で、1 つの指示を全画像に
+適用します。イラストのデータセットの背景だけを実写に差し替える、といった用途
+向けです。**このノードは 1 枚ごとに課金される**ため、まず `--dry-run` で枚数を
+確認し、`--limit` で数枚だけ試してからバッチを回してください。
+
+また comfy.org のアカウント API キーが必要です。ComfyUI は課金対象の API ノードを
+リクエスト単位で認証するため、ブラウザで Web UI にログイン済みでも HTTP API 経由の
+実行はカバーされず、キーがないと全画像が *"Please login first to use this node"* で
+失敗します。<https://platform.comfy.org> でキーを発行して環境変数に入れてください
+（プロファイルの `api_key` でも読めますが、データセット直下の `fwaun-tools.toml` は
+データセットと一緒に持ち出されがちなので環境変数を推奨します）:
+
+```sh
+export COMFY_API_KEY=comfyui-...        # PowerShell: $env:COMFY_API_KEY='comfyui-...'
+```
+
+`tag` / `caption` / `booru` / `upscale` / `edit` は 1 枚ずつ処理するため、実行中は
 進捗カウンタを表示します:
 
 ```

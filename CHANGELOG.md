@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Batch image editing via ComfyUI.** `fwaun-tools dataset edit <dir>` applies
+  one text instruction to every image in a directory through an existing
+  ComfyUI server's Gemini image (Nano Banana) API node.
+
+  ```sh
+  # check the count and the prompt on three shots before paying for the set
+  fwaun-tools dataset edit ./dataset --dry-run
+  fwaun-tools dataset edit ./dataset --limit 3
+  fwaun-tools dataset edit ./dataset
+  ```
+
+  - The motivating pass: illustrated characters drawn against illustrated
+    backgrounds, re-rendered with photographic backgrounds, so a LoRA trained
+    on the output learns the mixed "drawn subject over a real scene" look.
+    Generate the illustrations with backgrounds first, then run this over the
+    folder.
+  - Mechanically it is `upscale`'s sibling — upload, run, write to a separate
+    output directory (default: a `<dir>_edited` sibling), copy each `.ron`
+    sidecar alongside, skip images that already have an output so an
+    interrupted run resumes for free. Tags describing what the edit changed are
+    stale afterwards; re-tag the output if that matters.
+  - **Needs a comfy.org account API key.** ComfyUI authenticates paid API nodes
+    per request, so a browser session on the web UI doesn't cover a run driven
+    over the HTTP API — without a key every image comes back "Please login
+    first to use this node". Generate one at <https://platform.comfy.org> and
+    export it as `COMFY_API_KEY` (or set `api_key` on the profile; the
+    environment variable is preferred, since a dataset-local
+    `fwaun-tools.toml` travels with the dataset). The key rides in the
+    `/prompt` request's `extra_data.api_key_comfy_org`, where ComfyUI's
+    executor reads it from. `dataset edit` warns before the batch when no key
+    is configured, and points at this after a run that hit the rejection.
+  - **The API node bills per image**, and a higher `resolution` costs more, so
+    the pass adds `--dry-run` (count without contacting the server) and
+    `--limit N` (stop after N *unedited* images, so a resumed run spends its
+    budget on new work). A missing prompt or bad template fails at startup,
+    before anything is sent.
+  - Configured through an `[editor.<name>]` profile: `prompt`, `model`
+    (`dataset edit-models` lists what the server offers — Nano Banana 2 and
+    Nano Banana Pro), `aspect_ratio` (`auto` keeps each image's framing),
+    `resolution`, `seed`, `system_prompt`. `default_editor` picks one without
+    `--profile`; every field has a CLI override.
+  - `workflow_template` drives your own API-format export instead of the
+    built-in `LoadImage → Nano Banana → SaveImage` graph, exactly as for the
+    upscaler. The prompt is written into the node with a string `prompt`
+    widget (auto-detected, or named with `prompt_node`), so one graph can back
+    several profiles.
+  - comfyui: the template validation, upload → queue → poll → download round
+    trip, and the `max_edge` downscale move into a shared `workflow` module
+    that both `upscale` and the new `edit` build on.
+
 ## [0.7.0] - 2026-08-08
 
 ### Added

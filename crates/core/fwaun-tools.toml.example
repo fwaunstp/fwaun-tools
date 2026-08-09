@@ -396,3 +396,107 @@ workflow_template = "workflows/ultimate_sd_upscale_api.json"
 max_edge = 2048
 timeout_secs = 900
 poll_interval_ms = 750
+
+# ---------------------------------------------------------------------------
+# Editor profiles — apply ONE text instruction to every image in a dataset
+# through an existing ComfyUI server's Gemini image (Nano Banana) API node
+# (`fwaun-tools dataset edit <dir>`). Same plumbing as the upscaler: each image
+# is uploaded, run through the workflow, and the result written to a separate
+# output directory (default: a `<dir>_edited` sibling) with the `.ron` sidecar
+# copied alongside. Run `fwaun-tools dataset edit-models` to list the `model`
+# values the server's node offers (and to confirm it's installed at all).
+#
+# The motivating pass: an illustrated character drawn against an illustrated
+# background, re-rendered with a photographic background, so the LoRA trained on
+# the output learns the mixed "drawn subject over a real scene" look. Generate
+# the illustrations with backgrounds first, then run this over the folder.
+#
+# NEEDS AN API KEY. The Gemini node is a paid "API node", and ComfyUI
+# authenticates those per request — being signed into the ComfyUI web UI in a
+# browser does NOT cover a run driven over the HTTP API, which fails with
+# "Please login first to use this node". Generate an account API key at
+# https://platform.comfy.org and export it:
+#
+#   export COMFY_API_KEY=comfyui-...        # PowerShell: $env:COMFY_API_KEY='comfyui-...'
+#
+# The `api_key` field below is read first if you prefer to keep it in a config,
+# but the environment variable is the safer home: a dataset-local
+# `fwaun-tools.toml` travels with the dataset, and a key committed alongside it
+# is a key to your billing account.
+#
+# COSTS MONEY. The Gemini node is billed per image by the API provider, and a
+# higher `resolution` costs more per image. `dataset edit` skips images that
+# already have an output (so an interrupted run resumes for free), and
+# `--dry-run` / `--limit N` let you check the count and try the prompt on a
+# handful of shots before committing the whole set.
+#
+# Select one without `--profile` by setting `default_editor` at the top of this
+# file (left unset here so nothing runs by accident until you've read the
+# prompt below):
+# default_editor = "nanobanana2"
+
+[editor.nanobanana2]
+# ComfyUI server root. Defaults to the stock local install if omitted.
+base_url = "http://127.0.0.1:8188"
+# The instruction sent with every image. Be explicit about what must NOT
+# change — left to itself the model tends to photo-realise the character too,
+# which is exactly the signal this dataset is meant to keep illustrated.
+prompt = """
+Replace the background with a photorealistic photograph of the same setting, \
+matching the original's lighting direction, colour temperature and perspective. \
+Keep the character exactly as drawn: same illustrated rendering, line art, cel \
+shading, colours, pose, expression and position in the frame. Do not redraw, \
+restyle or photo-realise the character.
+"""
+# `model` widget value. `dataset edit-models` prints this server's options; the
+# other current one is "gemini-3-pro-image-preview" (Nano Banana Pro), which
+# costs roughly twice as much per image.
+model = "Nano Banana 2 (Gemini 3.1 Flash Image)"
+# "auto" matches each input image's aspect ratio. Anything else re-crops the
+# subject, which is rarely what a dataset pass wants.
+aspect_ratio = "auto"
+# Output resolution tier: "1K", "2K", or "4K". Higher tiers cost more per image.
+resolution = "1K"
+# The API only makes a best effort at reproducing a seed, so this bounds
+# run-to-run drift rather than eliminating it.
+seed = 42
+# Cap the result's longest edge (Lanczos3 downscale when exceeded). 0 keeps the
+# node's native output — the resolution tier above already decides the size.
+max_edge = 0
+# Per-request / whole-job timeout. A hosted API round trip is slower than a
+# local upscale, and `thinking` models slower still.
+timeout_secs = 600
+# Pause between /history status polls, in milliseconds.
+poll_interval_ms = 750
+
+# Custom-workflow editor: drives your own API-format ComfyUI workflow instead of
+# the built-in `LoadImage → Nano Banana → SaveImage` graph. Use it for anything
+# the built-in can't express — a reference background wired in through Batch
+# Images, a mask, a post-process chain. Export via ComfyUI's "Save (API Format)".
+# The single LoadImage node is fed each dataset image and the SaveImage node's
+# output is retrieved, exactly as for the upscaler. When set, `model` /
+# `aspect_ratio` / `resolution` / `seed` are ignored — the template's own widget
+# values apply.
+[editor.custom]
+base_url = "http://127.0.0.1:8188"
+# Read before the COMFY_API_KEY environment variable. Prefer the variable —
+# see the note above.
+api_key = "comfyui-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+workflow_template = "workflows/nanobanana_bg_api.json"
+# The prompt is written into the template's prompt widget, so one graph serves
+# several profiles. Drop this key to keep whatever text the template was saved
+# with.
+prompt = "Replace the background with a photorealistic photograph."
+# Which node to write it into. Leave unset to auto-detect the single node with a
+# string `prompt` widget; set it when the template has several (the node ids are
+# the top-level keys of the API-format JSON).
+prompt_node = "4"
+# Replace the node's built-in system prompt. Leave unset to keep it.
+system_prompt = "You are an image editing engine. Apply only the requested edit and change nothing else."
+model = "Nano Banana 2 (Gemini 3.1 Flash Image)"
+aspect_ratio = "auto"
+resolution = "1K"
+seed = 42
+max_edge = 0
+timeout_secs = 900
+poll_interval_ms = 750

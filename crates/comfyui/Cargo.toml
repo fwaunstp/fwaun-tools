@@ -1,6 +1,6 @@
 [package]
 name = "fwaun-tools-comfyui"
-description = "Client for an existing ComfyUI server's HTTP API (upload / prompt / history / view / object_info), plus batch helpers such as image upscaling, used by fwaun-tools."
+description = "Client for an existing ComfyUI server's HTTP API (upload / prompt / history / view / object_info), plus batch helpers (image upscaling, prompt-driven image editing), used by fwaun-tools."
 categories = ["api-bindings", "multimedia::images"]
 version.workspace = true
 edition.workspace = true

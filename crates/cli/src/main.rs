@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::{Captioner, CaptionerError};
 use fwaun_tools_comfyui::Client as ComfyClient;
+use fwaun_tools_comfyui::edit::{Editor, Options as EditOptions};
 use fwaun_tools_comfyui::upscale::{Options as UpscaleOptions, Upscaler};
 use fwaun_tools_core::common_tags;
 use fwaun_tools_core::config::ProjectConfig;
@@ -166,6 +167,31 @@ enum DatasetCommand {
     /// profile's `upscale_model`.
     UpscaleModels {
         /// Name of an `[upscaler.<name>]` profile to read `base_url` from.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
+        #[arg(long)]
+        base_url: Option<String>,
+    },
+    /// Apply one edit instruction to every image in a directory through an
+    /// existing ComfyUI server's Gemini image (Nano Banana) API node, writing
+    /// the results to a separate output directory (default: a `<dir>_edited`
+    /// sibling) with each `.ron` sidecar copied alongside.
+    ///
+    /// The instruction comes from `--prompt` or the profile's `prompt`, e.g.
+    /// "replace the background with a photorealistic one, keep the character
+    /// exactly as drawn". Use `--workflow` to drive your own API-format graph
+    /// instead of the built-in one.
+    ///
+    /// This node is billed per image by the API provider. Images that already
+    /// have an output are skipped unless `--force`; use `--dry-run` to see the
+    /// count first and `--limit` to try a handful before committing the batch.
+    Edit(EditArgs),
+    /// List the `model` values the ComfyUI server's Gemini image node offers
+    /// (read from its `/object_info`). Use one of these as `--model` / the
+    /// profile's `model`; it also confirms the API node is installed at all.
+    EditModels {
+        /// Name of an `[editor.<name>]` profile to read `base_url` from.
         #[arg(long)]
         profile: Option<String>,
         /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
@@ -360,6 +386,58 @@ enum DatasetCommand {
     },
 }
 
+/// Flags for [`DatasetCommand::Edit`]. Kept in its own struct because the pass
+/// has enough knobs that threading them through as positional arguments stops
+/// being readable.
+#[derive(clap::Args, Debug)]
+struct EditArgs {
+    dir: PathBuf,
+    /// Name of an `[editor.<name>]` profile in `fwaun-tools.toml`.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Output directory. Relative sub-paths are preserved under it.
+    /// Default: a `<dir>_edited` sibling directory.
+    #[arg(long)]
+    output: Option<PathBuf>,
+    /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
+    #[arg(long)]
+    base_url: Option<String>,
+    /// The edit instruction applied to every image. Overrides the profile.
+    #[arg(long)]
+    prompt: Option<String>,
+    /// `model` widget value (e.g. `"Nano Banana 2 (Gemini 3.1 Flash Image)"`).
+    /// Run `dataset edit-models` to list what the server offers.
+    #[arg(long)]
+    model: Option<String>,
+    /// Output resolution tier: `1K`, `2K`, or `4K`. Higher tiers cost more.
+    #[arg(long)]
+    resolution: Option<String>,
+    /// Output aspect ratio. `auto` (the default) keeps each image's own.
+    #[arg(long)]
+    aspect_ratio: Option<String>,
+    /// Seed passed to the node. Overrides the profile.
+    #[arg(long)]
+    seed: Option<u64>,
+    /// API-format workflow JSON to use instead of the built-in graph.
+    /// Overrides the profile.
+    #[arg(long)]
+    workflow: Option<PathBuf>,
+    /// Cap the result's longest edge to this many pixels (0 = keep the model's
+    /// native output). Overrides the profile.
+    #[arg(long)]
+    max_edge: Option<u32>,
+    /// Stop after this many images. Handy for checking the prompt on a few
+    /// shots before paying for the whole set.
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Re-edit images whose output file already exists.
+    #[arg(long)]
+    force: bool,
+    /// List what would be edited without contacting ComfyUI.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -408,6 +486,8 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
         DatasetCommand::UpscaleModels { profile, base_url } => {
             cmd_upscale_models(profile, base_url)
         }
+        DatasetCommand::Edit(args) => cmd_edit(args),
+        DatasetCommand::EditModels { profile, base_url } => cmd_edit_models(profile, base_url),
         DatasetCommand::Export {
             dir,
             profile,
@@ -840,6 +920,262 @@ fn cmd_upscale(
         println!("dry run: {would} would upscale, {skipped} already present");
     } else {
         println!("done: {done} upscaled, {skipped} skipped (already present), {errors} errored");
+    }
+    Ok(())
+}
+
+fn cmd_edit(args: EditArgs) -> Result<()> {
+    use fwaun_tools_core::sidecar::sidecar_path_for;
+
+    let EditArgs {
+        dir,
+        profile: profile_name,
+        output,
+        base_url,
+        prompt,
+        model,
+        resolution,
+        aspect_ratio,
+        seed,
+        workflow,
+        max_edge,
+        limit,
+        force,
+        dry_run,
+    } = args;
+
+    let cfg = ProjectConfig::load_or_default(&dir)
+        .with_context(|| format!("loading config in {}", dir.display()))?;
+    let (name, mut profile) = cfg.resolve_editor(profile_name.as_deref());
+
+    // CLI flags override the resolved profile.
+    if let Some(u) = base_url {
+        profile.base_url = u;
+    }
+    if let Some(p) = prompt {
+        profile.prompt = Some(p);
+    }
+    if let Some(m) = model {
+        profile.model = m;
+    }
+    if let Some(r) = resolution {
+        profile.resolution = r;
+    }
+    if let Some(a) = aspect_ratio {
+        profile.aspect_ratio = a;
+    }
+    if let Some(s) = seed {
+        profile.seed = s;
+    }
+    if let Some(w) = workflow {
+        profile.workflow_template = Some(w);
+    }
+    if let Some(e) = max_edge {
+        profile.max_edge = e;
+    }
+
+    // Default output: a `<dir>_edited` sibling so a re-run over `dir` doesn't
+    // re-scan the results.
+    let out_root = output.unwrap_or_else(|| match dir.file_name() {
+        Some(fname) => {
+            let mut n = fname.to_os_string();
+            n.push("_edited");
+            dir.with_file_name(n)
+        }
+        None => dir.join("edited"),
+    });
+
+    // The key is deliberately not a CLI flag: it would land in shell history.
+    // `COMFY_API_KEY` is the preferred home, since a dataset-local
+    // `fwaun-tools.toml` travels with the dataset.
+    let api_key = profile
+        .api_key
+        .clone()
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| std::env::var("COMFY_API_KEY").ok());
+
+    let editor = Editor::new(EditOptions {
+        base_url: profile.base_url.clone(),
+        api_key,
+        prompt: profile.prompt.clone().unwrap_or_default(),
+        model: profile.model.clone(),
+        aspect_ratio: profile.aspect_ratio.clone(),
+        resolution: profile.resolution.clone(),
+        seed: profile.seed,
+        system_prompt: profile.system_prompt.clone(),
+        workflow_template: profile.workflow_template.clone(),
+        prompt_node: profile.prompt_node.clone(),
+        max_edge: profile.max_edge,
+        timeout_secs: profile.timeout_secs,
+        poll_interval_ms: profile.poll_interval_ms,
+    })
+    .context("configuring the ComfyUI image editor")?;
+
+    let how = match &profile.workflow_template {
+        Some(t) => format!("workflow template {}", t.display()),
+        None => format!("{} at {}", profile.model, profile.resolution),
+    };
+    eprintln!(
+        "editing via ComfyUI at {} (profile `{name}`, {how}) → {}",
+        profile.base_url,
+        out_root.display(),
+    );
+    if !editor.prompt().is_empty() {
+        eprintln!("prompt: {}", editor.prompt());
+    }
+    // Say this before the batch rather than after N identical failures. Only a
+    // warning: a custom template need not contain a paid API node at all.
+    if !editor.has_api_key() {
+        eprintln!(
+            "warning: no comfy.org API key configured — paid API nodes (the built-in \
+             Nano Banana graph among them) will answer \"Please login first to use this \
+             node\". Generate one at https://platform.comfy.org and export it as \
+             COMFY_API_KEY (or set `api_key` on the editor profile)."
+        );
+    }
+
+    // Never descend into our own output (matters when `out_root` sits inside
+    // `dir`, e.g. the no-file-name fallback). Filtered here rather than in the
+    // loop so the progress total counts only what will be worked on.
+    let mut images: Vec<PathBuf> = iter_images(&dir)
+        .filter(|image| !image.starts_with(&out_root))
+        .collect();
+
+    // `--limit` caps the images *sent*, so it has to be applied after the
+    // already-present ones are dropped — otherwise a resumed run would spend
+    // its budget re-listing work that's already done. `--force` re-sends
+    // everything, so nothing is already-present in that case.
+    let mut skipped = 0usize;
+    if !force {
+        images.retain(|image| {
+            let rel = image.strip_prefix(&dir).unwrap_or(image);
+            if out_root.join(rel).with_extension("png").exists() {
+                skipped += 1;
+                false
+            } else {
+                true
+            }
+        });
+    }
+    if let Some(n) = limit
+        && images.len() > n
+    {
+        eprintln!(
+            "--limit {n}: {} image(s) remain after this run",
+            images.len() - n
+        );
+        images.truncate(n);
+    }
+
+    let progress = Progress::new("edit", images.len());
+
+    let mut done = 0usize;
+    let mut would = 0usize;
+    let mut errors = 0usize;
+    let mut auth_failures = 0usize;
+    for image in progress.wrap(images) {
+        let rel = image.strip_prefix(&dir).unwrap_or(&image);
+        // ComfyUI hands back PNG bytes regardless of the source format, so the
+        // output always carries a `.png` extension. Sidecars are extension-
+        // independent (`foo.*` → `foo.ron`), so the copied sidecar still lines
+        // up with the renamed image.
+        let target = out_root.join(rel).with_extension("png");
+        if dry_run {
+            would += 1;
+            progress.println(format!(
+                "would edit {} → {}",
+                rel.display(),
+                target.display()
+            ));
+            continue;
+        }
+
+        match editor.edit_file(&image) {
+            Ok(bytes) => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
+                std::fs::write(&target, bytes)
+                    .with_context(|| format!("writing {}", target.display()))?;
+
+                // Carry the sidecar over so the edited set stays a complete
+                // dataset. Tags describing what the edit changed (background,
+                // scenery) are now stale — re-tag the output if that matters.
+                let src_side = sidecar_path_for(&image);
+                if src_side.exists() {
+                    let dst_side = sidecar_path_for(&target);
+                    std::fs::copy(&src_side, &dst_side).with_context(|| {
+                        format!(
+                            "copying sidecar {} → {}",
+                            src_side.display(),
+                            dst_side.display()
+                        )
+                    })?;
+                }
+                done += 1;
+                progress.println(format!("edited {} → {}", rel.display(), target.display()));
+            }
+            Err(e) => {
+                errors += 1;
+                let text = e.to_string();
+                // The auth rejection arrives as an ordinary node failure, so
+                // the message alone doesn't say what to do about it.
+                if text.contains("login") || text.contains("Sign In") {
+                    auth_failures += 1;
+                }
+                progress.eprintln(format!("error: {}: {e}", image.display()));
+            }
+        }
+    }
+    progress.finish();
+
+    if dry_run {
+        println!("dry run: {would} would edit, {skipped} already present");
+    } else {
+        println!("done: {done} edited, {skipped} skipped (already present), {errors} errored");
+    }
+    if auth_failures > 0 {
+        eprintln!(
+            "\n{auth_failures} image(s) were rejected for not being signed in. Paid API \
+             nodes authenticate per request, so a browser session on the ComfyUI web UI \
+             doesn't cover this: generate an account API key at \
+             https://platform.comfy.org and pass it as COMFY_API_KEY (or `api_key` on \
+             the editor profile)."
+        );
+    }
+    Ok(())
+}
+
+fn cmd_edit_models(profile_name: Option<String>, base_url: Option<String>) -> Result<()> {
+    use fwaun_tools_comfyui::edit::EDIT_NODE_CLASS;
+    use std::time::Duration;
+
+    // Resolve base_url from the profile if present; a flag overrides it. Fall
+    // back to the built-in default when there's no config at all.
+    let base = base_url.unwrap_or_else(|| {
+        let cfg = ProjectConfig::load_or_default(std::path::Path::new(".")).unwrap_or_default();
+        let (_, profile) = cfg.resolve_editor(profile_name.as_deref());
+        profile.base_url
+    });
+
+    eprintln!("querying ComfyUI at {base} …");
+    let client = ComfyClient::new(&base, Duration::from_secs(30));
+    let models = client
+        .list_node_enum(EDIT_NODE_CLASS, "model")
+        .with_context(|| {
+            format!(
+                "listing `{EDIT_NODE_CLASS}` models from {base} (is the Gemini API node installed?)"
+            )
+        })?;
+
+    if models.is_empty() {
+        println!("(the node reports no models — check the server's API node version)");
+    } else {
+        for m in &models {
+            println!("{m}");
+        }
+        eprintln!("{} model(s)", models.len());
     }
     Ok(())
 }

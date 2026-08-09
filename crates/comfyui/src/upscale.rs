@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::workflow::{self, CustomTemplate};
 use crate::{Client, ComfyError, Result};
 
 /// How to run the upscale. Mirrors the configurable knobs; the CLI builds this
@@ -48,11 +49,7 @@ enum Workflow {
     /// Built-in ESRGAN-style graph parameterized by the model filename.
     Builtin { model: String },
     /// A user template with the detected `LoadImage` / `SaveImage` node ids.
-    Custom {
-        graph: Value,
-        load_node: String,
-        save_node: String,
-    },
+    Custom(CustomTemplate),
 }
 
 /// Node id of the `SaveImage` node in the built-in graph.
@@ -64,7 +61,7 @@ impl Workflow {
     fn save_node(&self) -> &str {
         match self {
             Workflow::Builtin { .. } => BUILTIN_SAVE_NODE,
-            Workflow::Custom { save_node, .. } => save_node,
+            Workflow::Custom(template) => template.save_node(),
         }
     }
 
@@ -93,21 +90,7 @@ impl Workflow {
                     "inputs": { "images": ["12", 0], "filename_prefix": "fwaun_upscaled" }
                 }
             }),
-            Workflow::Custom {
-                graph, load_node, ..
-            } => {
-                let mut g = graph.clone();
-                // Safe: `load_node` was validated to exist with an object
-                // `inputs` at construction. Overwrite just the `image` field.
-                if let Some(inputs) = g
-                    .get_mut(load_node)
-                    .and_then(|n| n.get_mut("inputs"))
-                    .and_then(Value::as_object_mut)
-                {
-                    inputs.insert("image".into(), Value::String(input_image.to_string()));
-                }
-                g
-            }
+            Workflow::Custom(template) => template.with_input(input_image),
         }
     }
 }
@@ -126,18 +109,10 @@ impl Upscaler {
     pub fn new(opts: Options) -> Result<Self> {
         let timeout = Duration::from_secs(opts.timeout_secs.max(1));
         let workflow = match &opts.workflow_template {
-            Some(path) => {
-                let text = std::fs::read_to_string(path).map_err(|e| {
-                    ComfyError::Workflow(format!("reading {}: {e}", path.display()))
-                })?;
-                let graph: Value = serde_json::from_str(&text).map_err(|e| {
-                    ComfyError::Workflow(format!("parsing {} as JSON: {e}", path.display()))
-                })?;
-                parse_template(graph)?
-            }
+            Some(path) => Workflow::Custom(CustomTemplate::from_file(path)?),
             None => {
                 let model = opts.upscale_model.clone().ok_or_else(|| {
-                    ComfyError::Workflow(
+                    ComfyError::Config(
                         "no upscale model configured: set `upscale_model` (e.g. \
                          RealESRGAN_x4plus.pth) or provide a workflow template"
                             .into(),
@@ -164,110 +139,17 @@ impl Upscaler {
     /// Upscale one image file end-to-end and return the resulting PNG bytes
     /// (post-`max_edge`). Does not touch the filesystem beyond reading `path`.
     pub fn upscale_file(&self, path: &Path) -> Result<Vec<u8>> {
-        let bytes = std::fs::read(path)?;
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("input.png");
-        let uploaded = self.client.upload_image(filename, &bytes)?;
-        let graph = self.workflow.build_graph(&uploaded.load_image_value());
-        let prompt_id = self.client.queue_prompt(&graph)?;
-        let image = self.client.wait_for_output(
-            &prompt_id,
+        let uploaded = workflow::upload_file(&self.client, path)?;
+        let graph = self.workflow.build_graph(&uploaded);
+        let raw = workflow::run_graph(
+            &self.client,
+            &graph,
             self.workflow.save_node(),
             self.timeout,
             self.poll,
         )?;
-        let raw = self.client.download(&image)?;
-        self.fit_max_edge(raw)
+        workflow::fit_max_edge(raw, self.max_edge)
     }
-
-    /// Shrink to `max_edge` if the longest side exceeds it; otherwise return
-    /// the server bytes untouched (no needless re-encode).
-    fn fit_max_edge(&self, raw: Vec<u8>) -> Result<Vec<u8>> {
-        if self.max_edge == 0 {
-            return Ok(raw);
-        }
-        let img = image::load_from_memory(&raw)?;
-        let (w, h) = (img.width(), img.height());
-        let long = w.max(h);
-        if long <= self.max_edge {
-            return Ok(raw);
-        }
-        let scale = self.max_edge as f32 / long as f32;
-        let nw = ((w as f32 * scale).round() as u32).max(1);
-        let nh = ((h as f32 * scale).round() as u32).max(1);
-        let resized = img.resize(nw, nh, image::imageops::FilterType::Lanczos3);
-        let mut out = std::io::Cursor::new(Vec::new());
-        resized.write_to(&mut out, image::ImageFormat::Png)?;
-        Ok(out.into_inner())
-    }
-}
-
-/// Validate a user API-format graph and locate the single `LoadImage` node
-/// (where each image is injected) and a `SaveImage` node (where the result is
-/// read). Rejects the UI-format export up front with a pointer to the right
-/// menu item — that mistake is common and otherwise fails obscurely.
-fn parse_template(graph: Value) -> Result<Workflow> {
-    let obj = graph.as_object().ok_or_else(|| {
-        ComfyError::Workflow(
-            "template is not a JSON object of nodes. Export via ComfyUI's \
-             'Save (API Format)' — the plain workflow save is UI format and \
-             won't work here."
-                .into(),
-        )
-    })?;
-    // UI-format exports carry a top-level `nodes` array; the API format is a
-    // flat map of id → node.
-    if obj.contains_key("nodes") && obj.get("nodes").is_some_and(Value::is_array) {
-        return Err(ComfyError::Workflow(
-            "this is a UI-format workflow (has a top-level \"nodes\" array). \
-             Re-export with 'Save (API Format)' to get the API-format graph."
-                .into(),
-        ));
-    }
-
-    let ids_of = |class: &str| -> Vec<String> {
-        obj.iter()
-            .filter(|(_, n)| n.get("class_type").and_then(Value::as_str) == Some(class))
-            .map(|(k, _)| k.clone())
-            .collect::<Vec<_>>()
-    };
-
-    let loads = ids_of("LoadImage");
-    let load_node = match loads.as_slice() {
-        [one] => one.clone(),
-        [] => {
-            return Err(ComfyError::Workflow(
-                "no LoadImage node in the template; the batch upscaler needs one \
-                 LoadImage node to inject each dataset image into"
-                    .into(),
-            ));
-        }
-        many => {
-            return Err(ComfyError::Workflow(format!(
-                "template has {} LoadImage nodes ({}); it must have exactly one so \
-                 the upscaler knows where to inject each image",
-                many.len(),
-                many.join(", "),
-            )));
-        }
-    };
-
-    let saves = ids_of("SaveImage");
-    let save_node = saves.first().cloned().ok_or_else(|| {
-        ComfyError::Workflow(
-            "no SaveImage node in the template; add one so the upscaled result \
-             can be retrieved"
-                .into(),
-        )
-    })?;
-
-    Ok(Workflow::Custom {
-        graph,
-        load_node,
-        save_node,
-    })
 }
 
 #[cfg(test)]
@@ -292,53 +174,18 @@ mod tests {
     }
 
     #[test]
-    fn custom_template_detects_nodes_and_injects() {
-        let graph = json!({
+    fn custom_template_injects_each_image() {
+        let template = CustomTemplate::parse(json!({
             "1": { "class_type": "LoadImage", "inputs": { "image": "placeholder.png" } },
             "2": { "class_type": "UpscaleModelLoader", "inputs": { "upscale_model": "x.pth" } },
             "3": { "class_type": "ImageUpscaleWithModel",
                    "inputs": { "upscale_model": ["2", 0], "image": ["1", 0] } },
             "9": { "class_type": "SaveImage", "inputs": { "images": ["3", 0] } }
-        });
-        let wf = parse_template(graph).expect("valid template");
-        match &wf {
-            Workflow::Custom {
-                load_node,
-                save_node,
-                ..
-            } => {
-                assert_eq!(load_node, "1");
-                assert_eq!(save_node, "9");
-            }
-            _ => panic!("expected custom workflow"),
-        }
+        }))
+        .expect("valid template");
+        let wf = Workflow::Custom(template);
+        assert_eq!(wf.save_node(), "9");
         let g = wf.build_graph("dog.png");
         assert_eq!(g["1"]["inputs"]["image"], json!("dog.png"));
-    }
-
-    #[test]
-    fn ui_format_export_is_rejected() {
-        let graph = json!({ "nodes": [], "links": [], "version": 0.4 });
-        let err = parse_template(graph).unwrap_err();
-        assert!(matches!(err, ComfyError::Workflow(_)));
-        assert!(err.to_string().contains("API Format"));
-    }
-
-    #[test]
-    fn missing_load_image_is_rejected() {
-        let graph = json!({
-            "9": { "class_type": "SaveImage", "inputs": { "images": ["3", 0] } }
-        });
-        assert!(parse_template(graph).is_err());
-    }
-
-    #[test]
-    fn multiple_load_image_is_rejected() {
-        let graph = json!({
-            "1": { "class_type": "LoadImage", "inputs": { "image": "a.png" } },
-            "2": { "class_type": "LoadImage", "inputs": { "image": "b.png" } },
-            "9": { "class_type": "SaveImage", "inputs": { "images": ["1", 0] } }
-        });
-        assert!(parse_template(graph).is_err());
     }
 }

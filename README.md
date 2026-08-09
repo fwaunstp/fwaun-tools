@@ -249,8 +249,36 @@ fwaun-tools dataset tokens <dir>
 fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--json]
 ```
 
-`tag`, `caption`, `booru`, and `upscale` work one image at a time, so they
-print a progress counter while they run:
+Batch passes through an existing ComfyUI server. Both write to a separate
+output directory (default a `<dir>_upscaled` / `<dir>_edited` sibling), carry
+each `.ron` sidecar across, and skip images that already have an output — so an
+interrupted run resumes where it stopped:
+
+```
+fwaun-tools dataset upscale <dir> [--profile NAME] [--upscale-model FILE] [--workflow JSON] [--max-edge N] [--force] [--dry-run]
+fwaun-tools dataset upscale-models     [--profile NAME] [--base-url URL]
+fwaun-tools dataset edit <dir>    [--profile NAME] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
+fwaun-tools dataset edit-models        [--profile NAME] [--base-url URL]
+```
+
+`edit` applies one instruction to every image through the server's Gemini image
+(Nano Banana) API node — the pass that turns an illustrated set into one with
+photographic backgrounds. **That node is billed per image**, so check the count
+with `--dry-run` and try the prompt on a few shots with `--limit` first.
+
+It also needs a comfy.org account API key: ComfyUI authenticates paid API nodes
+per request, so being signed into the web UI in a browser doesn't cover a run
+driven over the HTTP API — without a key every image comes back *"Please login
+first to use this node"*. Generate one at <https://platform.comfy.org> and
+export it (the `api_key` profile field works too, but a dataset-local
+`fwaun-tools.toml` tends to travel with the dataset):
+
+```sh
+export COMFY_API_KEY=comfyui-...        # PowerShell: $env:COMFY_API_KEY='comfyui-...'
+```
+
+`tag`, `caption`, `booru`, `upscale`, and `edit` work one image at a time, so
+they print a progress counter while they run:
 
 ```
 caption [  12/340 ]   3.5%  1:04 elapsed  ETA 28:37  …_0013.png

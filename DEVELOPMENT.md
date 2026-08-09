@@ -208,7 +208,7 @@ fwaun-tools dataset status <dir>
 
 ### Progress reporting (`cli/src/progress.rs`)
 
-The four per-image commands (`tag` / `caption` / `booru` / `upscale`) run
+The per-image commands (`tag` / `caption` / `booru` / `upscale` / `edit`) run
 inference or network I/O per image, so they wrap their loop in `Progress`:
 `[ 12/340 ] 3.5%` plus elapsed and an ETA extrapolated from the mean cost so
 far. The rest of the commands are a sidecar read plus a string join per

@@ -32,11 +32,14 @@ pub struct ConfigDraft {
     pub captioner: Vec<(String, CaptionerProfile)>,
     pub captioner_prompts: Vec<(String, String)>,
     pub tag_groups: Vec<(String, TagGroup)>,
-    /// Upscaler config isn't editable in the GUI yet; carried verbatim so a
-    /// config save round-trips `default_upscaler` / `[upscaler.*]` untouched
-    /// instead of dropping them.
+    /// The ComfyUI-backed passes aren't editable in the GUI yet; carried
+    /// verbatim so a config save round-trips `default_upscaler` /
+    /// `[upscaler.*]` and `default_editor` / `[editor.*]` untouched instead of
+    /// dropping them.
     pub default_upscaler: Option<String>,
     pub upscaler: std::collections::BTreeMap<String, fwaun_tools_core::config::UpscalerProfile>,
+    pub default_editor: Option<String>,
+    pub editor: std::collections::BTreeMap<String, fwaun_tools_core::config::EditorProfile>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +79,8 @@ impl ConfigDraft {
             tag_groups: cfg.tag_groups.into_iter().collect(),
             default_upscaler: cfg.default_upscaler,
             upscaler: cfg.upscaler,
+            default_editor: cfg.default_editor,
+            editor: cfg.editor,
         }
     }
 
@@ -174,6 +179,7 @@ impl ConfigDraft {
                 .default_upscaler
                 .clone()
                 .filter(|s| !s.trim().is_empty()),
+            default_editor: self.default_editor.clone().filter(|s| !s.trim().is_empty()),
             common_tags: self
                 .common_tags
                 .iter()
@@ -184,6 +190,7 @@ impl ConfigDraft {
             tagger,
             captioner,
             upscaler: self.upscaler.clone(),
+            editor: self.editor.clone(),
             captioner_prompts,
             tag_groups,
         };

@@ -71,6 +71,8 @@ pub struct ProjectConfig {
     pub default_captioner: Option<String>,
     #[serde(default)]
     pub default_upscaler: Option<String>,
+    #[serde(default)]
+    pub default_editor: Option<String>,
     /// Manual entries applied to every image in the dataset without being
     /// written into any sidecar — the trigger word for a character LoRA plus
     /// the `-foo` suppressions that fold its traits (hair colour, eye colour,
@@ -96,6 +98,8 @@ pub struct ProjectConfig {
     pub captioner: BTreeMap<String, CaptionerProfile>,
     #[serde(default)]
     pub upscaler: BTreeMap<String, UpscalerProfile>,
+    #[serde(default)]
+    pub editor: BTreeMap<String, EditorProfile>,
     /// Shared prompt library — define each prompt once here and reference
     /// it by name from any captioner profile's `prompts = [...]`. The
     /// built-in `default` is always available; redefining `default` here
@@ -362,6 +366,130 @@ impl Default for UpscalerProfile {
     }
 }
 
+/// Default `model` widget value for the built-in edit workflow — Google's Nano
+/// Banana 2. The string is the exact combo option ComfyUI's Gemini image node
+/// exposes; `dataset edit-models` prints what a given server offers (the other
+/// current option is `gemini-3-pro-image-preview`, i.e. Nano Banana Pro).
+pub const DEFAULT_EDIT_MODEL: &str = "Nano Banana 2 (Gemini 3.1 Flash Image)";
+
+/// ComfyUI-backed image-editor profile: one text instruction applied to every
+/// image in a dataset through the server's Gemini image (Nano Banana) API node.
+///
+/// The motivating pass is "keep the drawn character, re-render the background
+/// photographically" over an illustrated set, so the resulting LoRA learns the
+/// mixed drawn-subject/real-scene look. Because the instruction is the same for
+/// the whole dataset it belongs here rather than on the command line.
+///
+/// The node bills per image, so `dataset edit` defaults to skipping images that
+/// already have an output and offers `--dry-run` / `--limit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditorProfile {
+    /// ComfyUI server root, e.g. `"http://127.0.0.1:8188"`.
+    #[serde(default = "default_comfyui_base_url")]
+    pub base_url: String,
+    /// comfy.org account API key, generated at <https://platform.comfy.org>.
+    /// The Gemini node is a paid API node and rejects a run without one
+    /// ("Please login first to use this node") — being signed into the web UI
+    /// does not authenticate requests made over the HTTP API.
+    ///
+    /// Prefer leaving this unset and exporting `COMFY_API_KEY` instead: a
+    /// dataset-local `fwaun-tools.toml` usually travels with the dataset, and a
+    /// key committed alongside it is a key to somebody else's billing.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// The edit instruction sent with every image. Required unless a
+    /// `workflow_template` bakes its own prompt in; `--prompt` overrides it.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// `model` widget value, e.g. `"Nano Banana 2 (Gemini 3.1 Flash Image)"`.
+    /// Run `dataset edit-models` to list what the server offers. Ignored when
+    /// `workflow_template` is set.
+    #[serde(default = "default_edit_model")]
+    pub model: String,
+    /// `"auto"` matches each input image's aspect ratio — the right choice for
+    /// a dataset pass, since a fixed ratio re-crops the subject.
+    #[serde(default = "default_edit_aspect_ratio")]
+    pub aspect_ratio: String,
+    /// Output resolution tier: `"1K"`, `"2K"`, or `"4K"`. Higher tiers cost
+    /// more per image and are billed by the API node.
+    #[serde(default = "default_edit_resolution")]
+    pub resolution: String,
+    /// Passed through to the node. The API only makes a best effort at
+    /// reproducing a seed, so this bounds run-to-run drift rather than
+    /// eliminating it.
+    #[serde(default = "default_edit_seed")]
+    pub seed: u64,
+    /// Replace the node's built-in system prompt. Leave unset to keep it.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Path to an API-format workflow JSON exported from ComfyUI
+    /// (*Save (API Format)*). When set, this graph is used instead of the
+    /// built-in one: the single `LoadImage` node is fed each dataset image, the
+    /// prompt is injected (see `prompt_node`), and the `SaveImage` node's output
+    /// is retrieved. Use it for graphs the built-in one can't express — a
+    /// reference background wired in through `Batch Images`, a mask, a
+    /// post-process chain.
+    #[serde(default)]
+    pub workflow_template: Option<PathBuf>,
+    /// Node id in that template to write `prompt` into. Leave unset to
+    /// auto-detect the single node with a string `prompt` widget; set it when
+    /// the template has several.
+    #[serde(default)]
+    pub prompt_node: Option<String>,
+    /// Cap the result's longest edge to this many pixels (Lanczos3 downscale
+    /// when exceeded). `0` = keep the model's native output, which is what an
+    /// edit pass usually wants — the resolution tier already decides the size.
+    #[serde(default = "default_editor_max_edge")]
+    pub max_edge: u32,
+    /// Per-request / whole-job timeout in seconds. A hosted API round trip is
+    /// slower than a local upscale, and `thinking` models slower still.
+    #[serde(default = "default_upscaler_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Pause between `/history` status polls, in milliseconds.
+    #[serde(default = "default_upscaler_poll_ms")]
+    pub poll_interval_ms: u64,
+}
+
+fn default_edit_model() -> String {
+    DEFAULT_EDIT_MODEL.to_string()
+}
+
+fn default_edit_aspect_ratio() -> String {
+    "auto".to_string()
+}
+
+fn default_edit_resolution() -> String {
+    "1K".to_string()
+}
+
+fn default_edit_seed() -> u64 {
+    42
+}
+
+fn default_editor_max_edge() -> u32 {
+    0
+}
+
+impl Default for EditorProfile {
+    fn default() -> Self {
+        Self {
+            base_url: default_comfyui_base_url(),
+            api_key: None,
+            prompt: None,
+            model: default_edit_model(),
+            aspect_ratio: default_edit_aspect_ratio(),
+            resolution: default_edit_resolution(),
+            seed: default_edit_seed(),
+            system_prompt: None,
+            workflow_template: None,
+            prompt_node: None,
+            max_edge: default_editor_max_edge(),
+            timeout_secs: default_upscaler_timeout_secs(),
+            poll_interval_ms: default_upscaler_poll_ms(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportProfile {
     #[serde(default = "default_threshold")]
@@ -611,11 +739,13 @@ impl Default for ProjectConfig {
             default_tagger: None,
             default_captioner: None,
             default_upscaler: None,
+            default_editor: None,
             common_tags: Vec::new(),
             export,
             tagger: BTreeMap::new(),
             captioner: BTreeMap::new(),
             upscaler: BTreeMap::new(),
+            editor: BTreeMap::new(),
             captioner_prompts: BTreeMap::new(),
             tag_groups: BTreeMap::new(),
         }
@@ -817,6 +947,9 @@ impl ProjectConfig {
         if other.default_upscaler.is_some() {
             self.default_upscaler = other.default_upscaler;
         }
+        if other.default_editor.is_some() {
+            self.default_editor = other.default_editor;
+        }
         // Replace rather than union: see the field docs on `common_tags`.
         if !other.common_tags.is_empty() {
             self.common_tags = other.common_tags;
@@ -832,6 +965,9 @@ impl ProjectConfig {
         }
         for (k, v) in other.upscaler {
             self.upscaler.insert(k, v);
+        }
+        for (k, v) in other.editor {
+            self.editor.insert(k, v);
         }
         for (k, v) in other.captioner_prompts {
             self.captioner_prompts.insert(k, v);
@@ -918,6 +1054,23 @@ impl ProjectConfig {
             return (k, profile.clone());
         }
         ("comfyui".to_string(), UpscalerProfile::default())
+    }
+
+    /// Resolve an image-editor profile. Order: explicit `name`, then
+    /// `default_editor`, then a built-in default pointing at the stock local
+    /// ComfyUI with Nano Banana 2 selected and no prompt. The caller still needs
+    /// to supply a `prompt` (via the profile or `--prompt`) before a run can
+    /// start — an edit pass with no instruction has nothing to do.
+    pub fn resolve_editor(&self, name: Option<&str>) -> (String, EditorProfile) {
+        let key = name
+            .map(str::to_string)
+            .or_else(|| self.default_editor.clone());
+        if let Some(k) = key
+            && let Some(profile) = self.editor.get(&k)
+        {
+            return (k, profile.clone());
+        }
+        ("comfyui".to_string(), EditorProfile::default())
     }
 }
 
@@ -1210,6 +1363,12 @@ mod tests {
                 "default_upscaler = {u:?} but no matching [upscaler.{u}] in the example"
             );
         }
+        if let Some(e) = &cfg.default_editor {
+            assert!(
+                cfg.editor.contains_key(e),
+                "default_editor = {e:?} but no matching [editor.{e}] in the example"
+            );
+        }
 
         fn struct_keys<T: serde::Serialize>(v: T) -> BTreeSet<String> {
             #[derive(serde::Serialize)]
@@ -1319,12 +1478,29 @@ mod tests {
             poll_interval_ms: default_upscaler_poll_ms(),
         };
 
+        let full_editor = EditorProfile {
+            base_url: "http://x".into(),
+            api_key: Some("k".into()),
+            prompt: Some("p".into()),
+            model: default_edit_model(),
+            aspect_ratio: default_edit_aspect_ratio(),
+            resolution: default_edit_resolution(),
+            seed: default_edit_seed(),
+            system_prompt: Some("s".into()),
+            workflow_template: Some(PathBuf::from("wf.json")),
+            prompt_node: Some("4".into()),
+            max_edge: default_editor_max_edge(),
+            timeout_secs: default_upscaler_timeout_secs(),
+            poll_interval_ms: default_upscaler_poll_ms(),
+        };
+
         let expected_export = struct_keys(full_export);
         let expected_tagger = struct_keys(full_tagger);
         let expected_onnx = struct_keys(full_onnx);
         let expected_openai = struct_keys(full_openai);
         let expected_tag_group = struct_keys(full_tag_group);
         let expected_upscaler = struct_keys(full_upscaler);
+        let expected_editor = struct_keys(full_editor);
 
         if let Err(missing) =
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
@@ -1378,6 +1554,14 @@ mod tests {
             panic!(
                 "no [upscaler.*] profile in crates/core/fwaun-tools.toml.example covers every \
                  UpscalerProfile field; closest match is missing {missing:?}"
+            );
+        }
+        if let Err(missing) =
+            missing_from_best_match(raw_table.get("editor"), &expected_editor, |_| true)
+        {
+            panic!(
+                "no [editor.*] profile in crates/core/fwaun-tools.toml.example covers every \
+                 EditorProfile field; closest match is missing {missing:?}"
             );
         }
     }

@@ -6,13 +6,21 @@
 //! `GET /object_info` — so callers can push an image through any workflow
 //! graph and pull the result back without touching the web UI.
 //!
-//! The [`upscale`] module is the first consumer: a batch image upscaler that
-//! runs each dataset image through a model-based (ESRGAN-style) workflow, or a
-//! user-supplied API-format workflow template. Future ComfyUI-backed batch
-//! passes (img2img, background removal, …) can reuse the same [`Client`].
+//! Two batch passes are built on it, both sharing the [`workflow`] plumbing
+//! (template validation, upload → queue → poll → download, the `max_edge` cap):
+//!
+//! * [`upscale`] — runs each dataset image through a model-based
+//!   (ESRGAN-style) workflow, or a user-supplied API-format template.
+//! * [`edit`] — applies one text instruction to every image through ComfyUI's
+//!   Gemini image (Nano Banana) API node, e.g. re-rendering illustrated
+//!   backgrounds as photographic ones.
+//!
+//! Further passes (background removal, img2img, …) can reuse the same pieces.
 
 mod client;
+pub mod edit;
 pub mod upscale;
+pub mod workflow;
 
 pub use client::{Client, ImageRef, UploadRef};
 
@@ -43,6 +51,11 @@ pub enum ComfyError {
     /// `LoadImage`/`SaveImage`, …).
     #[error("workflow template: {0}")]
     Workflow(String),
+    /// The options a batch pass was handed can't produce a run at all — no
+    /// upscale model, no edit prompt, … Carries its own full sentence, since
+    /// the fix is always "set this in the profile or pass this flag".
+    #[error("{0}")]
+    Config(String),
     #[error("image: {0}")]
     Image(#[from] image::ImageError),
     #[error("json: {0}")]

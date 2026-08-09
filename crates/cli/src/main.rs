@@ -12,6 +12,7 @@ use fwaun_tools_core::common_tags;
 use fwaun_tools_core::config::ProjectConfig;
 use fwaun_tools_core::export;
 use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
+use fwaun_tools_core::tag_group::AffixSeed;
 use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
 
@@ -634,6 +635,10 @@ fn cmd_caption(
 
     let images: Vec<PathBuf> = iter_images(&dir).collect();
     let progress = Progress::new("caption", images.len());
+    // Resolved once: the prefix the model is primed with has to be the one
+    // `metadata` will prepend later, and both derive it from the image's
+    // position under the project root.
+    let root = ProjectConfig::project_root(&dir);
 
     let mut captioned = 0usize;
     let mut skipped = 0usize;
@@ -660,8 +665,12 @@ fn cmd_caption(
         let extra_hints =
             fwaun_tools_core::tag_group::resolved_caption_hints(&sc, &cfg.tag_groups, &common);
         let hint = sc.caption_hint_prompt_with(&extra_hints);
-        let prefix =
-            fwaun_tools_core::tag_group::resolved_caption_prefix(&sc, &cfg.tag_groups, &common);
+        let prefix = fwaun_tools_core::tag_group::resolved_caption_prefix(
+            &sc,
+            &cfg.tag_groups,
+            &common,
+            AffixSeed::for_image(root.as_deref(), &image),
+        );
         let prefix = (!prefix.is_empty()).then_some(prefix);
         if pending.is_empty() {
             skipped += 1;
@@ -1274,6 +1283,7 @@ fn cmd_metadata_sd_scripts(
     let mut meta: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     let mut count = 0usize;
     let mut skipped = 0usize;
+    let root = ProjectConfig::project_root(dir);
 
     for image in iter_images(dir) {
         let sidecar = match Sidecar::load(&image)? {
@@ -1293,7 +1303,8 @@ fn cmd_metadata_sd_scripts(
                 .join(", ");
             entry.insert("tags".to_string(), serde_json::Value::String(joined));
         }
-        if let Some(cap) = export::build_caption(&sidecar, profile, tag_groups, common) {
+        let seed = AffixSeed::for_image(root.as_deref(), &image);
+        if let Some(cap) = export::build_caption(&sidecar, profile, tag_groups, common, seed) {
             entry.insert("caption".to_string(), serde_json::Value::String(cap));
         }
         if entry.is_empty() {
@@ -1326,6 +1337,7 @@ fn cmd_metadata_musubi(
     let mut rows: Vec<(String, String)> = Vec::new();
     let mut no_sidecar = 0usize;
     let mut no_caption = 0usize;
+    let root = ProjectConfig::project_root(dir);
 
     for image in iter_images(dir) {
         let sidecar = match Sidecar::load(&image)? {
@@ -1337,7 +1349,8 @@ fn cmd_metadata_musubi(
         };
         // musubi training here is caption-only: an image without a caption
         // has nothing to contribute, so skip it rather than emit a blank.
-        match export::build_caption(&sidecar, profile, tag_groups, common) {
+        let seed = AffixSeed::for_image(root.as_deref(), &image);
+        match export::build_caption(&sidecar, profile, tag_groups, common, seed) {
             Some(cap) => rows.push((metadata_image_key(&image), cap)),
             None => no_caption += 1,
         }
@@ -1900,6 +1913,7 @@ fn cmd_tokens(
     let mut over: Vec<(PathBuf, usize, usize, usize)> = Vec::new();
     let mut analyzed = 0usize;
     let mut no_sidecar = 0usize;
+    let root = ProjectConfig::project_root(&dir);
 
     for image in iter_images(&dir) {
         let Some(sidecar) = Sidecar::load(&image)? else {
@@ -1912,8 +1926,14 @@ fn cmd_tokens(
             .map(|t| t.replace('_', " "))
             .collect::<Vec<_>>()
             .join(", ");
-        let caption_text =
-            export::build_caption(&sidecar, &profile, &cfg.tag_groups, &common).unwrap_or_default();
+        let caption_text = export::build_caption(
+            &sidecar,
+            &profile,
+            &cfg.tag_groups,
+            &common,
+            AffixSeed::for_image(root.as_deref(), &image),
+        )
+        .unwrap_or_default();
 
         let tag_tok = count(&tags_text)?;
         let cap_tok = count(&caption_text)?;

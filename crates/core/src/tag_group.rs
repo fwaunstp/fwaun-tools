@@ -11,6 +11,7 @@
 //! bucket and the user would never see it.
 
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use crate::common_tags::CommonTags;
 use crate::config::{CaptionAffix, TagGroup};
@@ -144,15 +145,113 @@ pub fn resolved_caption_hints(
         .collect()
 }
 
+// ───────── per-image affix ordering seed ─────────
+
+/// FNV-1a 64-bit. Hand-rolled rather than `DefaultHasher` on purpose:
+/// [`AffixSeed`] decides what ends up in exported captions, so the hash has
+/// to produce the same number on every platform and every Rust version.
+/// `std`'s default hasher guarantees neither.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Per-image seed that scatters the order of *equal-`priority`* caption
+/// affixes.
+///
+/// Equal `priority` is a statement that the order doesn't matter, and for
+/// style LoRAs it's actively better if it varies: training every image with
+/// `"chibi style. realistic background. "` in that fixed order teaches the
+/// order along with the concepts. So matching affixes that tie on priority
+/// are ordered by a hash of `(seed, group name)` instead of by group name.
+///
+/// The seed is *pseudo*-random rather than random for two reasons:
+///
+/// 1. The captioner is primed with the resolved prefix at generation time
+///    ([`resolved_caption_prefix`]) and export prepends it again later. A
+///    fresh `rand` draw at each site would make the two disagree.
+/// 2. Re-exporting an unchanged dataset must produce an unchanged
+///    `meta.jsonl`, or every regeneration is a whole-file diff.
+///
+/// [`AffixSeed::for_image`] therefore derives it from *where the image sits
+/// in the dataset*, not from anything that changes between runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct AffixSeed(u64);
+
+impl AffixSeed {
+    /// Seed for `image`, derived from its path relative to `root` — the
+    /// directory holding `fwaun-tools.toml` (see
+    /// [`ProjectConfig::project_root`]). Relative rather than absolute so
+    /// the same dataset orders its affixes identically after a move, a
+    /// clone to another machine, or a checkout on another OS.
+    ///
+    /// The file extension is dropped: a sidecar is keyed on the stem, so
+    /// `img_001.png` and the `img_001.jpg` a `dataset edit`/`upscale` pass
+    /// turned it into are the same image and keep the same order.
+    ///
+    /// `root = None` (no project config found) falls back to the absolute
+    /// path — still stable across re-runs, just not across machines.
+    ///
+    /// [`ProjectConfig::project_root`]: crate::config::ProjectConfig::project_root
+    pub fn for_image(root: Option<&Path>, image: &Path) -> Self {
+        // `project_root` canonicalizes, so canonicalize here too or the
+        // prefix won't strip (`\\?\C:\…` vs `C:\…` on Windows).
+        let abs = image.canonicalize();
+        let abs = abs.as_deref().unwrap_or(image);
+        let rel = root.and_then(|r| abs.strip_prefix(r).ok()).unwrap_or(abs);
+        Self::from_key(&relative_key(rel))
+    }
+
+    /// Seed from an arbitrary stable identity string. Prefer
+    /// [`Self::for_image`]; this exists for callers that already hold a
+    /// dataset-relative key (and for tests).
+    pub fn from_key(key: &str) -> Self {
+        Self(fnv1a(key.as_bytes(), FNV_OFFSET))
+    }
+
+    /// Tie-break sort key for one affix. `domain` separates prefixes from
+    /// suffixes so an image doesn't get the same permutation on both.
+    fn tie_break(self, domain: &str, group_name: &str) -> u64 {
+        let h = fnv1a(&self.0.to_le_bytes(), FNV_OFFSET);
+        let h = fnv1a(domain.as_bytes(), h);
+        fnv1a(group_name.as_bytes(), h)
+    }
+}
+
+/// `a/b/img_001.png` → `a/b/img_001`. Separators are normalized to `/` so a
+/// dataset seeds identically on Windows and Linux.
+fn relative_key(rel: &Path) -> String {
+    let mut parts: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if let Some(last) = parts.last_mut()
+        && let Some(stem) = Path::new(last.as_str()).file_stem()
+    {
+        *last = stem.to_string_lossy().into_owned();
+    }
+    parts.join("/")
+}
+
 /// Concatenated caption prefix from every matching tag group, ordered by
-/// ascending `priority` (ties broken by group name). Empty when nothing
-/// matches.
+/// ascending `priority`; groups that tie on priority are ordered
+/// pseudo-randomly per image by `seed` (see [`AffixSeed`]). Empty when
+/// nothing matches.
 pub fn resolved_caption_prefix(
     sc: &Sidecar,
     groups: &BTreeMap<String, TagGroup>,
     common: &CommonTags,
+    seed: AffixSeed,
 ) -> String {
-    resolved_affix(sc, groups, common, |g| g.caption_prefix.as_ref())
+    resolved_affix(sc, groups, common, seed, "prefix", |g| {
+        g.caption_prefix.as_ref()
+    })
 }
 
 /// Concatenated caption suffix from every matching tag group. Same ordering
@@ -161,27 +260,40 @@ pub fn resolved_caption_suffix(
     sc: &Sidecar,
     groups: &BTreeMap<String, TagGroup>,
     common: &CommonTags,
+    seed: AffixSeed,
 ) -> String {
-    resolved_affix(sc, groups, common, |g| g.caption_suffix.as_ref())
+    resolved_affix(sc, groups, common, seed, "suffix", |g| {
+        g.caption_suffix.as_ref()
+    })
 }
 
 fn resolved_affix(
     sc: &Sidecar,
     groups: &BTreeMap<String, TagGroup>,
     common: &CommonTags,
+    seed: AffixSeed,
+    domain: &str,
     pick: impl Fn(&TagGroup) -> Option<&CaptionAffix>,
 ) -> String {
     let stems = manual_caption_stems(sc, common);
-    let mut matched: Vec<(&str, &CaptionAffix)> = groups
+    let mut matched: Vec<(&str, u64, &CaptionAffix)> = groups
         .iter()
         .filter(|(_, g)| group_all_present(g, &stems))
-        .filter_map(|(name, g)| pick(g).map(|a| (name.as_str(), a)))
+        .filter_map(|(name, g)| pick(g).map(|a| (name.as_str(), seed.tie_break(domain, name), a)))
         .collect();
-    // Ascending priority; ties broken by group name for a stable order.
-    matched.sort_by(|a, b| a.1.priority.cmp(&b.1.priority).then_with(|| a.0.cmp(b.0)));
+    // Ascending priority. Ties go to the per-image hash — keyed on the group
+    // name alone, so adding or removing an unrelated group doesn't reshuffle
+    // the ones that were already there. The name is the final tiebreak, for
+    // the (astronomically unlikely) hash collision.
+    matched.sort_by(|a, b| {
+        a.2.priority
+            .cmp(&b.2.priority)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.0.cmp(b.0))
+    });
     matched
         .into_iter()
-        .map(|(_, a)| a.content.as_str())
+        .map(|(_, _, a)| a.content.as_str())
         .collect()
 }
 
@@ -476,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_caption_prefix_concatenates_by_priority_then_name() {
+    fn resolved_caption_prefix_concatenates_by_priority() {
         let mut sc = Sidecar::default();
         sc.manual_tags.push("sayaka".into());
         sc.manual_tags.push("fantasy_knight".into());
@@ -506,7 +618,7 @@ mod tests {
             },
         );
         assert_eq!(
-            resolved_caption_prefix(&sc, &groups, &CommonTags::default()),
+            resolved_caption_prefix(&sc, &groups, &CommonTags::default(), AffixSeed::default()),
             "AB"
         );
     }
@@ -528,8 +640,163 @@ mod tests {
             },
         );
         assert_eq!(
-            resolved_caption_prefix(&sc, &groups, &CommonTags::default()),
+            resolved_caption_prefix(&sc, &groups, &CommonTags::default(), AffixSeed::default()),
             "realistic proportions, "
+        );
+    }
+
+    /// Two equal-priority steering groups, both firing: the "chibi style" /
+    /// "realistic background" pair a style LoRA wants scattered.
+    fn tied_style_groups() -> BTreeMap<String, TagGroup> {
+        let affix = |content: &str| {
+            Some(CaptionAffix {
+                content: content.into(),
+                priority: 0,
+            })
+        };
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "style_chibi".to_string(),
+            TagGroup {
+                tags: vec!["chibi".into()],
+                exclusive: false,
+                caption_prefix: affix("chibi style. "),
+                caption_suffix: affix(" [chibi]"),
+                ..Default::default()
+            },
+        );
+        groups.insert(
+            "style_realistic_bg".to_string(),
+            TagGroup {
+                tags: vec!["realistic_background".into()],
+                exclusive: false,
+                caption_prefix: affix("realistic background. "),
+                caption_suffix: affix(" [bg]"),
+                ..Default::default()
+            },
+        );
+        groups
+    }
+
+    fn both_styles() -> Sidecar {
+        Sidecar {
+            manual_tags: vec!["chibi".into(), "realistic_background".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn equal_priority_prefixes_scatter_across_images() {
+        let sc = both_styles();
+        let groups = tied_style_groups();
+        let chibi_first = (0..200)
+            .map(|i| AffixSeed::for_image(None, Path::new(&format!("img_{i:03}.png"))))
+            .filter(|seed| {
+                resolved_caption_prefix(&sc, &groups, &CommonTags::default(), *seed)
+                    .starts_with("chibi")
+            })
+            .count();
+        // Both orders must actually occur, and neither should dominate — a
+        // 200-image dataset landing outside 25..175 means the hash isn't
+        // mixing the filename in usefully.
+        assert!(
+            (25..175).contains(&chibi_first),
+            "chibi-first for {chibi_first}/200 images — not a usable split"
+        );
+    }
+
+    #[test]
+    fn equal_priority_order_is_stable_for_one_image() {
+        let sc = both_styles();
+        let groups = tied_style_groups();
+        let seed = AffixSeed::for_image(None, Path::new("dataset/img_007.png"));
+        let first = resolved_caption_prefix(&sc, &groups, &CommonTags::default(), seed);
+        for _ in 0..5 {
+            assert_eq!(
+                resolved_caption_prefix(&sc, &groups, &CommonTags::default(), seed),
+                first
+            );
+        }
+        // Exactly one of the two orders, never a partial or duplicated one.
+        assert!(
+            first == "chibi style. realistic background. "
+                || first == "realistic background. chibi style. ",
+            "unexpected prefix {first:?}"
+        );
+    }
+
+    #[test]
+    fn prefix_and_suffix_permutations_are_independent() {
+        let sc = both_styles();
+        let groups = tied_style_groups();
+        // Same seed, different domain: the two must not move in lockstep, or
+        // an image's suffix would just echo its prefix order.
+        let disagreements = (0..64)
+            .map(|i| AffixSeed::for_image(None, Path::new(&format!("img_{i:03}.png"))))
+            .filter(|seed| {
+                let p = resolved_caption_prefix(&sc, &groups, &CommonTags::default(), *seed);
+                let s = resolved_caption_suffix(&sc, &groups, &CommonTags::default(), *seed);
+                p.starts_with("chibi") != s.starts_with(" [chibi]")
+            })
+            .count();
+        assert!(disagreements > 0, "prefix and suffix orders never differ");
+    }
+
+    #[test]
+    fn adding_a_group_leaves_the_existing_tie_order_alone() {
+        // The tie-break hashes the group name alone, so a config edit that
+        // introduces a third steering group must not reshuffle the two that
+        // were already there — otherwise every such edit rewrites the whole
+        // exported metadata.
+        let mut sc = both_styles();
+        sc.manual_tags.push("watercolor".into());
+        let groups = tied_style_groups();
+        let mut grown = groups.clone();
+        grown.insert(
+            "style_watercolor".to_string(),
+            TagGroup {
+                tags: vec!["watercolor".into()],
+                exclusive: false,
+                caption_prefix: Some(CaptionAffix {
+                    content: "watercolor. ".into(),
+                    priority: 0,
+                }),
+                ..Default::default()
+            },
+        );
+        for i in 0..32 {
+            let seed = AffixSeed::for_image(None, Path::new(&format!("img_{i:03}.png")));
+            let before = resolved_caption_prefix(&sc, &groups, &CommonTags::default(), seed);
+            let after = resolved_caption_prefix(&sc, &grown, &CommonTags::default(), seed)
+                .replace("watercolor. ", "");
+            assert_eq!(before, after, "seed {i} reshuffled");
+        }
+    }
+
+    #[test]
+    fn affix_seed_is_relative_to_the_project_root() {
+        // Same image, two checkouts of the same dataset → same seed.
+        assert_eq!(
+            AffixSeed::for_image(
+                Some(Path::new("/home/a/ds")),
+                Path::new("/home/a/ds/x/i.png")
+            ),
+            AffixSeed::for_image(Some(Path::new("/mnt/d/ds")), Path::new("/mnt/d/ds/x/i.png")),
+        );
+        // Different location inside the dataset → different seed.
+        assert_ne!(
+            AffixSeed::for_image(Some(Path::new("/ds")), Path::new("/ds/x/i.png")),
+            AffixSeed::for_image(Some(Path::new("/ds")), Path::new("/ds/y/i.png")),
+        );
+    }
+
+    #[test]
+    fn affix_seed_ignores_the_file_extension() {
+        // `dataset edit` / `upscale` can hand back a different container for
+        // the same image; the sidecar (and the seed) key on the stem.
+        assert_eq!(
+            AffixSeed::for_image(Some(Path::new("/ds")), Path::new("/ds/i.png")),
+            AffixSeed::for_image(Some(Path::new("/ds")), Path::new("/ds/i.webp")),
         );
     }
 

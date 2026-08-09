@@ -29,7 +29,7 @@ use fwaun_tools_core::config::{CONFIG_FILE, ProjectConfig, TagGroup};
 use fwaun_tools_core::sidecar::{
     AutoTag, BooruInfo, BooruTag, Sidecar, TaggerInfo, is_organizational, sidecar_path_for,
 };
-use fwaun_tools_core::tag_group::{self, Classification, DropTarget};
+use fwaun_tools_core::tag_group::{self, AffixSeed, Classification, DropTarget};
 use fwaun_tools_core::walk::iter_images;
 use fwaun_tools_tagger::Tagger;
 
@@ -322,6 +322,13 @@ struct AnimaTaggerApp {
     // shared layer instead of every sidecar" path for whole-dataset bulk
     // tag edits.
     root_config_path: Option<PathBuf>,
+    // Directory of the config governing the loaded folder — its own, or an
+    // ancestor's. Unlike `root_config_path` this is set even when a
+    // subdirectory is open, because it anchors the per-image `AffixSeed`
+    // that orders equal-priority caption prefixes: the CLI's `metadata`
+    // resolves it the same way, so a prefix the GUI primed a caption with
+    // is the prefix export prepends.
+    config_root: Option<PathBuf>,
     // Current main-area view mode.
     view_mode: ViewMode,
     // Active drag in the Kanban view, if any. The payload carries one or
@@ -405,6 +412,7 @@ impl AnimaTaggerApp {
             project_config: None,
             common_tags: CommonTags::default(),
             root_config_path: None,
+            config_root: None,
             view_mode: ViewMode::Grid,
             kanban_drag: None,
             preview: None,
@@ -480,6 +488,7 @@ impl AnimaTaggerApp {
             }
         }
         self.root_config_path = ProjectConfig::dataset_root_config(dir);
+        self.config_root = ProjectConfig::project_root(dir);
         // Drop a stale Kanban view if its group no longer exists in the
         // newly-loaded config.
         if let ViewMode::Kanban { group } = &self.view_mode {
@@ -2629,12 +2638,14 @@ impl AnimaTaggerApp {
                 (i.path.clone(), i.sidecar.caption_hint_prompt_with(&extra))
             })
             .collect();
+        let config_root = self.config_root.clone();
         let prefixes: HashMap<PathBuf, Option<String>> = self
             .images
             .iter()
             .filter(|i| sel.contains(&i.path))
             .map(|i| {
-                let p = tag_group::resolved_caption_prefix(&i.sidecar, &tag_groups, &common);
+                let seed = AffixSeed::for_image(config_root.as_deref(), &i.path);
+                let p = tag_group::resolved_caption_prefix(&i.sidecar, &tag_groups, &common, seed);
                 (i.path.clone(), (!p.is_empty()).then_some(p))
             })
             .collect();

@@ -590,8 +590,10 @@ pub struct TagGroup {
     /// prepended at export, and used as the assistant-turn prefill seed at
     /// generation so the generated body continues from it naturally. When
     /// several groups match, their prefixes concatenate in ascending
-    /// `priority` (ties broken by group name). Include your own trailing
-    /// separator (e.g. `". "`) in `content`.
+    /// `priority`; groups that tie are ordered per-image by
+    /// [`AffixSeed`](crate::tag_group::AffixSeed) rather than by name, so
+    /// the order varies across the dataset without varying between runs.
+    /// Include your own trailing separator (e.g. `". "`) in `content`.
     #[serde(default)]
     pub caption_prefix: Option<CaptionAffix>,
     /// Like `caption_prefix`, but appended after the caption body instead of
@@ -620,7 +622,8 @@ impl Default for TagGroup {
 /// A caption affix (prefix or suffix) contributed by a matching [`TagGroup`].
 /// `priority` orders concatenation when several groups match on one image:
 /// ascending, so a lower number sits closer to the front (for prefixes) or
-/// nearer the body (for suffixes). Ties break by group name.
+/// nearer the body (for suffixes). Equal priorities are shuffled per image —
+/// see [`AffixSeed`](crate::tag_group::AffixSeed).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaptionAffix {
     /// The literal affix text. Include any separator yourself (a trailing
@@ -850,6 +853,21 @@ impl ProjectConfig {
             }
         }
         None
+    }
+
+    /// Directory of the config found by
+    /// [`find_project_config`](Self::find_project_config) — the dataset
+    /// root, as far as anything that needs a stable per-image identity is
+    /// concerned. Canonicalized (inherited from `find_project_config`), so
+    /// it strips cleanly off a canonicalized image path; that's what
+    /// [`AffixSeed::for_image`] wants, and why this isn't the right thing
+    /// to show a user.
+    ///
+    /// [`AffixSeed::for_image`]: crate::tag_group::AffixSeed::for_image
+    pub fn project_root(dir: &Path) -> Option<PathBuf> {
+        Self::find_project_config(dir)?
+            .parent()
+            .map(Path::to_path_buf)
     }
 
     /// The config file `dir` owns *directly*, if any — i.e. `dir` is the

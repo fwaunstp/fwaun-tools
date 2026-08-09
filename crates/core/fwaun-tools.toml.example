@@ -306,9 +306,11 @@ tags = ["official_school_uniform", "official_lounge_wear"]
 # flagged as a violation (and the group is hidden from the Kanban board).
 #
 # When several groups' prefixes match one image, they concatenate in
-# ascending `priority` (ties broken by group name); suffixes likewise.
-# Include your own separator in `content` (a trailing `", "` for a prefix,
-# a leading `", "` for a suffix).
+# ascending `priority`; suffixes likewise. Include your own separator in
+# `content` (a trailing `", "` for a prefix, a leading `", "` for a suffix).
+#
+# Groups that share a `priority` are ordered PER IMAGE instead of by name:
+# see the style-LoRA example further down for why, and what stays stable.
 [tag_group.style_realistic]
 tags = ["realistic"]
 exclusive = false
@@ -335,6 +337,34 @@ priority = 0
 # [tag_group.costume_fantasy_knight.caption_prefix]
 # content = "She wears her official Fantasy Knight costume. "
 # priority = 1
+
+# Style LoRA over independent axes — this is what EQUAL priorities are for.
+# Training the four combinations of "chibi or not" x "realistic background or
+# not" with a fixed prefix order teaches the ORDER along with the concepts, so
+# the two below share `priority = 0` and each image gets one of
+#   "chibi style. realistic background. "
+#   "realistic background. chibi style. "
+# The pick is a hash of the image's path relative to THIS FILE's directory
+# (extension dropped), not a random draw, so:
+#   - the captioner is primed with the same prefix export later prepends;
+#   - re-running `metadata` on an unchanged dataset produces an identical
+#     file — no spurious diff;
+#   - moving the dataset, or cloning it to another machine, keeps every
+#     image's order; renaming an image or moving it between subdirectories
+#     rerolls that one image.
+# Give the groups different priorities if you do want a fixed order.
+# [tag_group.style_chibi]
+# tags = ["chibi"]
+# exclusive = false
+# [tag_group.style_chibi.caption_prefix]
+# content = "chibi style. "
+# priority = 0
+# [tag_group.style_realistic_background]
+# tags = ["realistic_background"]
+# exclusive = false
+# [tag_group.style_realistic_background.caption_prefix]
+# content = "realistic background. "
+# priority = 0
 
 # Multi-tag concept (logical AND): vary a concept trigger's phrasing by
 # count/gender. Each entry fires only when BOTH its tags are present, so a

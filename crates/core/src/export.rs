@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::common_tags::CommonTags;
 use crate::config::{ExportProfile, TagGroup};
 use crate::sidecar::{Sidecar, is_organizational, positive_entries, suppressed_stems};
+use crate::tag_group::AffixSeed;
 
 #[derive(Debug, Error)]
 pub enum ExportError {
@@ -106,6 +107,11 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile, common: &CommonTag
 /// from the dataset-wide `common` layer match too, so a trigger word
 /// declared once there can drive a caption affix on every image.
 ///
+/// `seed` orders tag-group affixes that tie on `priority` — see
+/// [`AffixSeed`]. It must be the same seed the captioner was primed with,
+/// or the prefix baked into the generated body won't match the one export
+/// prepends.
+///
 /// Returns `None` when the image has no caption body at all: a bare affix
 /// without a caption isn't a useful training caption, so such images are
 /// skipped by callers rather than emitted affix-only.
@@ -114,14 +120,15 @@ pub fn build_caption(
     profile: &ExportProfile,
     tag_groups: &BTreeMap<String, TagGroup>,
     common: &CommonTags,
+    seed: AffixSeed,
 ) -> Option<String> {
     let body = sidecar.export_caption()?;
     let present = present_caption_stems(sidecar, profile, common);
     // Tag-group affixes (keyed on a tag *combination*, priority-ordered) sit
     // outermost; legacy per-tag export-profile affixes nest just inside the
     // caption body. Both are honored so existing configs keep working.
-    let group_prefix = crate::tag_group::resolved_caption_prefix(sidecar, tag_groups, common);
-    let group_suffix = crate::tag_group::resolved_caption_suffix(sidecar, tag_groups, common);
+    let group_prefix = crate::tag_group::resolved_caption_prefix(sidecar, tag_groups, common, seed);
+    let group_suffix = crate::tag_group::resolved_caption_suffix(sidecar, tag_groups, common, seed);
     let legacy_prefix = matched_affixes(&profile.caption_prefixes, &present);
     let legacy_suffix = matched_affixes(&profile.caption_suffixes, &present);
     let prefix = format!("{group_prefix}{legacy_prefix}");
@@ -436,7 +443,14 @@ mod tests {
         sidecar.set_caption("a", "a girl standing in a field");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("realistic proportions, a girl standing in a field")
         );
     }
@@ -451,7 +465,14 @@ mod tests {
         ]);
         // No proportion tag → bare caption (the default house style).
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("a girl standing in a field")
         );
     }
@@ -465,7 +486,14 @@ mod tests {
         sidecar.set_caption("a", "a cat");
         let profile = with_caption_prefixes(&[("super_deformed", "super deformed, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("super deformed, a cat")
         );
     }
@@ -480,7 +508,14 @@ mod tests {
         sidecar.set_manual_caption("hand-edited body");
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("realistic proportions, hand-edited body")
         );
     }
@@ -495,7 +530,13 @@ mod tests {
         };
         let profile = with_caption_prefixes(&[("realistic", "realistic proportions, ")]);
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            ),
             None
         );
     }
@@ -517,7 +558,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("a girl standing in a field, realistic proportions")
         );
     }
@@ -539,7 +587,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("PRE a cat SUF")
         );
     }
@@ -550,7 +605,13 @@ mod tests {
         sidecar.set_caption("a", "plain caption");
         let profile = ExportProfile::default();
         assert_eq!(
-            build_caption(&sidecar, &profile, &BTreeMap::new(), &CommonTags::default()),
+            build_caption(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default()
+            ),
             sidecar.export_caption()
         );
     }
@@ -590,7 +651,14 @@ mod tests {
         );
         let profile = ExportProfile::default();
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &groups,
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("Sayaka from Saru getchu. She wears her Fantasy Knight costume. she stands ready")
         );
     }
@@ -619,13 +687,27 @@ mod tests {
         let profile = ExportProfile::default();
         // Only `1girl` present → group does not fire.
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &groups,
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("a scene")
         );
         // Add the concept tag → both present → prefix folds in.
         sidecar.add_manual_tag("breaking_through_fourth_wall");
         assert_eq!(
-            build_caption(&sidecar, &profile, &groups, &CommonTags::default()).as_deref(),
+            build_caption(
+                &sidecar,
+                &profile,
+                &groups,
+                &CommonTags::default(),
+                AffixSeed::default()
+            )
+            .as_deref(),
             Some("PRE a scene")
         );
     }
@@ -701,7 +783,8 @@ mod tests {
                 &sidecar,
                 &profile,
                 &BTreeMap::new(),
-                &CommonTags::new(["himeko"])
+                &CommonTags::new(["himeko"]),
+                AffixSeed::default(),
             )
             .as_deref(),
             Some("Himeko. a girl standing in a field")

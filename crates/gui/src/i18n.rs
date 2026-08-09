@@ -768,8 +768,8 @@ impl T {
     }
     pub fn cfg_tag_group_affix_note(self) -> &'static str {
         self.pair(
-            "Prefix/suffix are folded into the exported caption and steer generation; ascending priority orders concatenation when several groups match. Leave content empty to disable.",
-            "プレフィクス／サフィックスはエクスポート時のキャプションに畳み込まれ、生成も誘導します。複数グループが一致した場合は優先度の昇順で連結されます。内容を空にすると無効になります。",
+            "Prefix/suffix are folded into the exported caption and steer generation; ascending priority orders concatenation when several groups match. Groups sharing a priority are ordered per image (same order on every run) so the dataset isn't trained on one fixed sequence. Leave content empty to disable.",
+            "プレフィクス／サフィックスはエクスポート時のキャプションに畳み込まれ、生成も誘導します。複数グループが一致した場合は優先度の昇順で連結されます。優先度が同じグループ同士は画像ごとに順番が入れ替わります（同じ画像なら毎回同じ順番）。順番の固定を学習させないための挙動です。内容を空にすると無効になります。",
         )
     }
     pub fn cfg_add(self) -> &'static str {

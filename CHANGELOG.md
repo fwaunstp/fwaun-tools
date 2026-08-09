@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Equal-priority caption prefixes now vary per image instead of always
+  sorting by group name.** For a style LoRA over independent axes — "chibi
+  style" or not, "realistic background" or not — every image carrying both
+  used to get the two prefixes in the same fixed order, which trains the
+  order along with the concepts. Groups that share a `priority` are now
+  ordered per image, so roughly half the set reads `"chibi style. realistic
+  background. "` and the rest `"realistic background. chibi style. "`. Give
+  the groups different priorities if you want a fixed order — that is what
+  `priority` is for; sharing one now means "order doesn't matter".
+
+  The pick is pseudo-random, not random: it hashes the image's path relative
+  to the directory holding `fwaun-tools.toml`, with the extension dropped.
+  So the prefix the captioner is primed with is the one `metadata` prepends
+  later, re-running `metadata` over an unchanged dataset rewrites the file
+  byte-for-byte, and moving or cloning the dataset (or re-encoding an image
+  via `dataset edit` / `upscale`) keeps every image's order. Renaming an
+  image or moving it between subdirectories rerolls that one image.
+  Suffixes work the same way, with an independent permutation.
+
+  - Datasets with several equal-priority prefix groups will see a one-time
+    reshuffle of their exported captions. Nothing else moves.
+  - core: `tag_group::AffixSeed`, plus a `seed` parameter on
+    `export::build_caption` / `tag_group::resolved_caption_{prefix,suffix}`
+    and the new `ProjectConfig::project_root` that anchors it.
+
 ### Added
 
 - **Batch image editing via ComfyUI.** `fwaun-tools dataset edit <dir>` applies

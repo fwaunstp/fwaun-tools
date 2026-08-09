@@ -44,6 +44,7 @@ pub struct ImageRef {
 pub struct Client {
     base_url: String,
     client_id: String,
+    comfy_api_key: Option<String>,
     agent: ureq::Agent,
 }
 
@@ -62,8 +63,28 @@ impl Client {
             // ComfyUI accepts any client_id string; it only scopes websocket
             // progress events, which we don't use (we poll /history instead).
             client_id: format!("fwaun-tools-{}", std::process::id()),
+            comfy_api_key: None,
             agent,
         }
+    }
+
+    /// Attach a comfy.org account API key (generated at
+    /// <https://platform.comfy.org/login>), sent with every queued prompt.
+    ///
+    /// Paid **API nodes** — the Gemini/Nano Banana image nodes among them —
+    /// refuse to run with *"Please login first to use this node"* unless the
+    /// request carries one. The web UI injects the browser session's token
+    /// itself, so a workflow that runs fine in the UI still fails over the HTTP
+    /// API without this. Blank / whitespace-only keys are treated as unset.
+    pub fn with_comfy_api_key(mut self, key: Option<String>) -> Self {
+        self.comfy_api_key = key.filter(|k| !k.trim().is_empty());
+        self
+    }
+
+    /// Whether an API key is attached — lets callers warn up front rather than
+    /// after a whole batch has failed.
+    pub fn has_comfy_api_key(&self) -> bool {
+        self.comfy_api_key.is_some()
     }
 
     pub fn base_url(&self) -> &str {
@@ -112,12 +133,16 @@ impl Client {
     /// `POST /prompt`. Queues a workflow graph (API format) and returns its
     /// `prompt_id`. Surfaces per-node validation failures as
     /// [`ComfyError::NodeErrors`].
+    ///
+    /// An API key set via [`Self::with_comfy_api_key`] rides along in
+    /// `extra_data.api_key_comfy_org`, which is where ComfyUI's executor reads
+    /// the credential for paid API nodes from.
     pub fn queue_prompt(&self, graph: &Value) -> Result<String> {
         let url = format!("{}/prompt", self.base_url);
         let resp = self
             .agent
             .post(&url)
-            .send_json(json!({ "prompt": graph, "client_id": self.client_id }))
+            .send_json(self.prompt_body(graph))
             .map_err(http_err)?;
         let v: Value = resp.into_json()?;
         if let Some(errs) = v.get("node_errors").and_then(Value::as_object)
@@ -131,6 +156,19 @@ impl Client {
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| ComfyError::Http("no prompt_id in /prompt response".into()))
+    }
+
+    /// The `POST /prompt` request body. Split out so the `extra_data` shape —
+    /// the part ComfyUI's executor reads API-node credentials from — is
+    /// testable without a server.
+    fn prompt_body(&self, graph: &Value) -> Value {
+        let mut body = json!({ "prompt": graph, "client_id": self.client_id });
+        if let Some(key) = &self.comfy_api_key
+            && let Some(obj) = body.as_object_mut()
+        {
+            obj.insert("extra_data".into(), json!({ "api_key_comfy_org": key }));
+        }
+        body
     }
 
     /// Poll `GET /history/{prompt_id}` until the run produces an output image
@@ -366,6 +404,40 @@ mod tests {
     fn combo_choices_none_when_no_list() {
         let spec = json!(["INT", { "default": 1, "min": 0 }]);
         assert!(combo_choices(&spec).is_none());
+    }
+
+    fn test_client() -> Client {
+        Client::new("http://127.0.0.1:8188", Duration::from_secs(1))
+    }
+
+    #[test]
+    fn prompt_body_omits_extra_data_without_a_key() {
+        let body = test_client().prompt_body(&json!({"1": {}}));
+        assert!(body.get("extra_data").is_none());
+        assert_eq!(body["prompt"], json!({"1": {}}));
+    }
+
+    #[test]
+    fn prompt_body_carries_the_api_key_where_comfyui_reads_it() {
+        // ComfyUI's executor resolves the API_KEY_COMFY_ORG hidden input from
+        // exactly this path; anywhere else and paid API nodes answer "Please
+        // login first to use this node".
+        let client = test_client().with_comfy_api_key(Some("comfyui-abc123".into()));
+        assert!(client.has_comfy_api_key());
+        let body = client.prompt_body(&json!({}));
+        assert_eq!(
+            body["extra_data"]["api_key_comfy_org"],
+            json!("comfyui-abc123")
+        );
+    }
+
+    #[test]
+    fn blank_api_key_counts_as_unset() {
+        // An empty `api_key = ""` in a config is "not configured", not a key
+        // that would make the server reject the request in a confusing way.
+        let client = test_client().with_comfy_api_key(Some("   ".into()));
+        assert!(!client.has_comfy_api_key());
+        assert!(client.prompt_body(&json!({})).get("extra_data").is_none());
     }
 
     #[test]

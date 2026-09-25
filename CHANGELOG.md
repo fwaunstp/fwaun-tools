@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dataset export --content caption`.** `export` used to always write the
+  merged tag string to `<image>.txt`; models that were never trained on
+  danbooru-style tags (Qwen Image, Flux, and other natural-language
+  captioners) need the export caption instead — same body `metadata`
+  already writes into `meta.json`/`meta.jsonl`, with `caption_prefixes` /
+  `caption_suffixes` and tag-group affixes applied. `--content tags` stays
+  the default, so existing invocations are unaffected. Images without a
+  caption are skipped (reported separately from "no sidecar" in the
+  summary line), the same way `metadata --format musubi` already handles it.
+  - core: `export::export_caption_file`.
+
 ### Changed
 
 - **Equal-priority caption prefixes now vary per image instead of always

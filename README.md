@@ -52,8 +52,10 @@ stacks is not tested.
 - **Per-folder configuration via `fwaun-tools.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
 - **Two output modes.** `export` writes one `<image>.txt` per image
-  (sd-scripts DreamBooth/LoRA caption-file mode); `metadata` writes a
-  single `meta.json` (sd-scripts fine-tune mode).
+  (sd-scripts DreamBooth/LoRA caption-file mode — tags by default, or
+  `--content caption` for natural-language models like Qwen Image/Flux
+  that weren't trained on danbooru tags); `metadata` writes a single
+  `meta.json` (sd-scripts fine-tune mode).
 - **Fast re-opening.** The GUI's **Reload** button re-scans the open folder
   and only regenerates thumbnails for images that actually changed, so
   picking up a CLI run or a handful of new files is instant instead of a
@@ -238,7 +240,7 @@ Dataset curation (`fwaun-tools dataset <verb>`):
 fwaun-tools dataset tag <dir>      [--model NAME] [--threshold X] [--force]
 fwaun-tools dataset caption <dir>  [--model NAME] [--force]
 fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
-fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X]
+fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X] [--content tags|caption]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]

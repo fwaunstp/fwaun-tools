@@ -38,6 +38,19 @@ enum PromoteMode {
     Always,
 }
 
+/// What the `export` command writes into each `<image>.txt`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum ExportContent {
+    /// Merged manual + auto + booru tags (the historical default), for
+    /// tag-trained models (e.g. anime checkpoints via sd-scripts/musubi).
+    Tags,
+    /// The export caption — manual caption if set, else the joined active
+    /// auto captions, with any configured prefixes/suffixes applied. For
+    /// natural-language models (e.g. Qwen Image, Flux) that were never
+    /// trained on danbooru-style tags. Images without a caption are skipped.
+    Caption,
+}
+
 /// Output layout for the `metadata` command.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 enum MetadataFormat {
@@ -199,13 +212,17 @@ enum DatasetCommand {
         #[arg(long)]
         base_url: Option<String>,
     },
-    /// Merge manual + auto + booru tags and write `<image>.txt` for training.
+    /// Write `<image>.txt` for training: merged tags by default, or the
+    /// export caption with `--content caption` for models not trained on
+    /// danbooru-style tags.
     Export {
         dir: PathBuf,
         #[arg(long)]
         profile: Option<String>,
         #[arg(long)]
         threshold: Option<f32>,
+        #[arg(long, value_enum, default_value = "tags")]
+        content: ExportContent,
     },
     /// Write a dataset metadata file for every image with a sidecar.
     /// `--format sd-scripts` (default) emits a kohya-ss/sd-scripts
@@ -493,7 +510,8 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             dir,
             profile,
             threshold,
-        } => cmd_export(dir, profile, threshold),
+            content,
+        } => cmd_export(dir, profile, threshold, content),
         DatasetCommand::Metadata {
             dir,
             profile,
@@ -1217,7 +1235,12 @@ fn cmd_upscale_models(profile_name: Option<String>, base_url: Option<String>) ->
     Ok(())
 }
 
-fn cmd_export(dir: PathBuf, profile_name: Option<String>, threshold: Option<f32>) -> Result<()> {
+fn cmd_export(
+    dir: PathBuf,
+    profile_name: Option<String>,
+    threshold: Option<f32>,
+    content: ExportContent,
+) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
     let common = cfg.resolve_common_tags();
@@ -1226,21 +1249,59 @@ fn cmd_export(dir: PathBuf, profile_name: Option<String>, threshold: Option<f32>
         profile.threshold = t;
     }
 
-    let mut written = 0usize;
-    let mut skipped = 0usize;
-    for image in iter_images(&dir) {
-        let sidecar = match Sidecar::load(&image)? {
-            Some(s) => s,
-            None => {
-                skipped += 1;
-                continue;
+    match content {
+        ExportContent::Tags => {
+            let mut written = 0usize;
+            let mut skipped = 0usize;
+            for image in iter_images(&dir) {
+                let sidecar = match Sidecar::load(&image)? {
+                    Some(s) => s,
+                    None => {
+                        skipped += 1;
+                        continue;
+                    }
+                };
+                let out = export::export_image(&image, &sidecar, &profile, &common)?;
+                println!("wrote {}", out.display());
+                written += 1;
             }
-        };
-        let out = export::export_image(&image, &sidecar, &profile, &common)?;
-        println!("wrote {}", out.display());
-        written += 1;
+            println!("done: {written} written, {skipped} skipped (no sidecar)");
+        }
+        ExportContent::Caption => {
+            let root = ProjectConfig::project_root(&dir);
+            let mut written = 0usize;
+            let mut no_sidecar = 0usize;
+            let mut no_caption = 0usize;
+            for image in iter_images(&dir) {
+                let sidecar = match Sidecar::load(&image)? {
+                    Some(s) => s,
+                    None => {
+                        no_sidecar += 1;
+                        continue;
+                    }
+                };
+                let seed = AffixSeed::for_image(root.as_deref(), &image);
+                match export::export_caption_file(
+                    &image,
+                    &sidecar,
+                    &profile,
+                    &cfg.tag_groups,
+                    &common,
+                    seed,
+                )? {
+                    Some(out) => {
+                        println!("wrote {}", out.display());
+                        written += 1;
+                    }
+                    None => no_caption += 1,
+                }
+            }
+            println!(
+                "done: {written} written, {no_caption} skipped (no caption), \
+                 {no_sidecar} skipped (no sidecar)"
+            );
+        }
     }
-    println!("done: {written} written, {skipped} skipped (no sidecar)");
     Ok(())
 }
 

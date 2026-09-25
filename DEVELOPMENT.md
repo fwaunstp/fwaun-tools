@@ -191,7 +191,7 @@ prefixes) are encoded as **export profiles**, not hardcoded.
 fwaun-tools dataset tag <dir> [--model NAME] [--threshold X] [--force]
 fwaun-tools dataset caption <dir> [--model NAME] [--force]
 fwaun-tools dataset booru <dir> [--source danbooru] [--force]
-fwaun-tools dataset export <dir> [--profile NAME] [--threshold X]
+fwaun-tools dataset export <dir> [--profile NAME] [--threshold X] [--content tags|caption]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset status <dir>
 ```
@@ -199,6 +199,9 @@ fwaun-tools dataset status <dir>
 - `tag` / `caption` / `booru` — populate sidecars. Skip already-populated
   images unless `--force`.
 - `export` — write one `<image>.txt` per image (DreamBooth/LoRA mode).
+  `--content tags` (default) writes the merged tag string; `--content
+  caption` writes the export caption instead, for models not trained on
+  danbooru-style tags (Qwen Image, Flux, …).
 - `metadata` — write a single `meta.json` (sd-scripts fine-tune mode):
   `{ "<abs_path>": { "tags": "...", "caption": "..." }, ... }`. Tags use
   the same merge/dedup/filter logic as `export`. Caption is the merged
@@ -448,10 +451,11 @@ Resolvers: `resolve_profile`, `resolve_tagger`, `resolve_captioner`.
 `sidecar.rs` — RON I/O via atomic write (`<file>.ron.tmp` + rename).
 Includes the suppression helpers and the `manual_caption` accessor.
 
-`export.rs` — `build_tags()` is the main entry; `export_image()` writes
-the resulting comma-joined string to `<image>.txt`. Tests cover suppression
-across sources, profile prefix dedup, threshold/category filters, and
-manual ordering.
+`export.rs` — `build_tags()` / `build_caption()` are the main entries;
+`export_image()` writes the comma-joined tag string to `<image>.txt`,
+`export_caption_file()` writes the caption body instead (skipping images
+with no caption). Tests cover suppression across sources, profile prefix
+dedup, threshold/category filters, manual ordering, and caption affixes.
 
 `walk.rs` — recursive walk yielding image-extension files.
 

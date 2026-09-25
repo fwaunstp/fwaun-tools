@@ -203,6 +203,30 @@ pub fn export_image(
     Ok(out)
 }
 
+/// Write the image's export caption (see [`build_caption`]) to `<image>.txt`.
+/// Returns `Ok(None)` without touching the filesystem when the image has no
+/// caption body — callers should count that as skipped rather than writing
+/// an empty file, the same way [`build_caption`] itself distinguishes "no
+/// caption" from "caption with no affixes".
+pub fn export_caption_file(
+    image: &Path,
+    sidecar: &Sidecar,
+    profile: &ExportProfile,
+    tag_groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+    seed: AffixSeed,
+) -> Result<Option<PathBuf>, ExportError> {
+    let Some(caption) = build_caption(sidecar, profile, tag_groups, common, seed) else {
+        return Ok(None);
+    };
+    let out = export_text_path(image);
+    fs::write(&out, caption).map_err(|source| ExportError::Io {
+        path: out.clone(),
+        source,
+    })?;
+    Ok(Some(out))
+}
+
 fn format_external_tag(tag: &str, category: &str, profile: &ExportProfile) -> String {
     match profile.category_prefix(category) {
         Some(p) => format!("{p}{tag}"),
@@ -789,6 +813,64 @@ mod tests {
             .as_deref(),
             Some("Himeko. a girl standing in a field")
         );
+    }
+
+    #[test]
+    fn export_caption_file_writes_body_and_returns_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "fwaun-export-caption-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.png");
+        fs::write(&image, b"").unwrap();
+
+        let mut sidecar = Sidecar::default();
+        sidecar.set_caption("a", "a girl standing in a field");
+        let profile = no_shuffle(ExportProfile::default());
+        let out = export_caption_file(
+            &image,
+            &sidecar,
+            &profile,
+            &BTreeMap::new(),
+            &CommonTags::default(),
+            AffixSeed::default(),
+        )
+        .unwrap();
+        let out = out.expect("caption present");
+        assert_eq!(out, export_text_path(&image));
+        assert_eq!(fs::read_to_string(&out).unwrap(), "a girl standing in a field");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_caption_file_no_caption_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!(
+            "fwaun-export-caption-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.png");
+        fs::write(&image, b"").unwrap();
+
+        let sidecar = Sidecar::default();
+        let profile = no_shuffle(ExportProfile::default());
+        let out = export_caption_file(
+            &image,
+            &sidecar,
+            &profile,
+            &BTreeMap::new(),
+            &CommonTags::default(),
+            AffixSeed::default(),
+        )
+        .unwrap();
+        assert!(out.is_none());
+        assert!(!export_text_path(&image).exists());
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

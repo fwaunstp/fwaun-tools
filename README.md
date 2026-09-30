@@ -9,7 +9,8 @@ binary:
   doesn't have to think about provenance while curating.
 - **`model`** — diffusion-checkpoint utilities over safetensors files:
   task-vector `merge-diff`, LoRA extraction (`extract-lora`), and INT8+ConvRot
-  quantization (`quant-int8`) and back to bf16 (`dequant`). Pure-Rust/CPU, available in every build.
+  quantization (`quant-int8`) and back to bf16 (`dequant`), and a header
+  inspector (`info`). Pure-Rust/CPU, available in every build.
 
 Built primarily for [ANIMA preview][anima] and Krea 2 LoRA training, but the
 data model and export profiles are not ANIMA-specific.
@@ -64,7 +65,7 @@ stacks is not tested.
 - **Bilingual GUI.** English / 日本語 toggle, defaults to host locale.
 - **CLI for batch operations**, GUI for curation. The GUI also has a
   **Model tools** tab (Dataset / Model tools mode switch) that front-ends
-  the `merge-diff` / `extract-lora` / `quant-int8` / `dequant` checkpoint utilities
+  the `merge-diff` / `extract-lora` / `quant-int8` / `dequant` / `info` checkpoint utilities
   for people who'd rather not use the CLI.
 
 ## Install
@@ -299,6 +300,7 @@ fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplie
 fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
 fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
 fwaun-tools model dequant      SRC [DST] [--dtype bf16|fp16|fp32]
+fwaun-tools model info         FILE [--json] [--tensors [REGEX]] [--metadata-only]
 ```
 
 `merge-diff` transfers a full fine-tune delta (`tuned − base`) onto another
@@ -318,6 +320,12 @@ fp8_scaled checkpoints are still rejected.
 (or fp16/fp32) for GPUs that can't run the comfy-kitchen int8 kernels. The
 result keeps the int8 rounding error — it is the dequantized model, not the
 original bf16 the int8 file was made from.
+
+`info` reads only the header and prints the `__metadata__` (JSON values such
+as ai-toolkit's `training_info` pretty-printed), the dtype mix, the
+quantization scheme (float / fp8_scaled / int8_convrot with its group sizes),
+the key prefix with the matching `--model` value, and whether the file is
+complete — a truncated download still opens but is missing tensor data.
 
 These are also available in the GUI's **Model tools** tab (switch modes
 at the top of the window), for the same operations without the command line.

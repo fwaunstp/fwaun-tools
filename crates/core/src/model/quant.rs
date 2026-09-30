@@ -15,7 +15,7 @@
 //!
 //! Notes vs. the Python reference:
 //! - safetensors input only (no torch `.pth`/`.pt` pickle path).
-//! - fp8_scaled sources are rejected rather than dequantized (matching `merge-diff`).
+//! - already-quantized sources (fp8_scaled, int8) are rejected rather than dequantized.
 //! - absmax scaling only (no `--mseclip` grid search yet).
 //! - Reconstruction error (relerr/cosine) is computed in the rotated space. The
 //!   Hadamard is orthogonal, so norms and inner products are preserved and the
@@ -30,6 +30,7 @@ use rayon::prelude::*;
 use regex::Regex;
 
 use super::progress::ProgressSink;
+use super::quantized::summarize;
 use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
 
 /// ConvRot Hadamard sizes: powers of 4, largest preferred (matches the reference).
@@ -273,13 +274,6 @@ fn derive_dst(src: &Path) -> PathBuf {
     src.with_file_name(format!("{new}.safetensors"))
 }
 
-/// True if the file carries per-tensor fp8 scales we cannot cleanly consume here.
-fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
-    f.keys().any(|k| {
-        k.ends_with(".weight_scale") || k.ends_with("_scale") || k.ends_with(".scale_weight")
-    })
-}
-
 /// Collapse digit runs to `N` so sibling block layers group under one pattern.
 fn pattern(key: &str) -> String {
     let re = Regex::new(r"\d+").unwrap();
@@ -304,10 +298,15 @@ enum Action {
 
 pub fn run(args: QuantArgs, p: &mut dyn ProgressSink) -> Result<()> {
     let src = SafeTensorsFile::open(&args.src)?;
-    if looks_fp8_scaled(&src) {
+    let kind = summarize(&src).kind;
+    if kind != "float" {
         bail!(
-            "source looks like an fp8_scaled checkpoint (has *_scale keys). This port quantizes \
-             bf16/fp16/fp32 sources only — use a non-fp8 checkpoint."
+            "source is already quantized ({kind}). quant-int8 needs a bf16/fp16/fp32 checkpoint{}",
+            if kind.starts_with("int8") {
+                "; use `model dequant` first to re-quantize it"
+            } else {
+                ""
+            }
         );
     }
 

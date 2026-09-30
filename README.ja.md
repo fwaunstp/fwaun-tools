@@ -8,7 +8,7 @@ fwaun モデル群の学習を支えるツール群です。1つのバイナリ�
   ひとつのチップ列としてタグを整備できます。
 - **`model`** — safetensors チェックポイント操作。タスクベクトルの
   `merge-diff`、LoRA 抽出（`extract-lora`）、INT8+ConvRot 量子化
-  （`quant-int8`）と bf16 への逆量子化（`dequant`）。純 Rust/CPU 実装で、どのビルドでも利用できます。
+  （`quant-int8`）と bf16 への逆量子化（`dequant`）、ヘッダの確認（`info`）。純 Rust/CPU 実装で、どのビルドでも利用できます。
 
 主に [ANIMA preview][anima] と Krea 2 の LoRA 学習向けに作っていますが、
 データモデルやエクスポートプロファイルは ANIMA 専用ではありません。
@@ -61,7 +61,7 @@ fwaun モデル群の学習を支えるツール群です。1つのバイナリ�
 - **GUIは日英両対応。** 英語／日本語の切り替え、デフォルトはホストOSのロケール準拠。
 - **CLI でバッチ処理、GUI でキュレーション。** GUI には
   **モデルツール**タブ（データセット／モデルツールのモード切り替え）もあり、
-  `merge-diff` / `extract-lora` / `quant-int8` / `dequant` のチェックポイント処理を
+  `merge-diff` / `extract-lora` / `quant-int8` / `dequant` / `info` のチェックポイント処理を
   CLI を使わずに実行できます。
 
 ## インストール
@@ -298,6 +298,7 @@ fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplie
 fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
 fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
 fwaun-tools model dequant      SRC [DST] [--dtype bf16|fp16|fp32]
+fwaun-tools model info         FILE [--json] [--tensors [REGEX]] [--metadata-only]
 ```
 
 `merge-diff` はフルファインチューンの差分（`tuned − base`）を別の
@@ -317,6 +318,11 @@ int8_convrot のまま出力します。fp8_scaled のチェックポイント�
 `dequant` はその逆で、int8_convrot のチェックポイントを bf16（または fp16/fp32）に
 変換します。comfy-kitchen の int8 カーネルが動かない GPU 向けです。int8 の丸め誤差は
 残るため、元の bf16 モデルとは一致しません。
+
+`info` はヘッダのみを読み、`__metadata__`（ai-toolkit の `training_info` のような
+JSON の値は整形して表示）、dtype の構成、量子化方式（float / fp8_scaled /
+int8_convrot と groupsize）、キー接頭辞と対応する `--model` の値、ファイルが
+欠けていないかを表示します（途中で切れたダウンロードも開けてしまうため）。
 
 これらは GUI の**モデルツール**タブ（ウィンドウ上部でモードを切り替え）
 からも同じ操作を実行できます。

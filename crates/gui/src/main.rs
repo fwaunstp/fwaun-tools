@@ -2414,22 +2414,22 @@ impl AnimaTaggerApp {
         let mut errors: Vec<String> = Vec::new();
         for p in paths {
             let sidecar = sidecar_path_for(p);
-            if let Err(e) = fs::remove_file(p) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    errors.push(
-                        self.t()
-                            .err_delete_failed(&p.display().to_string(), &e.to_string()),
-                    );
-                    continue;
-                }
+            if let Err(e) = fs::remove_file(p)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                errors.push(
+                    self.t()
+                        .err_delete_failed(&p.display().to_string(), &e.to_string()),
+                );
+                continue;
             }
-            if sidecar.exists() {
-                if let Err(e) = fs::remove_file(&sidecar) {
-                    errors.push(
-                        self.t()
-                            .err_delete_failed(&sidecar.display().to_string(), &e.to_string()),
-                    );
-                }
+            if sidecar.exists()
+                && let Err(e) = fs::remove_file(&sidecar)
+            {
+                errors.push(
+                    self.t()
+                        .err_delete_failed(&sidecar.display().to_string(), &e.to_string()),
+                );
             }
         }
         self.forget_paths(paths);

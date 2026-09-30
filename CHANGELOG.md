@@ -60,6 +60,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Minimum Rust version is now 1.88.** The code already needed it (it uses
+  `if let … &&` chains), but `rust-version` still said 1.87. Because Cargo
+  resolves dependencies against `rust-version`, the stale value held some
+  dependencies back (`image` 0.25.10, for one). Dependencies are refreshed
+  to their latest semver-compatible versions, including `ort` 2.0.0-rc.13.
+
 - **Equal-priority caption prefixes now vary per image instead of always
   sorting by group name.** For a style LoRA over independent axes — "chibi
   style" or not, "realistic background" or not — every image carrying both

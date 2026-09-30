@@ -105,6 +105,7 @@ struct MergeForm {
     multiplier: f32,
     save_dtype: DtypeChoice,
     arch: ModelArch,
+    requantize: bool,
 }
 
 impl Default for MergeForm {
@@ -117,6 +118,7 @@ impl Default for MergeForm {
             multiplier: 1.0,
             save_dtype: DtypeChoice::Keep,
             arch: ModelArch::Auto,
+            requantize: false,
         }
     }
 }
@@ -345,6 +347,8 @@ impl ModelApp {
         });
         arch_combo(ui, t, "merge_arch", &mut self.merge.arch);
         dtype_combo(ui, t, "merge_dtype", &mut self.merge.save_dtype, true);
+        ui.checkbox(&mut self.merge.requantize, t.model_field_requantize())
+            .on_hover_text(t.model_field_requantize_hint());
 
         ui.separator();
         let ready = !self.merge.base.trim().is_empty()
@@ -362,6 +366,7 @@ impl ModelApp {
                 multiplier: m.multiplier,
                 save_dtype,
                 arch: m.arch,
+                requantize: m.requantize,
             };
             Ok(Box::new(move |p| merge::run(args, p)))
         });

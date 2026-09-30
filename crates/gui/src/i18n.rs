@@ -901,6 +901,17 @@ impl T {
     pub fn model_field_exclude(self) -> &'static str {
         self.pair("Exclude regex (optional)", "除外する正規表現（任意）")
     }
+    pub fn model_field_requantize(self) -> &'static str {
+        self.pair("Re-quantize to int8_convrot", "int8_convrot に再量子化")
+    }
+    pub fn model_field_requantize_hint(self) -> &'static str {
+        self.pair(
+            "Only for an int8_convrot target: keep the output int8_convrot. \
+             Otherwise its int8 layers are written as bf16 (or the save dtype).",
+            "target が int8_convrot のときのみ有効。出力を int8_convrot のまま保ちます。\
+             オフの場合、int8 層は bf16（または保存 dtype）で書き出されます。",
+        )
+    }
     pub fn model_field_dry_run(self) -> &'static str {
         self.pair("Dry run (report only)", "ドライラン（計画のみ）")
     }

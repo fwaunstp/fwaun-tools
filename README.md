@@ -295,7 +295,7 @@ Checkpoint tools (`fwaun-tools model <verb>`) — operate on safetensors files,
 not a dataset directory:
 
 ```
-fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32]
+fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32] [--requantize]
 fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
 fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
 ```
@@ -304,6 +304,14 @@ fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude R
 checkpoint; `extract-lora` factorizes that delta into a kohya-ss/ComfyUI LoRA
 by SVD; `quant-int8` writes the comfy-kitchen `int8_tensorwise` + ConvRot
 layout. All three are CPU/f32 and stream key-by-key, so peak RAM stays small.
+
+`merge-diff` and `extract-lora` also accept int8_convrot checkpoints (from
+`quant-int8`, or an ai-toolkit fine-tune of an int8_convrot base) as any
+input; int8 layers are dequantized before the math. Use the same base the
+fine-tune started from — a bf16 base against an int8 fine-tune puts
+quantization error into the delta. An int8 target is written dequantized
+(bf16, or `--save-dtype`) by default; `--requantize` keeps it int8_convrot.
+fp8_scaled checkpoints are still rejected.
 
 These three are also available in the GUI's **Model tools** tab (switch modes
 at the top of the window), for the same operations without the command line.

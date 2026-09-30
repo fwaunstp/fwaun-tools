@@ -24,6 +24,9 @@
 //!
 //! The heavy linear algebra runs on CPU in f32, parallelized across cores with
 //! rayon, one module at a time so peak RAM stays near a single weight matrix.
+//!
+//! base/tuned may be int8 / int8_convrot checkpoints (see [`super::quantized`]);
+//! their int8 layers are dequantized before the delta is taken.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -34,7 +37,8 @@ use regex::Regex;
 
 use super::merge::ModelArch;
 use super::progress::ProgressSink;
-use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
+use super::quantized::ModelFile;
+use super::safetensors::{Dtype, OutputTensor, StreamWriter, f32_to_bytes};
 
 /// Parsed arguments for the `extract-lora` subcommand.
 pub struct ExtractArgs {
@@ -68,12 +72,6 @@ struct Module {
     r_eff: usize,
 }
 
-fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
-    f.keys().any(|k| {
-        k.ends_with("_scale") || k.ends_with(".scale_weight") || k.ends_with(".weight_scale")
-    })
-}
-
 /// Map a bare DiT weight path (`double_blocks.0.img_attn.qkv.weight`) to the kohya
 /// LoRA module name (`lora_unet_double_blocks_0_img_attn_qkv`).
 fn kohya_name(bare_weight_key: &str) -> String {
@@ -101,12 +99,17 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
         bail!("--rank must be >= 1");
     }
 
-    let base = SafeTensorsFile::open(&args.base)?;
-    let tuned = SafeTensorsFile::open(&args.tuned)?;
-    if looks_fp8_scaled(&base) || looks_fp8_scaled(&tuned) {
-        bail!(
-            "base/tuned look like fp8_scaled checkpoints (have *_scale keys). Extraction needs a \
-             bf16/fp16/fp32 base + fine-tune so a plain delta is meaningful."
+    let base = ModelFile::open(&args.base)?;
+    let tuned = ModelFile::open(&args.tuned)?;
+    p.log(&format!(
+        "format       : base={} tuned={}",
+        base.quant_label(),
+        tuned.quant_label()
+    ));
+    if base.quant_label() != tuned.quant_label() {
+        p.log(
+            "warning: base and tuned are stored differently (float vs int8). Quantization error \
+             between them ends up in the LoRA; use the exact base the fine-tune started from.",
         );
     }
 
@@ -144,12 +147,11 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
         let Some(tkey) = tuned_norm.get(bare) else {
             continue;
         };
-        let binfo = base.info(bkey).unwrap();
-        let tinfo = tuned.info(tkey).unwrap();
-        if !binfo.dtype.is_float() || binfo.shape.len() != 2 {
+        let (bshape, tshape) = (base.shape(bkey).unwrap(), tuned.shape(tkey).unwrap());
+        if !base.is_numeric(bkey) || !tuned.is_numeric(tkey) || bshape.len() != 2 {
             continue;
         }
-        if binfo.shape != tinfo.shape {
+        if bshape != tshape {
             skipped_shape += 1;
             continue;
         }
@@ -163,8 +165,8 @@ pub fn run(args: ExtractArgs, p: &mut dyn ProgressSink) -> Result<()> {
         {
             continue;
         }
-        let out = binfo.shape[0];
-        let in_ = binfo.shape[1];
+        let out = bshape[0];
+        let in_ = bshape[1];
         modules.push(Module {
             base_key: (*bkey).clone(),
             tuned_key: (*tkey).clone(),
@@ -733,5 +735,68 @@ mod tests {
             max_err < 1e-3 * scale.max(1.0),
             "max_err={max_err}, scale={scale}"
         );
+    }
+
+    /// int8_convrot base/tuned are dequantized before the delta: at full rank the
+    /// LoRA reproduces dequant(tuned) - dequant(base).
+    #[test]
+    fn extracts_from_int8_convrot_checkpoints() {
+        use crate::model::quantized::tests::{TestTensor, temp_dir, weights, write_model};
+        use crate::model::safetensors::SafeTensorsFile;
+
+        struct Quiet;
+        impl ProgressSink for Quiet {
+            fn log(&mut self, _: &str) {}
+            fn tick(&mut self, _: usize, _: usize) {}
+        }
+
+        let dir = temp_dir("lora-int8");
+        let (out, in_) = (8usize, 64usize);
+        let key = "transformer_blocks.0.attn.to_q.weight";
+        let (base, tuned) = (dir.join("base.safetensors"), dir.join("tuned.safetensors"));
+        write_model(
+            &base,
+            &[(key, TestTensor::Int8(out, in_, 16, weights(out * in_, 1)))],
+        );
+        write_model(
+            &tuned,
+            &[(key, TestTensor::Int8(out, in_, 16, weights(out * in_, 2)))],
+        );
+
+        let lora_path = dir.join("lora.safetensors");
+        run(
+            ExtractArgs {
+                base: base.clone(),
+                tuned: tuned.clone(),
+                output: lora_path.clone(),
+                rank: out,
+                alpha: None,
+                save_dtype: Dtype::F32,
+                arch: ModelArch::Auto,
+                include: None,
+                exclude: None,
+                niter: 2,
+                oversample: 8,
+            },
+            &mut Quiet,
+        )
+        .unwrap();
+
+        let deq = |p: &std::path::Path| ModelFile::open(p).unwrap().to_f32(key).unwrap();
+        let (db, dt) = (deq(&base), deq(&tuned));
+        let lora = SafeTensorsFile::open(&lora_path).unwrap();
+        let name = "lora_unet_transformer_blocks_0_attn_to_q";
+        let up = lora.to_f32(&format!("{name}.lora_up.weight")).unwrap();
+        let down = lora.to_f32(&format!("{name}.lora_down.weight")).unwrap();
+        let mut max_err = 0.0f32;
+        for i in 0..out {
+            for j in 0..in_ {
+                let acc: f32 = (0..out).map(|t| up[i * out + t] * down[t * in_ + j]).sum();
+                max_err = max_err.max((acc - (dt[i * in_ + j] - db[i * in_ + j])).abs());
+            }
+        }
+        assert!(max_err < 1e-3, "max_err={max_err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

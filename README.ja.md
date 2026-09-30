@@ -294,7 +294,7 @@ stderr が端末でない場合（ファイルへのリダイレクト、CI）�
 safetensors ファイルを対象にします:
 
 ```
-fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32]
+fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32] [--requantize]
 fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
 fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
 ```
@@ -304,6 +304,14 @@ fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude R
 形式の LoRA に分解、`quant-int8` は comfy-kitchen の `int8_tensorwise` +
 ConvRot レイアウトを書き出します。いずれも CPU/f32 でキー単位にストリーム
 処理するため、ピーク時のメモリ使用量は小さく保たれます。
+
+`merge-diff` と `extract-lora` は int8_convrot のチェックポイント
+（`quant-int8` の出力や、int8_convrot ベースから ai-toolkit で学習したモデル）も
+入力に使えます。int8 層は演算前に逆量子化されます。base にはファインチューン元と
+同じモデルを使ってください（int8 で学習したモデルに bf16 の base を合わせると、
+量子化誤差が差分に入ります）。target が int8 の場合、デフォルトでは逆量子化して
+bf16（または `--save-dtype`）で書き出し、`--requantize` を付けると
+int8_convrot のまま出力します。fp8_scaled のチェックポイントは引き続き非対応です。
 
 これら3つは GUI の**モデルツール**タブ（ウィンドウ上部でモードを切り替え）
 からも同じ操作を実行できます。

@@ -11,6 +11,12 @@
 //! target. Covers Krea 2 checkpoints (ComfyUI/Civitai `model.diffusion_model.`)
 //! and Anima checkpoints (which namespace their DiT tensors under `net.` rather
 //! than `model.diffusion_model.`).
+//!
+//! Any of the three inputs may be an int8 / int8_convrot checkpoint (see
+//! [`super::quantized`]): int8 layers are dequantized to f32 before the math.
+//! An int8 target is written dequantized (bf16 by default) unless
+//! `requantize` is set, in which case merged layers go back to int8 + ConvRot
+//! and untouched int8 layers are copied as-is.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +24,9 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 use super::progress::ProgressSink;
-use super::safetensors::{Dtype, OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
+use super::quant::{build_hadamard, comfy_quant_json, quantize_convrot};
+use super::quantized::ModelFile;
+use super::safetensors::{Dtype, OutputTensor, StreamWriter, f32_to_bytes};
 
 /// Which key-prefix conventions to normalize away when matching tensors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,15 +84,19 @@ pub struct MergeArgs {
     pub multiplier: f32,
     pub save_dtype: Option<Dtype>,
     pub arch: ModelArch,
+    /// With an int8 target, re-quantize merged layers to int8 + ConvRot instead
+    /// of writing them (and every other int8 layer) dequantized.
+    pub requantize: bool,
 }
 
-/// fp8 scaled checkpoints store a separate per-tensor scale next to each
-/// quantized weight; a bf16 delta cannot be added to an fp8 weight without also
-/// touching its scale, so we refuse those (matching the reference).
-fn looks_fp8_scaled(f: &SafeTensorsFile) -> bool {
-    f.keys().any(|k| {
-        k.ends_with("_scale") || k.ends_with(".scale_weight") || k.ends_with(".weight_scale")
-    })
+/// How one logical target tensor is written.
+enum Emit {
+    /// Copy the target's raw bytes unchanged (plus int8 companions, if any).
+    Copy,
+    /// Decode to f32 (dequantizing int8), add the delta if any, cast to `dtype`.
+    Float { dtype: Dtype, delta: bool },
+    /// Add the delta and re-quantize to int8 + ConvRot at group size `gs`.
+    Requant { gs: usize, out: usize, in_: usize },
 }
 
 pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
@@ -95,19 +107,28 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
     p.log(&format!("multiplier    : {}", args.multiplier));
     p.log(&format!("model         : {:?}", args.arch));
 
-    let base = SafeTensorsFile::open(&args.base)?;
-    let tuned = SafeTensorsFile::open(&args.tuned)?;
-    let target = SafeTensorsFile::open(&args.target)?;
-
-    if looks_fp8_scaled(&target) {
-        bail!(
-            "target looks like an fp8_scaled checkpoint (has *_scale keys). A bf16 delta cannot be \
-             cleanly added to fp8 weights. Use a bf16 target."
+    let base = ModelFile::open(&args.base)?;
+    let tuned = ModelFile::open(&args.tuned)?;
+    let target = ModelFile::open(&args.target)?;
+    p.log(&format!(
+        "format        : base={} tuned={} target={}",
+        base.quant_label(),
+        tuned.quant_label(),
+        target.quant_label()
+    ));
+    if base.quant_label() != tuned.quant_label() {
+        p.log(
+            "warning: base and tuned are stored differently (float vs int8). Quantization error \
+             between them ends up in the delta; use the exact base the fine-tune started from.",
         );
     }
-    if looks_fp8_scaled(&tuned) || looks_fp8_scaled(&base) {
-        bail!("base/tuned look fp8_scaled; this merge expects a bf16 base + bf16 fine-tune.");
+    if args.requantize && !target.is_quantized() {
+        bail!(
+            "--requantize needs an int8 target; for a float target, run quant-int8 on the output."
+        );
     }
+    // Dequantized int8 layers have no original dtype to keep; they default to bf16.
+    let dequant_dtype = args.save_dtype.unwrap_or(Dtype::Bf16);
 
     // Normalize both sides to the bare DiT key: bare_key -> actual key in that file.
     let base_norm: BTreeMap<&str, &String> = base
@@ -139,15 +160,10 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
         ));
     }
 
-    // Decide, per target key, whether it receives a delta and what dtype it gets.
+    // Decide, per target key, whether it receives a delta and how it is written.
     // This is done from headers alone (no tensor data read) so the output layout
     // can be planned before any bytes are written.
-    struct Plan {
-        key: String,
-        out_dtype: Dtype,
-        has_delta: bool,
-    }
-    let mut plans: Vec<Plan> = Vec::new();
+    let mut plans: Vec<(String, Emit)> = Vec::new();
     let mut output_tensors: Vec<OutputTensor> = Vec::new();
     let mut missing_in_target = 0usize;
 
@@ -155,45 +171,101 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
     let mut delta_bare_seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
 
     for key in target.keys() {
-        let tinfo = target.info(key).unwrap();
+        let tinfo = target.raw().info(key).unwrap();
         let bare = args.arch.strip_prefix(key);
-        let has_base = base_norm.contains_key(bare);
-        let has_tuned = tuned_norm.contains_key(bare);
+        let int8 = target.int8_layer(key);
 
         let mut has_delta = false;
-        if has_base && has_tuned && tinfo.dtype.is_float() {
-            let binfo = base.info(base_norm[bare]).unwrap();
-            let uinfo = tuned.info(tuned_norm[bare]).unwrap();
-            if binfo.shape == tinfo.shape && uinfo.shape == tinfo.shape {
+        if let (Some(bk), Some(uk)) = (base_norm.get(bare), tuned_norm.get(bare))
+            && target.is_numeric(key)
+            && base.is_numeric(bk)
+            && tuned.is_numeric(uk)
+        {
+            let (bshape, ushape) = (base.shape(bk).unwrap(), tuned.shape(uk).unwrap());
+            if bshape == tinfo.shape && ushape == tinfo.shape {
                 has_delta = true;
                 delta_bare_seen.insert(bare);
             } else {
                 p.log(&format!(
-                    "warning: shape mismatch on {key}: base={:?} tuned={:?} target={:?} -> copying target unchanged",
-                    binfo.shape, uinfo.shape, tinfo.shape
+                    "warning: shape mismatch on {key}: base={bshape:?} tuned={ushape:?} target={:?} -> copying target unchanged",
+                    tinfo.shape
                 ));
             }
         }
 
-        // save_dtype only overrides keys that actually receive a delta; pass-through
-        // keys keep the target's original dtype (matching the reference).
-        let out_dtype = if has_delta {
-            args.save_dtype.unwrap_or(tinfo.dtype)
-        } else {
-            tinfo.dtype
+        let write = match (int8, has_delta) {
+            (Some(layer), true) if args.requantize => match layer.convrot_gs {
+                Some(gs) => Emit::Requant {
+                    gs,
+                    out: tinfo.shape[0],
+                    in_: tinfo.shape[1],
+                },
+                None => {
+                    bail!("--requantize supports int8_convrot layers only; {key} is plain int8")
+                }
+            },
+            (Some(_), _) if args.requantize => Emit::Copy,
+            (Some(_), delta) => Emit::Float {
+                dtype: dequant_dtype,
+                delta,
+            },
+            // save_dtype only overrides keys that actually receive a delta; pass-through
+            // keys keep the target's original dtype (matching the reference).
+            (None, true) => Emit::Float {
+                dtype: args.save_dtype.unwrap_or(tinfo.dtype),
+                delta: true,
+            },
+            (None, false) => Emit::Copy,
         };
-        let nbytes = tinfo.numel() * out_dtype.element_size();
-        output_tensors.push(OutputTensor {
-            key: key.clone(),
-            dtype: out_dtype,
-            shape: tinfo.shape.clone(),
-            nbytes,
-        });
-        plans.push(Plan {
-            key: key.clone(),
-            out_dtype,
-            has_delta,
-        });
+
+        match &write {
+            Emit::Copy => {
+                output_tensors.push(OutputTensor {
+                    key: key.clone(),
+                    dtype: tinfo.dtype,
+                    shape: tinfo.shape.clone(),
+                    nbytes: tinfo.end - tinfo.begin,
+                });
+                for c in int8.map(|l| l.companions.as_slice()).unwrap_or_default() {
+                    let ci = target.raw().info(c).unwrap();
+                    output_tensors.push(OutputTensor {
+                        key: c.clone(),
+                        dtype: ci.dtype,
+                        shape: ci.shape.clone(),
+                        nbytes: ci.end - ci.begin,
+                    });
+                }
+            }
+            Emit::Float { dtype, .. } => output_tensors.push(OutputTensor {
+                key: key.clone(),
+                dtype: *dtype,
+                shape: tinfo.shape.clone(),
+                nbytes: tinfo.numel() * dtype.element_size(),
+            }),
+            Emit::Requant { gs, out, in_ } => {
+                let layer = key.strip_suffix(".weight").unwrap_or(key);
+                let cq = comfy_quant_json(*gs);
+                output_tensors.push(OutputTensor {
+                    key: key.clone(),
+                    dtype: Dtype::I8,
+                    shape: vec![*out, *in_],
+                    nbytes: out * in_,
+                });
+                output_tensors.push(OutputTensor {
+                    key: format!("{layer}.weight_scale"),
+                    dtype: Dtype::F32,
+                    shape: vec![*out, 1],
+                    nbytes: out * 4,
+                });
+                output_tensors.push(OutputTensor {
+                    key: format!("{layer}.comfy_quant"),
+                    dtype: Dtype::U8,
+                    shape: vec![cq.len()],
+                    nbytes: cq.len(),
+                });
+            }
+        }
+        plans.push((key.clone(), write));
     }
 
     // Delta keys defined by base∩tuned that the target does not carry.
@@ -211,6 +283,15 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
     // Carry the target's metadata (keeps modelspec.architecture etc.) plus notes.
     let mut metadata = target.metadata().clone();
+    if target.is_quantized() && !args.requantize {
+        // Every int8 layer is written dequantized, so the output is no longer int8.
+        metadata.remove("quant_format");
+        p.log(&format!(
+            "target is {}: writing its int8 layers dequantized as {} (use --requantize to keep int8)",
+            target.quant_label(),
+            dequant_dtype.tag()
+        ));
+    }
     metadata.insert(
         "merged_from_target".to_string(),
         args.target.display().to_string(),
@@ -225,7 +306,10 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
     );
     metadata.insert("merged_multiplier".to_string(), args.multiplier.to_string());
 
-    let applied = plans.iter().filter(|p| p.has_delta).count();
+    let applied = plans
+        .iter()
+        .filter(|(_, w)| matches!(w, Emit::Float { delta: true, .. } | Emit::Requant { .. }))
+        .count();
     let carried = plans.len() - applied;
 
     // Stream the output: header first, then each tensor's bytes in plan order.
@@ -233,43 +317,71 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
 
     let mut max_abs = 0.0f32;
     let mut sum_mean_abs = 0.0f64;
+    let mut max_requant_err = 0.0f64;
 
     let total = plans.len();
-    for (i, plan) in plans.iter().enumerate() {
+    for (i, (key, write)) in plans.iter().enumerate() {
         p.tick(i + 1, total);
-        let key = &plan.key;
-        if !plan.has_delta {
-            // Pass-through: copy the target's raw bytes unchanged (dtype preserved).
-            writer.write_tensor(key, target.raw_bytes(key)?)?;
-            continue;
-        }
-
-        let bare = args.arch.strip_prefix(key);
-        let tgt = target.to_f32(key)?;
-        let b = base.to_f32(base_norm[bare])?;
-        let t = tuned.to_f32(tuned_norm[bare])?;
-
-        let mut merged = Vec::with_capacity(tgt.len());
-        let mut local_max = 0.0f32;
-        let mut local_sum = 0.0f64;
-        for i in 0..tgt.len() {
-            let delta = t[i] - b[i];
-            let d_abs = delta.abs();
-            if d_abs > local_max {
-                local_max = d_abs;
+        let delta = match write {
+            Emit::Copy => {
+                // Pass-through: copy the target's raw bytes unchanged (dtype preserved).
+                writer.write_tensor(key, target.raw().raw_bytes(key)?)?;
+                for c in target
+                    .int8_layer(key)
+                    .map(|l| l.companions.as_slice())
+                    .unwrap_or_default()
+                {
+                    writer.write_tensor(c, target.raw().raw_bytes(c)?)?;
+                }
+                continue;
             }
-            local_sum += d_abs as f64;
-            merged.push(tgt[i] + args.multiplier * delta);
-        }
-        if local_max > max_abs {
-            max_abs = local_max;
-        }
-        if !tgt.is_empty() {
-            sum_mean_abs += local_sum / tgt.len() as f64;
+            Emit::Float { delta, .. } => *delta,
+            Emit::Requant { .. } => true,
+        };
+
+        let mut merged = target.to_f32(key)?;
+        if delta {
+            let bare = args.arch.strip_prefix(key);
+            let b = base.to_f32(base_norm[bare])?;
+            let t = tuned.to_f32(tuned_norm[bare])?;
+
+            let mut local_max = 0.0f32;
+            let mut local_sum = 0.0f64;
+            for i in 0..merged.len() {
+                let d = t[i] - b[i];
+                let d_abs = d.abs();
+                if d_abs > local_max {
+                    local_max = d_abs;
+                }
+                local_sum += d_abs as f64;
+                merged[i] += args.multiplier * d;
+            }
+            if local_max > max_abs {
+                max_abs = local_max;
+            }
+            if !merged.is_empty() {
+                sum_mean_abs += local_sum / merged.len() as f64;
+            }
         }
 
-        let bytes = f32_to_bytes(&merged, plan.out_dtype)?;
-        writer.write_tensor(key, &bytes)?;
+        match write {
+            Emit::Float { dtype, .. } => {
+                writer.write_tensor(key, &f32_to_bytes(&merged, *dtype)?)?;
+            }
+            Emit::Requant { gs, out, in_ } => {
+                let layer = key.strip_suffix(".weight").unwrap_or(key);
+                let r = quantize_convrot(&merged, *out, *in_, *gs, &build_hadamard(*gs));
+                max_requant_err = max_requant_err.max(r.relerr());
+                let qbytes: Vec<u8> = r.qdata.iter().map(|&v| v as u8).collect();
+                writer.write_tensor(key, &qbytes)?;
+                writer.write_tensor(
+                    &format!("{layer}.weight_scale"),
+                    &f32_to_bytes(&r.scale, Dtype::F32)?,
+                )?;
+                writer.write_tensor(&format!("{layer}.comfy_quant"), &comfy_quant_json(*gs))?;
+            }
+            Emit::Copy => unreachable!(),
+        }
     }
 
     writer.finish()?;
@@ -280,6 +392,11 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
     p.log(&format!(
         "delta magnitude: max|Δ|={max_abs:.3e}, sum of per-key mean|Δ|={sum_mean_abs:.3e}"
     ));
+    if args.requantize {
+        p.log(&format!(
+            "re-quantized merged layers to int8_convrot: max relerr {max_requant_err:.2}%"
+        ));
+    }
     if max_abs < 1e-4 {
         p.log(
             "warning: delta is nearly zero — the fine-tune barely changed the weights. \
@@ -299,7 +416,7 @@ pub fn run(args: MergeArgs, p: &mut dyn ProgressSink) -> Result<()> {
 mod tests {
     use super::*;
     use crate::model::progress::ProgressSink;
-    use crate::model::safetensors::{OutputTensor, StreamWriter, f32_to_bytes};
+    use crate::model::safetensors::{OutputTensor, SafeTensorsFile, StreamWriter, f32_to_bytes};
     use std::collections::BTreeMap;
 
     /// A sink that records every log line and progress tick, for assertions.
@@ -363,6 +480,7 @@ mod tests {
                 multiplier: 1.0,
                 save_dtype: None,
                 arch: ModelArch::Auto,
+                requantize: false,
             },
             &mut cap,
         )
@@ -377,6 +495,85 @@ mod tests {
         assert!(cap.ticks >= 1, "expected at least one progress tick");
         assert_eq!(cap.last_tick, Some((1, 1)));
         assert_eq!(cap.logs.last().map(String::as_str), Some("done."));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_int8_convrot_inputs_dequantized_or_requantized() {
+        use crate::model::quantized::ModelFile;
+        use crate::model::quantized::tests::{TestTensor, temp_dir, weights, write_model};
+
+        let dir = temp_dir("merge-int8");
+        let (out_n, in_n, gs) = (8, 64, 16);
+        let n = out_n * in_n;
+        let key = "transformer_blocks.0.attn.to_q.weight";
+        let (wb, wt, wg) = (weights(n, 1), weights(n, 2), weights(n, 3));
+        let (base, tuned, target) = (
+            dir.join("base.safetensors"),
+            dir.join("tuned.safetensors"),
+            dir.join("target.safetensors"),
+        );
+        for (path, w) in [(&base, &wb), (&tuned, &wt), (&target, &wg)] {
+            write_model(
+                path,
+                &[
+                    (key, TestTensor::Int8(out_n, in_n, gs, w.clone())),
+                    ("norm.weight", TestTensor::Float(vec![4], vec![1.0; 4])),
+                ],
+            );
+        }
+        // Expected = dequantized target + (dequantized tuned - dequantized base).
+        let deq = |p: &std::path::Path| ModelFile::open(p).unwrap().to_f32(key).unwrap();
+        let (db, dt, dg) = (deq(&base), deq(&tuned), deq(&target));
+        let expected: Vec<f32> = (0..n).map(|i| dg[i] + dt[i] - db[i]).collect();
+        let max_err = |got: &[f32]| {
+            got.iter()
+                .zip(&expected)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0f32, f32::max)
+        };
+
+        // Default: the int8 target is written dequantized as bf16.
+        let out = dir.join("out.safetensors");
+        let args = |output: PathBuf, requantize| MergeArgs {
+            base: base.clone(),
+            tuned: tuned.clone(),
+            target: target.clone(),
+            output,
+            multiplier: 1.0,
+            save_dtype: None,
+            arch: ModelArch::Auto,
+            requantize,
+        };
+        run(args(out.clone(), false), &mut Capture::default()).unwrap();
+        let f = SafeTensorsFile::open(&out).unwrap();
+        assert_eq!(f.info(key).unwrap().dtype, Dtype::Bf16);
+        assert!(
+            f.info("transformer_blocks.0.attn.to_q.weight_scale")
+                .is_none()
+        );
+        assert!(
+            f.info("transformer_blocks.0.attn.to_q.comfy_quant")
+                .is_none()
+        );
+        assert!(max_err(&f.to_f32(key).unwrap()) < 0.02);
+
+        // --requantize: stays int8_convrot and reads back close to the float merge.
+        let out_q = dir.join("out_q.safetensors");
+        run(args(out_q.clone(), true), &mut Capture::default()).unwrap();
+        let m = ModelFile::open(&out_q).unwrap();
+        assert_eq!(m.quant_label(), "int8_convrot");
+        assert_eq!(m.int8_layer(key).unwrap().convrot_gs, Some(gs));
+        assert!(max_err(&m.to_f32(key).unwrap()) < 0.1);
+        assert_eq!(m.to_f32("norm.weight").unwrap(), vec![1.0; 4]);
+
+        // --requantize is meaningless for a float target.
+        let float_target = dir.join("float.safetensors");
+        write_one(&float_target, key, vec![out_n, in_n], &wg);
+        let mut a = args(dir.join("x.safetensors"), true);
+        a.target = float_target;
+        assert!(run(a, &mut Capture::default()).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

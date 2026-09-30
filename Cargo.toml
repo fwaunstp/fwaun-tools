@@ -24,7 +24,7 @@ ureq = { version = "2", features = ["json"] }
 md5 = "0.7"
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"
-toml = "0.8"
+toml = "1.1"
 toml_edit = "0.22"
 thiserror = "2"
 anyhow = "1"

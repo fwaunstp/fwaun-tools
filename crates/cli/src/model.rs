@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use fwaun_tools_core::model::StreamProgress;
+use fwaun_tools_core::model::dequant::{self, DequantArgs};
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -16,8 +17,10 @@ pub enum ModelCommand {
     /// Task-vector merge: output = target + multiplier * (tuned - base).
     ///
     /// Transfers a full fine-tune delta (tuned - base) onto another checkpoint.
-    /// Supports Krea 2 and Anima key conventions. All math runs on CPU in f32,
-    /// streaming key-by-key so peak RAM stays small.
+    /// Supports Krea 2 and Anima key conventions. Inputs may be bf16/fp16/fp32 or
+    /// int8_convrot (dequantized on load); an int8 target is written as bf16 unless
+    /// `--requantize` is given. All math runs on CPU in f32, streaming key-by-key
+    /// so peak RAM stays small.
     MergeDiff(MergeCommand),
 
     /// Quantize a bf16/fp16 checkpoint to int8 + ConvRot (comfy-kitchen layout).
@@ -29,8 +32,18 @@ pub enum ModelCommand {
     /// architecture to review the plan.
     QuantInt8(QuantCommand),
 
+    /// Dequantize an int8_convrot checkpoint to bf16 (or fp16/fp32).
+    ///
+    /// For GPUs without comfy-kitchen int8 support. Every int8 layer is
+    /// un-rotated and written as a plain float weight; its weight_scale /
+    /// comfy_quant companions are dropped and all other tensors are copied
+    /// unchanged. The result carries the int8 rounding error: it is not the
+    /// original bf16 model.
+    Dequant(DequantCommand),
+
     /// Extract a low-rank LoRA from a full fine-tune: SVD of (tuned - base).
     ///
+    /// base/tuned may be bf16/fp16/fp32 or int8_convrot (dequantized on load).
     /// For every shared 2D linear weight, factorizes the fine-tune delta into
     /// lora_up/lora_down at the requested rank and writes a kohya-ss/ComfyUI
     /// (`lora_unet_*`) LoRA. Reports the per-module energy captured so you can
@@ -41,7 +54,7 @@ pub enum ModelCommand {
 
 #[derive(Args)]
 pub struct ExtractCommand {
-    /// Original model the fine-tune started from (bf16/fp16/fp32).
+    /// Original model the fine-tune started from (bf16/fp16/fp32 or int8_convrot).
     #[arg(long)]
     base: std::path::PathBuf,
 
@@ -125,6 +138,19 @@ pub struct QuantCommand {
 }
 
 #[derive(Args)]
+pub struct DequantCommand {
+    /// Source checkpoint (.safetensors, int8 / int8_convrot).
+    src: std::path::PathBuf,
+
+    /// Output path. If omitted, derived from SRC (int8_convrot -> bf16).
+    dst: Option<std::path::PathBuf>,
+
+    /// Output dtype for the dequantized layers (bf16, fp16, fp32).
+    #[arg(long, default_value = "bf16")]
+    dtype: String,
+}
+
+#[derive(Args)]
 pub struct MergeCommand {
     /// Original model the fine-tune started from (e.g. krea2_raw_bf16.safetensors).
     #[arg(long)]
@@ -146,9 +172,15 @@ pub struct MergeCommand {
     #[arg(long, default_value_t = 1.0)]
     multiplier: f32,
 
-    /// Override output dtype for merged keys (bf16, fp16, fp32). Default: keep target's dtype.
+    /// Override output dtype for merged keys (bf16, fp16, fp32). Default: keep target's
+    /// dtype; int8 target layers are written dequantized as this dtype (default bf16).
     #[arg(long)]
     save_dtype: Option<String>,
+
+    /// With an int8_convrot target, re-quantize merged layers to int8_convrot and copy
+    /// the other int8 layers as-is, instead of writing a dequantized model.
+    #[arg(long)]
+    requantize: bool,
 
     /// Key-prefix convention: auto (default), krea2, or anima.
     #[arg(long, default_value = "auto")]
@@ -173,6 +205,7 @@ pub fn run(command: ModelCommand) -> Result<()> {
                     multiplier: cmd.multiplier,
                     save_dtype,
                     arch,
+                    requantize: cmd.requantize,
                 },
                 &mut StreamProgress::stderr(),
             )
@@ -188,6 +221,14 @@ pub fn run(command: ModelCommand) -> Result<()> {
                 downcast_fp32: cmd.downcast_fp32,
                 warn_thresh: cmd.warn_thresh,
                 verify_report: cmd.verify_report,
+            },
+            &mut StreamProgress::stdout(),
+        ),
+        ModelCommand::Dequant(cmd) => dequant::run(
+            DequantArgs {
+                src: cmd.src,
+                dst: cmd.dst,
+                dtype: Dtype::parse_save_dtype(&cmd.dtype)?,
             },
             &mut StreamProgress::stdout(),
         ),

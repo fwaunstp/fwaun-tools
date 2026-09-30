@@ -1,5 +1,5 @@
 //! "Model tools" tab — a GUI front-end for the `fwaun-tools model`
-//! subcommands (`merge-diff`, `extract-lora`, `quant-int8`). This is a
+//! subcommands (`merge-diff`, `extract-lora`, `quant-int8`, `dequant`). This is a
 //! plain batch-operation launcher: pick files, set a few knobs, hit Run.
 //! It shares no state with the dataset editor.
 //!
@@ -14,6 +14,7 @@ use std::thread;
 
 use eframe::egui;
 use fwaun_tools_core::model::ProgressSink;
+use fwaun_tools_core::model::dequant::{self, DequantArgs};
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -27,16 +28,23 @@ enum ModelOp {
     Merge,
     Extract,
     Quant,
+    Dequant,
 }
 
 impl ModelOp {
-    const ALL: [ModelOp; 3] = [ModelOp::Merge, ModelOp::Extract, ModelOp::Quant];
+    const ALL: [ModelOp; 4] = [
+        ModelOp::Merge,
+        ModelOp::Extract,
+        ModelOp::Quant,
+        ModelOp::Dequant,
+    ];
 
     fn label(self, t: T) -> &'static str {
         match self {
             ModelOp::Merge => t.model_op_merge(),
             ModelOp::Extract => t.model_op_extract(),
             ModelOp::Quant => t.model_op_quant(),
+            ModelOp::Dequant => t.model_op_dequant(),
         }
     }
 
@@ -45,6 +53,7 @@ impl ModelOp {
             ModelOp::Merge => t.model_op_merge_desc(),
             ModelOp::Extract => t.model_op_extract_desc(),
             ModelOp::Quant => t.model_op_quant_desc(),
+            ModelOp::Dequant => t.model_op_dequant_desc(),
         }
     }
 }
@@ -183,6 +192,22 @@ impl Default for QuantForm {
     }
 }
 
+struct DequantForm {
+    src: String,
+    dst: String,
+    dtype: DtypeChoice,
+}
+
+impl Default for DequantForm {
+    fn default() -> Self {
+        Self {
+            src: String::new(),
+            dst: String::new(),
+            dtype: DtypeChoice::Bf16,
+        }
+    }
+}
+
 /// Message from the worker thread back to the UI.
 enum ModelMsg {
     /// One log line from the core operation.
@@ -214,6 +239,7 @@ pub struct ModelApp {
     merge: MergeForm,
     extract: ExtractForm,
     quant: QuantForm,
+    dequant: DequantForm,
     /// `Some` while a job is in flight — the single source of truth for
     /// "running", used to disable the Run button.
     worker_rx: Option<Receiver<ModelMsg>>,
@@ -231,6 +257,7 @@ impl ModelApp {
             merge: MergeForm::default(),
             extract: ExtractForm::default(),
             quant: QuantForm::default(),
+            dequant: DequantForm::default(),
             worker_rx: None,
             progress: None,
             log: Vec::new(),
@@ -322,6 +349,7 @@ impl ModelApp {
                 ModelOp::Merge => self.ui_merge(ui, t),
                 ModelOp::Extract => self.ui_extract(ui, t),
                 ModelOp::Quant => self.ui_quant(ui, t),
+                ModelOp::Dequant => self.ui_dequant(ui, t),
             });
         });
 
@@ -471,6 +499,26 @@ impl ModelApp {
                 verify_report: None,
             };
             Ok(Box::new(move |p| quant::run(args, p)))
+        });
+    }
+
+    fn ui_dequant(&mut self, ui: &mut egui::Ui, t: T) {
+        let running = self.running();
+        file_row(ui, t, t.model_field_src(), &mut self.dequant.src, false);
+        file_row(ui, t, t.model_field_dst(), &mut self.dequant.dst, true);
+        dtype_combo(ui, t, "dequant_dtype", &mut self.dequant.dtype, false);
+
+        ui.separator();
+        let ready = !self.dequant.src.trim().is_empty();
+        self.run_row(ui, t, running, ready, |form| {
+            let d = &form.dequant;
+            let dtype = parse_dtype(d.dtype)?.ok_or_else(|| "dtype required".to_string())?;
+            let args = DequantArgs {
+                src: PathBuf::from(d.src.trim()),
+                dst: non_empty(&d.dst).map(PathBuf::from),
+                dtype,
+            };
+            Ok(Box::new(move |p| dequant::run(args, p)))
         });
     }
 

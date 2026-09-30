@@ -841,6 +841,17 @@ impl T {
     pub fn model_op_quant(self) -> &'static str {
         self.pair("Quantize int8", "int8量子化")
     }
+    pub fn model_op_dequant(self) -> &'static str {
+        self.pair("Dequantize to bf16", "bf16へ逆量子化")
+    }
+    pub fn model_op_dequant_desc(self) -> &'static str {
+        self.pair(
+            "Convert an int8_convrot checkpoint to bf16/fp16/fp32 for GPUs without int8 \
+             support. The result keeps the int8 rounding error (it is not the original bf16).",
+            "int8_convrot チェックポイントを bf16/fp16/fp32 に変換します（int8 非対応の GPU 向け）。\
+             int8 の丸め誤差は残ります（元の bf16 とは一致しません）。",
+        )
+    }
     pub fn model_op_merge_desc(self) -> &'static str {
         self.pair(
             "output = target + multiplier × (tuned − base). Transfers a full \

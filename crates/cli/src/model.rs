@@ -5,6 +5,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use fwaun_tools_core::model::StreamProgress;
+use fwaun_tools_core::model::dequant::{self, DequantArgs};
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -30,6 +31,15 @@ pub enum ModelCommand {
     /// and parallelized across cores. Run with `--dry-run` first on a new
     /// architecture to review the plan.
     QuantInt8(QuantCommand),
+
+    /// Dequantize an int8_convrot checkpoint to bf16 (or fp16/fp32).
+    ///
+    /// For GPUs without comfy-kitchen int8 support. Every int8 layer is
+    /// un-rotated and written as a plain float weight; its weight_scale /
+    /// comfy_quant companions are dropped and all other tensors are copied
+    /// unchanged. The result carries the int8 rounding error: it is not the
+    /// original bf16 model.
+    Dequant(DequantCommand),
 
     /// Extract a low-rank LoRA from a full fine-tune: SVD of (tuned - base).
     ///
@@ -128,6 +138,19 @@ pub struct QuantCommand {
 }
 
 #[derive(Args)]
+pub struct DequantCommand {
+    /// Source checkpoint (.safetensors, int8 / int8_convrot).
+    src: std::path::PathBuf,
+
+    /// Output path. If omitted, derived from SRC (int8_convrot -> bf16).
+    dst: Option<std::path::PathBuf>,
+
+    /// Output dtype for the dequantized layers (bf16, fp16, fp32).
+    #[arg(long, default_value = "bf16")]
+    dtype: String,
+}
+
+#[derive(Args)]
 pub struct MergeCommand {
     /// Original model the fine-tune started from (e.g. krea2_raw_bf16.safetensors).
     #[arg(long)]
@@ -198,6 +221,14 @@ pub fn run(command: ModelCommand) -> Result<()> {
                 downcast_fp32: cmd.downcast_fp32,
                 warn_thresh: cmd.warn_thresh,
                 verify_report: cmd.verify_report,
+            },
+            &mut StreamProgress::stdout(),
+        ),
+        ModelCommand::Dequant(cmd) => dequant::run(
+            DequantArgs {
+                src: cmd.src,
+                dst: cmd.dst,
+                dtype: Dtype::parse_save_dtype(&cmd.dtype)?,
             },
             &mut StreamProgress::stdout(),
         ),

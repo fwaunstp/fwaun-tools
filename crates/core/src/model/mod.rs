@@ -13,6 +13,7 @@
 //! structured log + progress updates to its worker channel.
 
 pub mod dequant;
+pub mod info;
 pub mod lora;
 pub mod merge;
 pub mod progress;

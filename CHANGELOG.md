@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`model info`: inspect a checkpoint without loading it.** Checking whether
+  a file is bf16, fp8_scaled or int8_convrot, what trained it and at which
+  step used to need an ad-hoc header-parsing script. `fwaun-tools model info
+  FILE` reads only the header (plus the tiny `comfy_quant` configs) and
+  prints the metadata (JSON values pretty-printed), dtype counts and sizes,
+  the quantization scheme with ConvRot group sizes, the key prefix with the
+  matching `--model` value, and whether the file is complete (a truncated
+  download opens fine but is missing tensor data). `--json` for scripts,
+  `--tensors [REGEX]` to list key/dtype/shape, `--metadata-only` for the
+  full metadata. The GUI gets a matching "Model info" mode with a filterable
+  tensor list and "Copy as JSON". `quant-int8` now uses the same detection,
+  so an int8_convrot source is reported as such (pointing to `dequant`)
+  instead of as "fp8_scaled". (#56)
+  - core: `model::info`, `model::quantized::summarize`.
+
 - **`model merge-diff` / `extract-lora` accept int8_convrot checkpoints.**
   Both used to refuse any file with `*.weight_scale` keys, reporting it as
   fp8_scaled — so an ai-toolkit fine-tune of an int8_convrot base (whose

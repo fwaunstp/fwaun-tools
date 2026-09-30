@@ -5,7 +5,7 @@ members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["fwaunstp <fwaunstp@proton.me>"]
 repository = "https://github.com/fwaunstp/fwaun-tools"

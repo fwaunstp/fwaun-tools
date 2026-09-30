@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`model merge-diff` / `extract-lora` accept int8_convrot checkpoints.**
+  Both used to refuse any file with `*.weight_scale` keys, reporting it as
+  fp8_scaled — so an ai-toolkit fine-tune of an int8_convrot base (whose
+  output is int8_convrot too) could be neither merged nor extracted. int8
+  layers (`quant-int8` / comfy-kitchen `int8_tensorwise`, with or without
+  ConvRot) are now dequantized to f32 on load and go through the same math.
+  An int8 target is written dequantized (bf16 by default, or
+  `--save-dtype`); `merge-diff --requantize` (GUI: "Re-quantize to
+  int8_convrot") instead re-quantizes the merged layers at their original
+  group size and copies the untouched int8 layers as-is. Mixing a float base
+  with an int8 fine-tune (or vice versa) logs a warning. fp8_scaled inputs
+  are still rejected, now with an accurate message. (#55)
+  - core: `model::quantized::ModelFile`, `quant::dequantize_int8`.
+- **`model dequant`: int8_convrot → bf16.** int8_convrot checkpoints only run
+  on GPUs with comfy-kitchen int8 support, and a fine-tune of an int8_convrot
+  base has no bf16 original to hand out. `fwaun-tools model dequant SRC [DST]
+  [--dtype bf16|fp16|fp32]` (GUI: "Dequantize to bf16") un-rotates every int8
+  layer into a plain float weight, drops the `weight_scale` / `comfy_quant`
+  companions, and copies everything else byte-for-byte. DST defaults to SRC
+  with `int8_convrot` swapped for the dtype. The output keeps the int8
+  rounding error. (#57)
+  - core: `model::dequant`.
+
 - **`dataset export --content caption`.** `export` used to always write the
   merged tag string to `<image>.txt`; models that were never trained on
   danbooru-style tags (Qwen Image, Flux, and other natural-language

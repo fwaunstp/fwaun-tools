@@ -841,6 +841,17 @@ impl T {
     pub fn model_op_quant(self) -> &'static str {
         self.pair("Quantize int8", "int8量子化")
     }
+    pub fn model_op_dequant(self) -> &'static str {
+        self.pair("Dequantize to bf16", "bf16へ逆量子化")
+    }
+    pub fn model_op_dequant_desc(self) -> &'static str {
+        self.pair(
+            "Convert an int8_convrot checkpoint to bf16/fp16/fp32 for GPUs without int8 \
+             support. The result keeps the int8 rounding error (it is not the original bf16).",
+            "int8_convrot チェックポイントを bf16/fp16/fp32 に変換します（int8 非対応の GPU 向け）。\
+             int8 の丸め誤差は残ります（元の bf16 とは一致しません）。",
+        )
+    }
     pub fn model_op_merge_desc(self) -> &'static str {
         self.pair(
             "output = target + multiplier × (tuned − base). Transfers a full \
@@ -900,6 +911,17 @@ impl T {
     }
     pub fn model_field_exclude(self) -> &'static str {
         self.pair("Exclude regex (optional)", "除外する正規表現（任意）")
+    }
+    pub fn model_field_requantize(self) -> &'static str {
+        self.pair("Re-quantize to int8_convrot", "int8_convrot に再量子化")
+    }
+    pub fn model_field_requantize_hint(self) -> &'static str {
+        self.pair(
+            "Only for an int8_convrot target: keep the output int8_convrot. \
+             Otherwise its int8 layers are written as bf16 (or the save dtype).",
+            "target が int8_convrot のときのみ有効。出力を int8_convrot のまま保ちます。\
+             オフの場合、int8 層は bf16（または保存 dtype）で書き出されます。",
+        )
     }
     pub fn model_field_dry_run(self) -> &'static str {
         self.pair("Dry run (report only)", "ドライラン（計画のみ）")

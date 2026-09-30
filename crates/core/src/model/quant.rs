@@ -96,7 +96,7 @@ fn classify(key: &str, shape: &[usize], deny: &Regex) -> std::result::Result<usi
 /// `size` must be a power of 4. The matrix is the Kronecker power of H4 divided by
 /// `sqrt(size)`; it is symmetric, orthogonal, and involutory (H·H = I), so the same
 /// operation both rotates and un-rotates.
-fn build_hadamard(size: usize) -> Vec<f32> {
+pub(crate) fn build_hadamard(size: usize) -> Vec<f32> {
     assert!(
         size >= 4 && size.is_power_of_two() && size.trailing_zeros().is_multiple_of(2),
         "Hadamard size must be a power of 4, got {size}"
@@ -136,9 +136,9 @@ fn build_hadamard(size: usize) -> Vec<f32> {
 
 /// Per-layer quantization result: int8 weight (row-major), per-row scales, and
 /// reduction sums for the rotated-space error metrics.
-struct QuantOut {
-    qdata: Vec<i8>,
-    scale: Vec<f32>,
+pub(crate) struct QuantOut {
+    pub(crate) qdata: Vec<i8>,
+    pub(crate) scale: Vec<f32>,
     sum_sq_err: f64,
     sum_sq_ref: f64,
     dot: f64,
@@ -147,37 +147,73 @@ struct QuantOut {
 
 impl QuantOut {
     /// Relative reconstruction error (%), = ||dequant - source|| / ||source||.
-    fn relerr(&self) -> f64 {
+    pub(crate) fn relerr(&self) -> f64 {
         (self.sum_sq_err.sqrt() / self.sum_sq_ref.sqrt().max(1e-30)) * 100.0
     }
     /// Cosine similarity between dequantized and source weights.
-    fn cosine(&self) -> f64 {
+    pub(crate) fn cosine(&self) -> f64 {
         self.dot / (self.sum_sq_deq.sqrt() * self.sum_sq_ref.sqrt()).max(1e-30)
     }
 }
 
+/// Apply the block-Hadamard `h` (size `gs`) to one row, group by group:
+/// `dst[gb + j] = Σ_i src[gb + i] · H[j][i]`. `H` is symmetric and involutory, so
+/// the same call rotates a source row and un-rotates a dequantized one.
+fn rotate_row(src: &[f32], dst: &mut [f32], gs: usize, h: &[f32]) {
+    for (sg, dg) in src.chunks_exact(gs).zip(dst.chunks_exact_mut(gs)) {
+        for (j, d) in dg.iter_mut().enumerate() {
+            let hj = &h[j * gs..j * gs + gs];
+            *d = sg.iter().zip(hj).map(|(a, b)| a * b).sum();
+        }
+    }
+}
+
+/// Inverse of [`quantize_convrot`]: `W = (q · scale) · H_blockdiag`, row-major f32.
+///
+/// `scale` holds one value per row, or a single value for the whole tensor.
+/// `rot` is `(gs, H)` for a ConvRot layer, `None` for plain int8. Rows run in
+/// parallel across cores.
+pub(crate) fn dequantize_int8(
+    q: &[i8],
+    scale: &[f32],
+    out: usize,
+    in_: usize,
+    rot: Option<(usize, &[f32])>,
+) -> Vec<f32> {
+    let mut w = vec![0.0f32; out * in_];
+    w.par_chunks_mut(in_).enumerate().for_each(|(r, row)| {
+        let s = if scale.len() == 1 { scale[0] } else { scale[r] };
+        let qr = &q[r * in_..(r + 1) * in_];
+        match rot {
+            Some((gs, h)) => {
+                let deq: Vec<f32> = qr.iter().map(|&v| v as f32 * s).collect();
+                rotate_row(&deq, row, gs, h);
+            }
+            None => {
+                for (d, &v) in row.iter_mut().zip(qr) {
+                    *d = v as f32 * s;
+                }
+            }
+        }
+    });
+    w
+}
+
 /// Rotate + per-channel absmax quantize a 2-D weight. Rows are independent, so the
 /// heavy Hadamard matmul runs in parallel across cores.
-fn quantize_convrot(w: &[f32], out: usize, in_: usize, gs: usize, h: &[f32]) -> QuantOut {
-    let n_groups = in_ / gs;
+pub(crate) fn quantize_convrot(
+    w: &[f32],
+    out: usize,
+    in_: usize,
+    gs: usize,
+    h: &[f32],
+) -> QuantOut {
     // (row_qdata, row_scale, se, sr, dot, sd) per row, in row order.
     let rows: Vec<(Vec<i8>, f32, f64, f64, f64, f64)> = (0..out)
         .into_par_iter()
         .map(|r| {
-            let base = r * in_;
-            // Rotate: for each group, wr[j] = sum_i w[i] * H[j][i] (H symmetric).
             let mut wr = vec![0.0f32; in_];
-            for g in 0..n_groups {
-                let gb = g * gs;
-                for j in 0..gs {
-                    let hj = &h[j * gs..j * gs + gs];
-                    let mut acc = 0.0f32;
-                    for i in 0..gs {
-                        acc += w[base + gb + i] * hj[i];
-                    }
-                    wr[gb + j] = acc;
-                }
-            }
+            rotate_row(&w[r * in_..(r + 1) * in_], &mut wr, gs, h);
             let amax = wr.iter().fold(0.0f32, |m, &v| m.max(v.abs())).max(1e-30);
             let scale = (amax / 127.0).max(1e-30);
             let mut q = vec![0i8; in_];
@@ -219,7 +255,7 @@ fn quantize_convrot(w: &[f32], out: usize, in_: usize, gs: usize, h: &[f32]) -> 
 
 /// The embedded per-layer config the comfy-kitchen loader reads (uint8 JSON bytes).
 /// Byte-for-byte identical to the reference's `json.dumps` output.
-fn comfy_quant_json(gs: usize) -> Vec<u8> {
+pub(crate) fn comfy_quant_json(gs: usize) -> Vec<u8> {
     format!("{{\"format\": \"int8_tensorwise\", \"convrot\": true, \"convrot_groupsize\": {gs}}}")
         .into_bytes()
 }

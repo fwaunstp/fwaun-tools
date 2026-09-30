@@ -852,6 +852,47 @@ impl T {
              int8 の丸め誤差は残ります（元の bf16 とは一致しません）。",
         )
     }
+    pub fn model_op_info(self) -> &'static str {
+        self.pair("Model info", "モデル情報")
+    }
+    pub fn model_op_info_desc(self) -> &'static str {
+        self.pair(
+            "Show a checkpoint's metadata, dtype mix, quantization, and key prefix. Reads \
+             only the header, so it is instant even for large files.",
+            "チェックポイントのメタデータ・dtype 構成・量子化方式・キー接頭辞を表示します。\
+             ヘッダのみを読むため、大きなファイルでもすぐに終わります。",
+        )
+    }
+    pub fn model_info_file(self) -> &'static str {
+        self.pair("File", "ファイル")
+    }
+    pub fn model_info_status(self) -> &'static str {
+        self.pair("Status", "状態")
+    }
+    pub fn model_info_tensors(self) -> &'static str {
+        self.pair("Tensors", "テンソル数")
+    }
+    pub fn model_info_quant(self) -> &'static str {
+        self.pair("Quantization", "量子化")
+    }
+    pub fn model_info_prefix(self) -> &'static str {
+        self.pair("Key prefix", "キー接頭辞")
+    }
+    pub fn model_info_copy_json(self) -> &'static str {
+        self.pair("Copy as JSON", "JSONでコピー")
+    }
+    pub fn model_info_metadata(self) -> &'static str {
+        self.pair("Metadata", "メタデータ")
+    }
+    pub fn model_info_no_metadata(self) -> &'static str {
+        self.pair("(no metadata)", "（メタデータなし）")
+    }
+    pub fn model_info_tensor_list(self) -> &'static str {
+        self.pair("Tensor list", "テンソル一覧")
+    }
+    pub fn model_info_filter(self) -> &'static str {
+        self.pair("Filter", "絞り込み")
+    }
     pub fn model_op_merge_desc(self) -> &'static str {
         self.pair(
             "output = target + multiplier × (tuned − base). Transfers a full \

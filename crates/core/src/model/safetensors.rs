@@ -227,6 +227,16 @@ impl SafeTensorsFile {
         &self.metadata
     }
 
+    /// Size of the file on disk, in bytes.
+    pub fn file_len(&self) -> usize {
+        self.mmap.len()
+    }
+
+    /// Byte offset where the data blob starts (8-byte length + header JSON).
+    pub fn data_start(&self) -> usize {
+        self.data_start
+    }
+
     /// Raw little-endian bytes for a tensor (a view into the mmap, no copy).
     pub fn raw_bytes(&self, key: &str) -> Result<&[u8]> {
         let info = self

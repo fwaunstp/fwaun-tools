@@ -1,5 +1,5 @@
 //! "Model tools" tab — a GUI front-end for the `fwaun-tools model`
-//! subcommands (`merge-diff`, `extract-lora`, `quant-int8`, `dequant`). This is a
+//! subcommands (`merge-diff`, `extract-lora`, `quant-int8`, `dequant`, `info`). This is a
 //! plain batch-operation launcher: pick files, set a few knobs, hit Run.
 //! It shares no state with the dataset editor.
 //!
@@ -10,11 +10,13 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use eframe::egui;
 use fwaun_tools_core::model::ProgressSink;
 use fwaun_tools_core::model::dequant::{self, DequantArgs};
+use fwaun_tools_core::model::info::{self, ModelInfo};
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -29,14 +31,16 @@ enum ModelOp {
     Extract,
     Quant,
     Dequant,
+    Info,
 }
 
 impl ModelOp {
-    const ALL: [ModelOp; 4] = [
+    const ALL: [ModelOp; 5] = [
         ModelOp::Merge,
         ModelOp::Extract,
         ModelOp::Quant,
         ModelOp::Dequant,
+        ModelOp::Info,
     ];
 
     fn label(self, t: T) -> &'static str {
@@ -45,6 +49,7 @@ impl ModelOp {
             ModelOp::Extract => t.model_op_extract(),
             ModelOp::Quant => t.model_op_quant(),
             ModelOp::Dequant => t.model_op_dequant(),
+            ModelOp::Info => t.model_op_info(),
         }
     }
 
@@ -54,6 +59,7 @@ impl ModelOp {
             ModelOp::Extract => t.model_op_extract_desc(),
             ModelOp::Quant => t.model_op_quant_desc(),
             ModelOp::Dequant => t.model_op_dequant_desc(),
+            ModelOp::Info => t.model_op_info_desc(),
         }
     }
 }
@@ -208,6 +214,17 @@ impl Default for DequantForm {
     }
 }
 
+#[derive(Default)]
+struct InfoForm {
+    src: String,
+    /// Regex over tensor keys for the tensor list (blank = all).
+    filter: String,
+    /// Written by the worker when an inspection finishes; moved into `loaded`.
+    slot: Arc<Mutex<Option<ModelInfo>>>,
+    /// The inspection being shown.
+    loaded: Option<ModelInfo>,
+}
+
 /// Message from the worker thread back to the UI.
 enum ModelMsg {
     /// One log line from the core operation.
@@ -240,6 +257,7 @@ pub struct ModelApp {
     extract: ExtractForm,
     quant: QuantForm,
     dequant: DequantForm,
+    info: InfoForm,
     /// `Some` while a job is in flight — the single source of truth for
     /// "running", used to disable the Run button.
     worker_rx: Option<Receiver<ModelMsg>>,
@@ -258,6 +276,7 @@ impl ModelApp {
             extract: ExtractForm::default(),
             quant: QuantForm::default(),
             dequant: DequantForm::default(),
+            info: InfoForm::default(),
             worker_rx: None,
             progress: None,
             log: Vec::new(),
@@ -350,6 +369,7 @@ impl ModelApp {
                 ModelOp::Extract => self.ui_extract(ui, t),
                 ModelOp::Quant => self.ui_quant(ui, t),
                 ModelOp::Dequant => self.ui_dequant(ui, t),
+                ModelOp::Info => self.ui_info(ui, t),
             });
         });
 
@@ -519,6 +539,175 @@ impl ModelApp {
                 dtype,
             };
             Ok(Box::new(move |p| dequant::run(args, p)))
+        });
+    }
+
+    fn ui_info(&mut self, ui: &mut egui::Ui, t: T) {
+        let running = self.running();
+        file_row(ui, t, t.model_field_src(), &mut self.info.src, false);
+
+        ui.separator();
+        let ready = !self.info.src.trim().is_empty();
+        self.run_row(ui, t, running, ready, |form| {
+            let path = PathBuf::from(form.info.src.trim());
+            let slot = form.info.slot.clone();
+            Ok(Box::new(move |p| {
+                let info = info::inspect(&path)?;
+                p.log(&format!(
+                    "{}: {}",
+                    info.path,
+                    info::quant_line(&info.quantization)
+                ));
+                *slot.lock().unwrap() = Some(info);
+                Ok(())
+            }))
+        });
+        if let Some(info) = self.info.slot.lock().unwrap().take() {
+            self.info.loaded = Some(info);
+        }
+
+        let InfoForm { filter, loaded, .. } = &mut self.info;
+        let Some(info) = loaded.as_ref() else {
+            return;
+        };
+        ui.add_space(4.0);
+        egui::Grid::new("model_info_summary")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(t.model_info_file());
+                ui.label(format!(
+                    "{} ({})",
+                    info.path,
+                    info::human_bytes(info.file_size)
+                ));
+                ui.end_row();
+                ui.label(t.model_info_status());
+                let status = info::status_line(info);
+                if info.is_complete() {
+                    ui.label(status);
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 180, 180),
+                        format!("⚠ {status}"),
+                    );
+                }
+                ui.end_row();
+                ui.label(t.model_info_tensors());
+                ui.label(format!(
+                    "{} ({})",
+                    info.tensor_count,
+                    info::human_bytes(info.tensor_bytes)
+                ));
+                ui.end_row();
+                ui.label("dtype");
+                ui.vertical(|ui| {
+                    for (d, s) in &info.dtypes {
+                        ui.label(format!("{d} ×{} ({})", s.count, info::human_bytes(s.bytes)));
+                    }
+                });
+                ui.end_row();
+                ui.label(t.model_info_quant());
+                ui.vertical(|ui| {
+                    ui.label(info::quant_line(&info.quantization));
+                    if info.quantization.comfy_quant.len() > 1 || info.quantization.kind == "mixed"
+                    {
+                        for (body, n) in &info.quantization.comfy_quant {
+                            ui.monospace(format!("×{n} {body}"));
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(t.model_info_prefix());
+                ui.label(info::prefix_line(&info.key_prefix));
+                ui.end_row();
+            });
+
+        let re = match filter.trim() {
+            "" => Ok(None),
+            s => regex::Regex::new(s).map(Some),
+        };
+        if ui.button(t.model_info_copy_json()).clicked() {
+            let tensors = re.as_ref().ok().map(|r| r.as_ref());
+            ui.ctx().copy_text(info.to_json(tensors));
+        }
+
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(format!(
+            "{} ({})",
+            t.model_info_metadata(),
+            info.metadata.len()
+        ))
+        .id_salt("model_info_metadata")
+        .default_open(true)
+        .show(ui, |ui| {
+            if info.metadata.is_empty() {
+                ui.label(t.model_info_no_metadata());
+            }
+            for (key, value) in &info.metadata {
+                let pretty = info::pretty_metadata_value(value);
+                if pretty.contains('\n') {
+                    // JSON tables can be huge (kohya's ss_tag_frequency): fold them.
+                    egui::CollapsingHeader::new(key)
+                        .id_salt(("model_info_meta", key))
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt(("model_info_meta_scroll", key))
+                                .max_height(240.0)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(pretty).monospace())
+                                            .selectable(true),
+                                    );
+                                });
+                        });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(format!("{key}:"));
+                        ui.add(egui::Label::new(value).selectable(true));
+                    });
+                }
+            }
+        });
+
+        let list: Vec<&info::TensorEntry> = match &re {
+            Ok(r) => info.tensors_matching(r.as_ref()).collect(),
+            Err(_) => Vec::new(),
+        };
+        egui::CollapsingHeader::new(format!(
+            "{} ({} / {})",
+            t.model_info_tensor_list(),
+            list.len(),
+            info.tensor_count
+        ))
+        .id_salt("model_info_tensors")
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(t.model_info_filter());
+                ui.add(
+                    egui::TextEdit::singleline(filter)
+                        .desired_width(280.0)
+                        .hint_text("regex"),
+                );
+            });
+            if let Err(e) = &re {
+                ui.colored_label(egui::Color32::from_rgb(255, 180, 180), format!("⚠ {e}"));
+            }
+            let row_h = ui.text_style_height(&egui::TextStyle::Monospace);
+            egui::ScrollArea::vertical()
+                .id_salt("model_info_tensor_scroll")
+                .max_height(320.0)
+                .auto_shrink([false, true])
+                .show_rows(ui, row_h, list.len(), |ui, range| {
+                    for e in &list[range] {
+                        ui.monospace(format!(
+                            "{:<5} {:<16} {}",
+                            e.dtype,
+                            format!("{:?}", e.shape),
+                            e.key
+                        ));
+                    }
+                });
         });
     }
 

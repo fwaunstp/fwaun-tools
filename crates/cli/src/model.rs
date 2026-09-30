@@ -6,6 +6,7 @@ use clap::{Args, Subcommand};
 
 use fwaun_tools_core::model::StreamProgress;
 use fwaun_tools_core::model::dequant::{self, DequantArgs};
+use fwaun_tools_core::model::info::{self, ModelInfo};
 use fwaun_tools_core::model::lora::{self, ExtractArgs};
 use fwaun_tools_core::model::merge::{self, MergeArgs, ModelArch};
 use fwaun_tools_core::model::quant::{self, QuantArgs};
@@ -40,6 +41,13 @@ pub enum ModelCommand {
     /// unchanged. The result carries the int8 rounding error: it is not the
     /// original bf16 model.
     Dequant(DequantCommand),
+
+    /// Show a checkpoint's metadata, dtype mix, quantization, and key prefix.
+    ///
+    /// Reads only the header (and the tiny comfy_quant configs), so it is instant
+    /// even for 20+ GB files. Also reports whether the file is complete: a
+    /// truncated download still opens but is missing tensor data.
+    Info(InfoCommand),
 
     /// Extract a low-rank LoRA from a full fine-tune: SVD of (tuned - base).
     ///
@@ -151,6 +159,25 @@ pub struct DequantCommand {
 }
 
 #[derive(Args)]
+pub struct InfoCommand {
+    /// Checkpoint to inspect (.safetensors).
+    file: std::path::PathBuf,
+
+    /// Print machine-readable JSON instead of text.
+    #[arg(long)]
+    json: bool,
+
+    /// Also list tensors (key, dtype, shape), optionally only keys matching REGEX.
+    #[arg(long, value_name = "REGEX", num_args = 0..=1, default_missing_value = "")]
+    tensors: Option<String>,
+
+    /// Print only the `__metadata__` entries, in full (the summary view shortens
+    /// long values).
+    #[arg(long, conflicts_with = "tensors")]
+    metadata_only: bool,
+}
+
+#[derive(Args)]
 pub struct MergeCommand {
     /// Original model the fine-tune started from (e.g. krea2_raw_bf16.safetensors).
     #[arg(long)]
@@ -232,6 +259,7 @@ pub fn run(command: ModelCommand) -> Result<()> {
             },
             &mut StreamProgress::stdout(),
         ),
+        ModelCommand::Info(cmd) => run_info(cmd),
         ModelCommand::ExtractLora(cmd) => {
             let save_dtype = Dtype::parse_save_dtype(&cmd.save_dtype)?;
             let arch = ModelArch::parse(&cmd.model)?;
@@ -251,6 +279,99 @@ pub fn run(command: ModelCommand) -> Result<()> {
                 },
                 &mut StreamProgress::stderr(),
             )
+        }
+    }
+}
+
+/// Metadata values longer than this are shortened in the summary view.
+const METADATA_PREVIEW_CHARS: usize = 600;
+
+fn run_info(cmd: InfoCommand) -> Result<()> {
+    let info = info::inspect(&cmd.file)?;
+    // `--tensors` with no REGEX arrives as "" (list everything).
+    let filter = match cmd.tensors.as_deref() {
+        None | Some("") => None,
+        Some(re) => Some(regex::Regex::new(re)?),
+    };
+    let tensors = cmd.tensors.is_some().then_some(filter.as_ref());
+
+    if cmd.json {
+        if cmd.metadata_only {
+            println!("{}", serde_json::to_string_pretty(&info.metadata)?);
+        } else {
+            println!("{}", info.to_json(tensors));
+        }
+        return Ok(());
+    }
+    if cmd.metadata_only {
+        print_metadata(&info, None);
+        return Ok(());
+    }
+
+    println!(
+        "file       : {} ({})",
+        info.path,
+        info::human_bytes(info.file_size)
+    );
+    println!("status     : {}", info::status_line(&info));
+    println!(
+        "tensors    : {} ({})",
+        info.tensor_count,
+        info::human_bytes(info.tensor_bytes)
+    );
+    let dtypes: Vec<String> = info
+        .dtypes
+        .iter()
+        .map(|(d, s)| format!("{d} ×{} ({})", s.count, info::human_bytes(s.bytes)))
+        .collect();
+    println!("dtypes     : {}", dtypes.join(", "));
+    println!("quant      : {}", info::quant_line(&info.quantization));
+    if info.quantization.comfy_quant.len() > 1 || info.quantization.kind == "mixed" {
+        for (body, n) in &info.quantization.comfy_quant {
+            println!("             ×{n:<4} {body}");
+        }
+    }
+    println!("key prefix : {}", info::prefix_line(&info.key_prefix));
+    println!();
+    print_metadata(&info, Some(METADATA_PREVIEW_CHARS));
+
+    if let Some(filter) = tensors {
+        println!();
+        let list: Vec<_> = info.tensors_matching(filter).collect();
+        println!("tensors ({} of {}):", list.len(), info.tensor_count);
+        for t in list {
+            println!(
+                "  {:<5} {:<16} {}",
+                t.dtype,
+                format!("{:?}", t.shape),
+                t.key
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Print `__metadata__`, JSON values pretty-printed and indented under their key.
+/// `limit` shortens each value to that many characters.
+fn print_metadata(info: &ModelInfo, limit: Option<usize>) {
+    if info.metadata.is_empty() {
+        println!("metadata   : (none)");
+        return;
+    }
+    println!("metadata ({}):", info.metadata.len());
+    for (key, value) in &info.metadata {
+        let mut pretty = info::pretty_metadata_value(value);
+        if let Some(limit) = limit
+            && pretty.chars().count() > limit
+        {
+            let total = pretty.chars().count();
+            pretty = pretty.chars().take(limit).collect();
+            pretty.push_str(&format!(" … ({total} chars; --metadata-only shows all)"));
+        }
+        let mut lines = pretty.lines();
+        println!("  {key}: {}", lines.next().unwrap_or(""));
+        for line in lines {
+            println!("    {line}");
         }
     }
 }

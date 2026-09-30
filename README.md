@@ -9,7 +9,7 @@ binary:
   doesn't have to think about provenance while curating.
 - **`model`** — diffusion-checkpoint utilities over safetensors files:
   task-vector `merge-diff`, LoRA extraction (`extract-lora`), and INT8+ConvRot
-  quantization (`quant-int8`). Pure-Rust/CPU, available in every build.
+  quantization (`quant-int8`) and back to bf16 (`dequant`). Pure-Rust/CPU, available in every build.
 
 Built primarily for [ANIMA preview][anima] and Krea 2 LoRA training, but the
 data model and export profiles are not ANIMA-specific.
@@ -64,7 +64,7 @@ stacks is not tested.
 - **Bilingual GUI.** English / 日本語 toggle, defaults to host locale.
 - **CLI for batch operations**, GUI for curation. The GUI also has a
   **Model tools** tab (Dataset / Model tools mode switch) that front-ends
-  the `merge-diff` / `extract-lora` / `quant-int8` checkpoint utilities
+  the `merge-diff` / `extract-lora` / `quant-int8` / `dequant` checkpoint utilities
   for people who'd rather not use the CLI.
 
 ## Install
@@ -298,6 +298,7 @@ not a dataset directory:
 fwaun-tools model merge-diff   --base B --tuned T --target G -o OUT [--multiplier M] [--model krea2|anima|auto] [--save-dtype bf16|fp16|fp32] [--requantize]
 fwaun-tools model extract-lora --base B --tuned T -o OUT [--rank R] [--alpha A] [--model krea2|anima|auto] [--include RE] [--exclude RE]
 fwaun-tools model quant-int8   SRC [DST] [--dry-run] [--include RE] [--exclude RE] [--min-gemm N] [--verify-report PATH]
+fwaun-tools model dequant      SRC [DST] [--dtype bf16|fp16|fp32]
 ```
 
 `merge-diff` transfers a full fine-tune delta (`tuned − base`) onto another
@@ -313,7 +314,12 @@ quantization error into the delta. An int8 target is written dequantized
 (bf16, or `--save-dtype`) by default; `--requantize` keeps it int8_convrot.
 fp8_scaled checkpoints are still rejected.
 
-These three are also available in the GUI's **Model tools** tab (switch modes
+`dequant` goes the other way: it turns an int8_convrot checkpoint into bf16
+(or fp16/fp32) for GPUs that can't run the comfy-kitchen int8 kernels. The
+result keeps the int8 rounding error — it is the dequantized model, not the
+original bf16 the int8 file was made from.
+
+These are also available in the GUI's **Model tools** tab (switch modes
 at the top of the window), for the same operations without the command line.
 
 `quant-int8` follows the INT8+ConvRot scheme from Comfy-Org's

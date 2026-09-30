@@ -1,7 +1,7 @@
 //! Diffusion-checkpoint utilities over safetensors files: task-vector merge
 //! ([`merge`]), low-rank LoRA extraction ([`lora`]), and INT8 + ConvRot
-//! quantization ([`quant`]), reading int8 checkpoints back as f32
-//! ([`quantized`]). Pure-Rust / CPU, streamed key-by-key so peak RAM
+//! quantization ([`quant`]) and its inverse ([`dequant`]), reading int8
+//! checkpoints back as f32 ([`quantized`]). Pure-Rust / CPU, streamed key-by-key so peak RAM
 //! stays small — no ONNX Runtime, no glibc floor.
 //!
 //! Ported from the standalone `fwaun-model-tools` crate; exposed here so both
@@ -12,6 +12,7 @@
 //! directly, so the CLI keeps its stderr/stdout lines while the GUI forwards
 //! structured log + progress updates to its worker channel.
 
+pub mod dequant;
 pub mod lora;
 pub mod merge;
 pub mod progress;

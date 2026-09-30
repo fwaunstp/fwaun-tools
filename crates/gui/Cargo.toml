@@ -35,6 +35,7 @@ egui = { version = "0.32" }
 egui_extras = { version = "0.32", features = ["image"] }
 serde = { workspace = true }
 anyhow = { workspace = true }
+regex = { workspace = true }
 chrono = { workspace = true }
 rfd = "0.15"
 image = { workspace = true }

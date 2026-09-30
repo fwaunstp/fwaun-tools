@@ -217,6 +217,62 @@ fn validate_layer(
     Ok(Some(gs))
 }
 
+/// Header-level quantization summary of a checkpoint. Unlike [`ModelFile::open`]
+/// it never fails: fp8_scaled, unknown comfy_quant formats, and unreadable
+/// configs are reported instead of rejected, so `model info` can describe any file.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct QuantSummary {
+    /// `float`, `int8_convrot`, `int8`, `fp8_scaled`, or `mixed`.
+    pub kind: String,
+    /// Layers whose comfy_quant format is int8_tensorwise.
+    pub int8_layers: usize,
+    /// ConvRot group size -> number of int8 layers using it.
+    pub convrot_groupsizes: BTreeMap<usize, usize>,
+    /// Distinct comfy_quant JSON bodies -> number of layers carrying each.
+    pub comfy_quant: BTreeMap<String, usize>,
+    /// The key that marks the file as fp8_scaled, if any.
+    pub fp8_marker: Option<String>,
+}
+
+/// Classify a checkpoint's quantization from its header and comfy_quant configs.
+pub fn summarize(file: &SafeTensorsFile) -> QuantSummary {
+    let mut s = QuantSummary::default();
+    let mut int8_companions = std::collections::BTreeSet::new();
+    let mut unrotated = 0usize;
+    let mut other_formats = 0usize;
+    for key in file.keys().filter(|k| k.ends_with(".comfy_quant")) {
+        let layer = key.strip_suffix(".comfy_quant").unwrap();
+        let body = match file.raw_bytes(key) {
+            Ok(b) => String::from_utf8_lossy(b).into_owned(),
+            Err(_) => "<unreadable: data past end of file>".to_string(),
+        };
+        *s.comfy_quant.entry(body.clone()).or_default() += 1;
+        let cfg: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+        if cfg.get("format").and_then(Value::as_str) != Some("int8_tensorwise") {
+            other_formats += 1;
+            continue;
+        }
+        s.int8_layers += 1;
+        int8_companions.extend(COMPANION_SUFFIXES.iter().map(|x| format!("{layer}.{x}")));
+        let gs = cfg.get("convrot_groupsize").and_then(Value::as_u64);
+        match (cfg.get("convrot").and_then(Value::as_bool), gs) {
+            (Some(true), Some(gs)) => *s.convrot_groupsizes.entry(gs as usize).or_default() += 1,
+            _ => unrotated += 1,
+        }
+    }
+    s.fp8_marker = fp8_scaled_marker(file, &int8_companions);
+
+    s.kind = match (s.int8_layers, other_formats, &s.fp8_marker) {
+        (0, 0, None) => "float",
+        (0, 0, Some(_)) => "fp8_scaled",
+        (n, 0, None) if unrotated == 0 && n > 0 => "int8_convrot",
+        (n, 0, None) if unrotated == n => "int8",
+        _ => "mixed",
+    }
+    .to_string();
+    s
+}
+
 /// A key that marks an fp8_scaled checkpoint, if any: an fp8 tensor, or a scale
 /// that does not belong to an int8 layer.
 fn fp8_scaled_marker(
@@ -393,6 +449,52 @@ pub(crate) mod tests {
         );
         let err = ModelFile::open(&path).err().unwrap().to_string();
         assert!(err.contains("fp8_scaled"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summarize_classifies_without_failing() {
+        let dir = temp_dir("quantized-summarize");
+        let kind = |name: &str, tensors: &[(&str, TestTensor)]| {
+            let path = dir.join(name);
+            write_model(&path, tensors);
+            summarize(&SafeTensorsFile::open(&path).unwrap())
+        };
+
+        let f = kind(
+            "f.safetensors",
+            &[("a.weight", TestTensor::Float(vec![2], vec![1.0; 2]))],
+        );
+        assert_eq!(f.kind, "float");
+
+        let q = kind(
+            "q.safetensors",
+            &[(
+                "blocks.0.q.weight",
+                TestTensor::Int8(8, 64, 16, weights(8 * 64, 3)),
+            )],
+        );
+        assert_eq!(q.kind, "int8_convrot");
+        assert_eq!(q.int8_layers, 1);
+        assert_eq!(q.convrot_groupsizes[&16], 1);
+        assert!(q.fp8_marker.is_none());
+
+        let fp8 = kind(
+            "fp8.safetensors",
+            &[
+                (
+                    "blocks.0.q.weight",
+                    TestTensor::Float(vec![2, 2], vec![1.0; 4]),
+                ),
+                (
+                    "blocks.0.q.scale_weight",
+                    TestTensor::Float(vec![], vec![1.0]),
+                ),
+            ],
+        );
+        assert_eq!(fp8.kind, "fp8_scaled");
+        assert_eq!(fp8.fp8_marker.as_deref(), Some("blocks.0.q.scale_weight"));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

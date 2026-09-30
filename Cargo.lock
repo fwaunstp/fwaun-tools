@@ -1483,6 +1483,7 @@ dependencies = [
  "fwaun-tools-comfyui",
  "fwaun-tools-core",
  "fwaun-tools-tagger",
+ "regex",
  "serde_json",
  "tokenizers",
 ]
@@ -1535,6 +1536,7 @@ dependencies = [
  "fwaun-tools-tagger",
  "image",
  "opener",
+ "regex",
  "rfd",
  "serde",
  "sys-locale",

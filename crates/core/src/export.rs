@@ -88,7 +88,7 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile, common: &CommonTag
     }
 
     if profile.shuffle {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         out.shuffle(&mut rng);
     }
     out

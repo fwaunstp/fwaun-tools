@@ -246,7 +246,7 @@ pub enum SidecarError {
     Parse {
         path: PathBuf,
         #[source]
-        source: ron::de::SpannedError,
+        source: Box<ron::de::SpannedError>,
     },
     #[error("ron serialize error: {0}")]
     Serialize(#[from] ron::Error),
@@ -282,7 +282,7 @@ impl Sidecar {
         })?;
         let parsed = ron::de::from_str(&s).map_err(|source| SidecarError::Parse {
             path: path.clone(),
-            source,
+            source: Box::new(source),
         })?;
         Ok(Some(parsed))
     }

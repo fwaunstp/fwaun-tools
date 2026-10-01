@@ -5,7 +5,7 @@ members = ["crates/core", "crates/tagger", "crates/captioner", "crates/booru", "
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["fwaunstp <fwaunstp@proton.me>"]
 repository = "https://github.com/fwaunstp/fwaun-tools"
@@ -19,24 +19,24 @@ fwaun-tools-tagger = { path = "crates/tagger", version = "0.7.0" }
 fwaun-tools-captioner = { path = "crates/captioner", version = "0.7.0" }
 fwaun-tools-booru = { path = "crates/booru", version = "0.7.0" }
 fwaun-tools-comfyui = { path = "crates/comfyui", version = "0.7.0" }
-tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-ureq = { version = "2", features = ["json"] }
-md5 = "0.7"
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
+ureq = { version = "3", features = ["json"] }
+md5 = "0.8"
 serde = { version = "1", features = ["derive"] }
-ron = "0.8"
+ron = "0.12"
 toml = "1.1"
-toml_edit = "0.22"
+toml_edit = "0.25"
 thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 walkdir = "2"
-rand = "0.8"
+rand = "0.10"
 clap = { version = "4", features = ["derive"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
-base64 = "0.22"
+base64 = "0.23"
 serde_json = "1"
 csv = "1.3"
-ndarray = "0.16"
+ndarray = "0.17"
 ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 hf-hub = { version = "0.5", default-features = false, features = ["ureq"] }
 # Checkpoint (safetensors) tooling — used by fwaun-tools-core's `model` feature.

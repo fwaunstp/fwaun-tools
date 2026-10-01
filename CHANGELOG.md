@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolves dependencies against `rust-version`, the stale value held some
   dependencies back (`image` 0.25.10, for one). Dependencies are refreshed
   to their latest semver-compatible versions, including `ort` 2.0.0-rc.13.
+- **Major dependency bumps:** eframe/egui/egui_extras 0.33, rfd 0.17,
+  ureq 3, tokenizers 0.23, ndarray 0.17, ron 0.12, toml_edit 0.25,
+  rand 0.10, base64 0.23, md5 0.8, dirs 7, opener 0.9. Sidecar `.ron`
+  files are written byte-for-byte as before, and existing ones load
+  unchanged. HTTP behavior (captioner retries on 5xx, server error bodies
+  in ComfyUI / captioner errors) is unchanged; ComfyUI JSON responses are
+  no longer subject to ureq's new 10 MB default body cap.
 
 - **Equal-priority caption prefixes now vary per image instead of always
   sorting by group name.** For a style LoRA over independent axes — "chibi

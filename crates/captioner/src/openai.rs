@@ -24,9 +24,13 @@ pub struct OpenAiCaptioner {
 
 impl OpenAiCaptioner {
     pub fn from_profile(profile: &OpenAiCaptionerProfile) -> Result<Self, CaptionerError> {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(profile.timeout_secs))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(profile.timeout_secs)))
+            // Non-2xx comes back as a response so the retry loop can tell 5xx
+            // from 4xx and surface the server's JSON error body.
+            .http_status_as_error(false)
+            .build()
+            .into();
         Ok(Self {
             profile: profile.clone(),
             agent,
@@ -86,7 +90,7 @@ impl OpenAiCaptioner {
         // 500 on a request that succeeds on a fresh attempt. Retry transient
         // failures — HTTP 5xx and transport errors — but never 4xx, which are
         // deterministic client mistakes that won't fix themselves.
-        let resp = {
+        let mut resp = {
             let mut attempt = 0u32;
             loop {
                 // `send_json` consumes the request builder, so rebuild it each
@@ -94,18 +98,19 @@ impl OpenAiCaptioner {
                 let mut req = self
                     .agent
                     .post(&url)
-                    .set("content-type", "application/json");
+                    .header("content-type", "application/json");
                 if let Some(key) = self.profile.api_key.as_deref().filter(|s| !s.is_empty()) {
-                    req = req.set("authorization", &format!("Bearer {key}"));
+                    req = req.header("authorization", &format!("Bearer {key}"));
                 }
                 match req.send_json(&body) {
-                    Ok(r) => break r,
-                    Err(ureq::Error::Status(code, response)) => {
+                    Ok(r) if r.status().is_success() => break r,
+                    Ok(mut response) => {
+                        let code = response.status().as_u16();
                         // llama-server / koboldcpp / Ollama all return a JSON
                         // error body on non-2xx — surface it so missing-mmproj
                         // and similar server-side misconfigurations are obvious
                         // from this side.
-                        let err_body = response.into_string().unwrap_or_default();
+                        let err_body = response.body_mut().read_to_string().unwrap_or_default();
                         let retryable = code >= 500;
                         if retryable && attempt < self.profile.max_retries {
                             attempt += 1;
@@ -123,7 +128,7 @@ impl OpenAiCaptioner {
                             "HTTP {code} from {url}: {err_body}"
                         )));
                     }
-                    Err(ureq::Error::Transport(t)) => {
+                    Err(t) => {
                         if attempt < self.profile.max_retries {
                             attempt += 1;
                             let backoff = retry_backoff(attempt);
@@ -142,7 +147,8 @@ impl OpenAiCaptioner {
             }
         };
         let parsed: ChatResponse = resp
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| CaptionerError::Http(format!("decode body: {e}")))?;
 
         let choice = parsed

@@ -54,10 +54,13 @@ impl Client {
     /// each individual HTTP request (upload, queue, one history poll, one
     /// download) — not the whole job.
     pub fn new(base_url: &str, timeout: Duration) -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout_read(timeout)
-            .timeout_write(timeout)
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_per_call(Some(timeout))
+            // Non-2xx comes back as a response so `check` can read ComfyUI's
+            // error body (workflow validation detail) into the error.
+            .http_status_as_error(false)
+            .build()
+            .into();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             // ComfyUI accepts any client_id string; it only scopes websocket
@@ -121,13 +124,12 @@ impl Client {
         let resp = self
             .agent
             .post(&url)
-            .set(
+            .header(
                 "Content-Type",
                 &format!("multipart/form-data; boundary={boundary}"),
             )
-            .send_bytes(&body)
-            .map_err(http_err)?;
-        Ok(resp.into_json()?)
+            .send(&body[..]);
+        json(check(resp)?)
     }
 
     /// `POST /prompt`. Queues a workflow graph (API format) and returns its
@@ -139,12 +141,8 @@ impl Client {
     /// the credential for paid API nodes from.
     pub fn queue_prompt(&self, graph: &Value) -> Result<String> {
         let url = format!("{}/prompt", self.base_url);
-        let resp = self
-            .agent
-            .post(&url)
-            .send_json(self.prompt_body(graph))
-            .map_err(http_err)?;
-        let v: Value = resp.into_json()?;
+        let resp = self.agent.post(&url).send_json(self.prompt_body(graph));
+        let v: Value = json(check(resp)?)?;
         if let Some(errs) = v.get("node_errors").and_then(Value::as_object)
             && !errs.is_empty()
         {
@@ -185,7 +183,7 @@ impl Client {
         let url = format!("{}/history/{}", self.base_url, prompt_id);
         let deadline = Instant::now() + timeout;
         loop {
-            let v: Value = self.agent.get(&url).call().map_err(http_err)?.into_json()?;
+            let v: Value = json(check(self.agent.get(&url).call())?)?;
             if let Some(entry) = v.get(prompt_id) {
                 if let Some("error") = entry.pointer("/status/status_str").and_then(Value::as_str) {
                     let detail = entry
@@ -223,9 +221,9 @@ impl Client {
             enc(&image.subfolder),
             enc(&image.kind),
         );
-        let resp = self.agent.get(&url).call().map_err(http_err)?;
+        let resp = check(self.agent.get(&url).call())?;
         let mut buf = Vec::new();
-        resp.into_reader().read_to_end(&mut buf)?;
+        resp.into_body().into_reader().read_to_end(&mut buf)?;
         Ok(buf)
     }
 
@@ -246,7 +244,7 @@ impl Client {
     /// the error lists the node's actual input names, so the fix is obvious.
     pub fn list_node_enum(&self, class_type: &str, input: &str) -> Result<Vec<String>> {
         let url = format!("{}/object_info/{}", self.base_url, class_type);
-        let v: Value = self.agent.get(&url).call().map_err(http_err)?.into_json()?;
+        let v: Value = json(check(self.agent.get(&url).call())?)?;
         let node = v.get(class_type).ok_or_else(|| {
             ComfyError::Http(format!(
                 "/object_info has no entry for `{class_type}` (is the node installed \
@@ -354,21 +352,35 @@ fn enc(s: &str) -> String {
     out
 }
 
-/// Fold a `ureq` error into [`ComfyError::Http`], pulling the response body out
-/// of a non-2xx status so ComfyUI's validation detail isn't lost.
-fn http_err(e: ureq::Error) -> ComfyError {
-    match e {
-        ureq::Error::Status(code, resp) => {
-            let body = resp.into_string().unwrap_or_default();
-            let body = body.trim();
-            if body.is_empty() {
-                ComfyError::Http(format!("HTTP {code}"))
-            } else {
-                ComfyError::Http(format!("HTTP {code}: {body}"))
-            }
-        }
-        ureq::Error::Transport(t) => ComfyError::Http(t.to_string()),
+/// Fold a `ureq` result into a 2xx response: transport failures and non-2xx
+/// statuses become [`ComfyError::Http`], the latter with the response body so
+/// ComfyUI's validation detail isn't lost.
+fn check(
+    res: std::result::Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<ureq::http::Response<ureq::Body>> {
+    let mut resp = res.map_err(|e| ComfyError::Http(e.to_string()))?;
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
     }
+    let body = resp.body_mut().read_to_string().unwrap_or_default();
+    let body = body.trim();
+    let code = status.as_u16();
+    Err(if body.is_empty() {
+        ComfyError::Http(format!("HTTP {code}"))
+    } else {
+        ComfyError::Http(format!("HTTP {code}: {body}"))
+    })
+}
+
+/// Decode a JSON response body. No size cap: `/object_info` on a server with
+/// many custom nodes can exceed ureq's 10 MB default.
+fn json<T: serde::de::DeserializeOwned>(mut resp: ureq::http::Response<ureq::Body>) -> Result<T> {
+    resp.body_mut()
+        .with_config()
+        .limit(u64::MAX)
+        .read_json()
+        .map_err(|e| ComfyError::Http(format!("decode body: {e}")))
 }
 
 #[cfg(test)]

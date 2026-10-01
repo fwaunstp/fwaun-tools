@@ -30,14 +30,14 @@ fwaun-tools-core = { workspace = true, features = ["model"] }
 fwaun-tools-tagger = { workspace = true }
 fwaun-tools-captioner = { workspace = true }
 fwaun-tools-booru = { workspace = true }
-eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
-egui = { version = "0.32" }
-egui_extras = { version = "0.32", features = ["image"] }
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = { version = "0.33" }
+egui_extras = { version = "0.33", features = ["image"] }
 serde = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
-rfd = "0.15"
+rfd = "0.17"
 image = { workspace = true }
 toml = { workspace = true }
 sys-locale = "0.3"

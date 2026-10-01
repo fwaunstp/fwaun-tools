@@ -753,13 +753,12 @@ impl ModelApp {
             }
         });
         // Progress bar under the button row while a job reports ticks.
-        if running {
-            if let Some((done, total)) = self.progress {
-                if total > 0 {
-                    let frac = done as f32 / total as f32;
-                    ui.add(egui::ProgressBar::new(frac).text(format!("{done}/{total}")));
-                }
-            }
+        if running
+            && let Some((done, total)) = self.progress
+            && total > 0
+        {
+            let frac = done as f32 / total as f32;
+            ui.add(egui::ProgressBar::new(frac).text(format!("{done}/{total}")));
         }
     }
 }

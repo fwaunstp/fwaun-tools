@@ -165,7 +165,7 @@ impl Preview {
         // Room for the header row and the frame's own padding, and past that
         // for a strip of backdrop on every side — the backdrop is a dismiss
         // target, so it has to stay reachable with the pointer.
-        let screen = ctx.screen_rect().size();
+        let screen = ctx.content_rect().size();
         let bounds = egui::vec2((screen.x - 96.0).max(160.0), (screen.y - 128.0).max(120.0));
 
         let mut action = PreviewAction::Keep;
@@ -262,7 +262,7 @@ fn wrap_index(index: usize, len: usize, delta: isize) -> usize {
 
 /// Longest edge to decode to for the current window, in pixels.
 fn max_edge(ctx: &egui::Context) -> u32 {
-    let screen = ctx.screen_rect().size();
+    let screen = ctx.content_rect().size();
     let longest = screen.x.max(screen.y) * ctx.pixels_per_point();
     (longest.round().max(0.0) as u32).clamp(MIN_EDGE, MAX_EDGE)
 }

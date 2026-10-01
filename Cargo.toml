@@ -20,7 +20,7 @@ fwaun-tools-captioner = { path = "crates/captioner", version = "0.7.0" }
 fwaun-tools-booru = { path = "crates/booru", version = "0.7.0" }
 fwaun-tools-comfyui = { path = "crates/comfyui", version = "0.7.0" }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 md5 = "0.8"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12"

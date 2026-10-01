@@ -42,10 +42,11 @@ impl BooruClient {
         let url = format!("{}/posts.json?tags=md5:{}&limit=1", self.base_url, hex);
 
         let posts: Vec<DanbooruPost> = ureq::get(&url)
-            .set("User-Agent", &self.user_agent)
+            .header("User-Agent", &self.user_agent)
             .call()
             .map_err(|e| BooruError::Http(e.to_string()))?
-            .into_json()
+            .body_mut()
+            .read_json()
             .map_err(|e| BooruError::Http(e.to_string()))?;
 
         let post = posts

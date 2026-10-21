@@ -52,11 +52,15 @@ stacks is not tested.
   **Open in default app** / **Show in folder**.
 - **Per-folder configuration via `fwaun-tools.toml`.** Pick the tagger
   model, captioner, export profile and threshold per dataset.
-- **Two output modes.** `export` writes one `<image>.txt` per image
-  (sd-scripts DreamBooth/LoRA caption-file mode — tags by default, or
+- **Four output modes.** `export` writes one text file per image
+  (sd-scripts DreamBooth/LoRA caption-file mode — tags by default,
   `--content caption` for natural-language models like Qwen Image/Flux
-  that weren't trained on danbooru tags); `metadata` writes a single
-  `meta.json` (sd-scripts fine-tune mode).
+  that weren't trained on danbooru tags, or `--content tags+caption` /
+  `caption+tags` to put both blocks in one file for hybrid models like
+  MOSS Image; `--ext` picks the output extension, e.g. `--ext tags.txt`,
+  so several kinds can coexist in one folder without overwriting each
+  other); `metadata` writes a single `meta.json` (sd-scripts fine-tune
+  mode).
 - **Fast re-opening.** The GUI's **Reload** button re-scans the open folder
   and only regenerates thumbnails for images that actually changed, so
   picking up a CLI run or a handful of new files is instant instead of a
@@ -241,7 +245,7 @@ Dataset curation (`fwaun-tools dataset <verb>`):
 fwaun-tools dataset tag <dir>      [--model NAME] [--threshold X] [--force]
 fwaun-tools dataset caption <dir>  [--model NAME] [--force]
 fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
-fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X] [--content tags|caption]
+fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X] [--content tags|caption|tags+caption|caption+tags] [--ext txt]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]

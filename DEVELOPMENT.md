@@ -451,11 +451,18 @@ Resolvers: `resolve_profile`, `resolve_tagger`, `resolve_captioner`.
 `sidecar.rs` — RON I/O via atomic write (`<file>.ron.tmp` + rename).
 Includes the suppression helpers and the `manual_caption` accessor.
 
-`export.rs` — `build_tags()` / `build_caption()` are the main entries;
-`export_image()` writes the comma-joined tag string to `<image>.txt`,
-`export_caption_file()` writes the caption body instead (skipping images
-with no caption). Tests cover suppression across sources, profile prefix
-dedup, threshold/category filters, manual ordering, and caption affixes.
+`export.rs` — `build_tags()` / `build_caption()` are the main content
+builders; `build_export_text()` composes them per `ExportContent` kind
+(`tags`, `caption`, `tags+caption`, `caption+tags` — the two combined kinds
+join their blocks with a blank line), and `export_file()` writes the result
+to a sibling `<stem>.<ext>` (`export_text_path_with_ext()` builds it:
+`file_stem` + `set_extension`, so a composite `--ext tags.txt` on `a.png`
+yields `a.tags.txt`; pathless images and empty/separator-bearing extensions
+are errors). `export_image()` / `export_caption_file()` remain as thin
+library-level wrappers for the original tags/caption kinds on the default
+`.txt`. Tests cover suppression across sources, profile prefix dedup,
+threshold/category filters, manual ordering, caption affixes, combined-block
+order/separator, and extension handling.
 
 `walk.rs` — recursive walk yielding image-extension files.
 
@@ -486,7 +493,7 @@ Re-verify these on any version bump.
 
 | Mode      | Files written                       | Use case                              |
 | --------- | ----------------------------------- | ------------------------------------- |
-| `export`  | one `<image>.txt` per image         | sd-scripts DreamBooth / LoRA caption-file mode |
+| `export`  | one `<image-stem>.<ext>` per image (default `.txt`; `--ext` changes it) | sd-scripts DreamBooth / LoRA caption-file mode |
 | `metadata`| one `meta.json` for the whole dir   | sd-scripts fine-tune mode (tags + caption together) |
 
 Default `shuffle` is **off** — sd-scripts shuffles at training time, and a

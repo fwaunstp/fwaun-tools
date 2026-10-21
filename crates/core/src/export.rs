@@ -1,14 +1,28 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use rand::seq::SliceRandom;
 use thiserror::Error;
 
 use crate::common_tags::CommonTags;
 use crate::config::{ExportProfile, TagGroup};
-use crate::sidecar::{Sidecar, is_organizational, positive_entries, suppressed_stems};
+use crate::sidecar::{is_organizational, positive_entries, suppressed_stems, Sidecar};
 use crate::tag_group::AffixSeed;
+
+/// Extension of the per-image text files `export` writes unless `--ext`
+/// says otherwise.
+pub const DEFAULT_TEXT_EXTENSION: &str = "txt";
+
+/// Separator between the two blocks of a combined (`tags+caption` /
+/// `caption+tags`) export: a blank line. A single `\n` would not be a
+/// block boundary for trainers that split a caption file on newlines into
+/// variations (sd-scripts' `--shuffle_captions`), which would silently
+/// train half a block as a full caption. The `tags` block itself is a
+/// single comma-joined line (never contains newlines), so two consecutive
+/// newlines are unambiguous.
+pub const COMBINED_SEPARATOR: &str = "\n\n";
 
 #[derive(Debug, Error)]
 pub enum ExportError {
@@ -18,10 +32,110 @@ pub enum ExportError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "cannot derive an export text path from {path}: extension {ext:?} is empty or path-bearing"
+    )]
+    InvalidPath { path: PathBuf, ext: String },
 }
 
+/// What the `export` command writes into each text file, as one merged
+/// block. The CLI's `--content` flag values are exactly the strings
+/// returned by [`ExportContent::as_str`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportContent {
+    /// Merged manual + auto + booru tags (the historical default), for
+    /// tag-trained models (e.g. anime checkpoints via sd-scripts/musubi).
+    /// Underscores are flattened to spaces and the tags comma-joined.
+    Tags,
+    /// The export caption — manual caption if set, else the joined active
+    /// auto captions, with any configured prefixes/suffixes applied. For
+    /// natural-language models (e.g. Qwen Image, Flux) that were never
+    /// trained on danbooru-style tags. Images without a caption are skipped.
+    Caption,
+    /// Both blocks, tags first, separated by [`COMBINED_SEPARATOR`]. For
+    /// models that take a tag-conditioned style/character embedding *and*
+    /// a natural-language caption in one text input (e.g. MOSS Image).
+    /// Skips images without a caption like [`Self::Caption`]; an image
+    /// whose tag set is empty exports as caption-only.
+    TagsCaption,
+    /// Both blocks, caption first — the order some trainers' prompt
+    /// templates expect (description, then trailing tags).
+    CaptionTags,
+}
+
+impl ExportContent {
+    /// The canonical CLI spelling of this content kind (also the string
+    /// shown in `--help`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tags => "tags",
+            Self::Caption => "caption",
+            Self::TagsCaption => "tags+caption",
+            Self::CaptionTags => "caption+tags",
+        }
+    }
+}
+
+/// Parses the canonical strings from [`ExportContent::as_str`],
+/// case-insensitively; the historical kebab spellings (`tags-caption`) are
+/// accepted too.
+impl FromStr for ExportContent {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let v = s.trim().replace('-', "+").to_lowercase();
+        match v.as_str() {
+            "tags" => Ok(Self::Tags),
+            "caption" => Ok(Self::Caption),
+            "tags+caption" => Ok(Self::TagsCaption),
+            "caption+tags" => Ok(Self::CaptionTags),
+            _ => Err(format!(
+                "invalid content {s:?} (possible values: tags, caption, tags+caption, caption+tags)"
+            )),
+        }
+    }
+}
+
+
+/// The default export text path for `image`: sibling in the same directory,
+/// stem unchanged, [`DEFAULT_TEXT_EXTENSION`] extension. Kept as-is (an
+/// image with no file name simply gets `txt` appended) for backward
+/// compatibility — new callers should prefer [`export_text_path_with_ext`].
 pub fn export_text_path(image: &Path) -> PathBuf {
-    image.with_extension("txt")
+    image.with_extension(DEFAULT_TEXT_EXTENSION)
+}
+
+/// The export text path for `image`: the sibling with the same parent and
+/// stem but the given `extension` — normally `txt` (see
+/// [`DEFAULT_TEXT_EXTENSION`]), but `export --ext` passes composite values
+/// like `tags.txt` here, which is how several export kinds coexist in one
+/// dataset folder without overwriting each other (`img.png` + `tags.txt` →
+/// `<dir>/img.tags.txt`).
+///
+/// Built from `file_stem` + `set_extension` rather than
+/// [`Path::with_extension`], and returns [`ExportError::InvalidPath`] when
+/// the image has no file name to derive a stem from (a pathless path like
+/// `<dir>/`, `..`, `.`, or a bare `C:\`) or when `extension` is empty or
+/// itself contains a path separator.
+pub fn export_text_path_with_ext(
+    image: &Path,
+    extension: &str,
+) -> Result<PathBuf, ExportError> {
+    let invalid = || ExportError::InvalidPath {
+        path: image.to_path_buf(),
+        ext: extension.to_string(),
+    };
+    if extension.is_empty() || extension.chars().any(std::path::is_separator) {
+        return Err(invalid());
+    }
+    let mut out = image.to_path_buf();
+    // `set_extension` refuses (returns false, leaving the path unchanged)
+    // when the last component isn't a file name — root, `.`, `..`.
+    if out.file_stem().is_none_or(|s| s.is_empty()) {
+        return Err(invalid());
+    }
+    out.set_extension(extension);
+    Ok(out)
 }
 
 /// Build the final ordered tag list for a single image, applying:
@@ -94,6 +208,17 @@ pub fn build_tags(sidecar: &Sidecar, profile: &ExportProfile, common: &CommonTag
     out
 }
 
+/// The tag list from [`build_tags`] rendered as training text: underscores
+/// flattened to spaces, comma-joined — the exact string a `tags` export
+/// writes. Empty tag sets yield an empty string (not `None`), matching the
+/// historical `export_image` behavior of writing an empty file.
+pub fn build_tags_text(tags: &[String]) -> String {
+    tags.iter()
+        .map(|t| t.replace('_', " "))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Caption text for export, with any configured `caption_prefixes` /
 /// `caption_suffixes` applied.
 ///
@@ -140,6 +265,52 @@ pub fn build_caption(
     }
 }
 
+/// The full export text for `image` under `content`, in one merged block:
+/// - [`ExportContent::Tags`] — [`build_tags_text`] over [`build_tags`]
+/// - [`ExportContent::Caption`] — [`build_caption`]
+/// - [`ExportContent::TagsCaption`] / [`ExportContent::CaptionTags`] —
+///   both, in the order the variant name reads, joined by
+///   [`COMBINED_SEPARATOR`]
+///
+/// Returns `None` when there is nothing to write *for this content*: no
+/// caption body for any caption-carrying content (same skip rule as
+/// [`build_caption`]). `Tags` never returns `None` (an empty tag set
+/// exports as an empty file); in a combined export an empty tag set
+/// degrades to caption-only.
+pub fn build_export_text(
+    sidecar: &Sidecar,
+    profile: &ExportProfile,
+    tag_groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+    seed: AffixSeed,
+    content: ExportContent,
+) -> Option<String> {
+    let tags = || build_tags_text(&build_tags(sidecar, profile, common));
+    let caption = || build_caption(sidecar, profile, tag_groups, common, seed);
+    match content {
+        ExportContent::Tags => Some(tags()),
+        ExportContent::Caption => caption(),
+        ExportContent::TagsCaption => {
+            let t = tags();
+            let c = caption()?;
+            Some(if t.is_empty() {
+                c
+            } else {
+                format!("{t}{COMBINED_SEPARATOR}{c}")
+            })
+        }
+        ExportContent::CaptionTags => {
+            let c = caption()?;
+            let t = tags();
+            Some(if t.is_empty() {
+                c
+            } else {
+                format!("{c}{COMBINED_SEPARATOR}{t}")
+            })
+        }
+    }
+}
+
 /// Stems of the image's positive manual tags (common layer included),
 /// normalized for affix matching. Empty (and cheap) when neither affix table
 /// is configured.
@@ -161,7 +332,7 @@ fn present_caption_stems(
 /// Concatenate the affixes whose tag stem is present, in map key order.
 /// Empty when nothing matches.
 fn matched_affixes(
-    affixes: &std::collections::BTreeMap<String, String>,
+    affixes: &BTreeMap<String, String>,
     present: &HashSet<String>,
 ) -> String {
     let mut out = String::new();
@@ -183,31 +354,65 @@ fn caption_prefix_stem(s: &str) -> String {
         .to_lowercase()
 }
 
+/// Write `image`'s export text for `content` (see [`build_export_text`]) to
+/// a sibling `<stem>.<ext>` (see [`export_text_path_with_ext`]).
+///
+/// Returns `Ok(None)` without touching the filesystem when there is nothing
+/// to write for `content` — the no-caption skip described on
+/// [`build_export_text`]. This is the single per-image entry point the CLI
+/// `export` command uses for all four content kinds.
+#[allow(clippy::too_many_arguments)] // one argument per input the command needs; callers use names
+pub fn export_file(
+    image: &Path,
+    sidecar: &Sidecar,
+    profile: &ExportProfile,
+    tag_groups: &BTreeMap<String, TagGroup>,
+    common: &CommonTags,
+    seed: AffixSeed,
+    content: ExportContent,
+    ext: &str,
+) -> Result<Option<PathBuf>, ExportError> {
+    let Some(text) = build_export_text(sidecar, profile, tag_groups, common, seed, content) else {
+        return Ok(None);
+    };
+    Ok(Some(write_export_text(image, ext, text)?))
+}
+
+/// Write `image`'s merged tags (see [`build_tags`]) to `<image>.txt`. Thin
+/// wrapper over [`build_export_text`] + [`export_text_path`] for existing
+/// library callers; the CLI now goes through [`export_file`]. An empty
+/// `tag_groups`/default seed means no affix processing — `Tags` never
+/// consults either, so this parameterizes nothing observable here.
 pub fn export_image(
     image: &Path,
     sidecar: &Sidecar,
     profile: &ExportProfile,
     common: &CommonTags,
 ) -> Result<PathBuf, ExportError> {
-    let tags = build_tags(sidecar, profile, common);
-    let body = tags
-        .iter()
-        .map(|t| t.replace('_', " "))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let text = build_export_text(
+        sidecar,
+        profile,
+        &BTreeMap::new(),
+        common,
+        AffixSeed::default(),
+        ExportContent::Tags,
+    )
+    .expect("tags export never yields None");
     let out = export_text_path(image);
-    fs::write(&out, body).map_err(|source| ExportError::Io {
+    fs::write(&out, text).map_err(|source| ExportError::Io {
         path: out.clone(),
         source,
     })?;
     Ok(out)
 }
 
-/// Write the image's export caption (see [`build_caption`]) to `<image>.txt`.
+/// Write `image`'s export caption (see [`build_caption`]) to `<image>.txt`.
 /// Returns `Ok(None)` without touching the filesystem when the image has no
 /// caption body — callers should count that as skipped rather than writing
 /// an empty file, the same way [`build_caption`] itself distinguishes "no
-/// caption" from "caption with no affixes".
+/// caption" from "caption with no affixes". Thin wrapper over
+/// [`build_export_text`] for existing library callers; the CLI now goes
+/// through [`export_file`].
 pub fn export_caption_file(
     image: &Path,
     sidecar: &Sidecar,
@@ -216,15 +421,24 @@ pub fn export_caption_file(
     common: &CommonTags,
     seed: AffixSeed,
 ) -> Result<Option<PathBuf>, ExportError> {
-    let Some(caption) = build_caption(sidecar, profile, tag_groups, common, seed) else {
+    let Some(text) = build_caption(sidecar, profile, tag_groups, common, seed) else {
         return Ok(None);
     };
-    let out = export_text_path(image);
-    fs::write(&out, caption).map_err(|source| ExportError::Io {
+    Ok(Some(write_export_text(
+        image,
+        DEFAULT_TEXT_EXTENSION,
+        text,
+    )?))
+}
+
+/// Write `text` to `image`'s sibling `<stem>.<ext>` and return its path.
+fn write_export_text(image: &Path, ext: &str, text: String) -> Result<PathBuf, ExportError> {
+    let out = export_text_path_with_ext(image, ext)?;
+    fs::write(&out, text).map_err(|source| ExportError::Io {
         path: out.clone(),
         source,
     })?;
-    Ok(Some(out))
+    Ok(out)
 }
 
 fn format_external_tag(tag: &str, category: &str, profile: &ExportProfile) -> String {
@@ -254,6 +468,17 @@ mod tests {
     fn no_shuffle(mut p: ExportProfile) -> ExportProfile {
         p.shuffle = false;
         p
+    }
+
+    fn sidecar_with(tags: &[&str], caption: Option<&str>) -> Sidecar {
+        let mut s = Sidecar {
+            manual_tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        if let Some(c) = caption {
+            s.set_caption("model", c);
+        }
+        s
     }
 
     #[test]
@@ -840,7 +1065,10 @@ mod tests {
         .unwrap();
         let out = out.expect("caption present");
         assert_eq!(out, export_text_path(&image));
-        assert_eq!(fs::read_to_string(&out).unwrap(), "a girl standing in a field");
+        assert_eq!(
+            fs::read_to_string(&out).unwrap(),
+            "a girl standing in a field"
+        );
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -891,5 +1119,241 @@ mod tests {
         let profile = no_shuffle(ExportProfile::default());
         let tags = build_tags(&sidecar, &profile, &CommonTags::default());
         assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn build_tags_text_flattens_and_joins() {
+        let sidecar = sidecar_with(&["1girl", "solo", "blue_sky"], None);
+        let tags = build_tags(
+            &sidecar,
+            &no_shuffle(ExportProfile::default()),
+            &CommonTags::default(),
+        );
+        assert_eq!(build_tags_text(&tags), "1girl, solo, blue sky");
+        assert_eq!(build_tags_text(&[]), "");
+    }
+
+    #[test]
+    fn build_export_text_combined_orders_blocks_with_blank_line() {
+        let sidecar = sidecar_with(&["1girl", "solo"], Some("A girl under the sky."));
+        let profile = no_shuffle(ExportProfile::default());
+        let seed = AffixSeed::default();
+        assert_eq!(
+            build_export_text(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                seed,
+                ExportContent::TagsCaption
+            )
+            .as_deref(),
+            Some("1girl, solo\n\nA girl under the sky.")
+        );
+        assert_eq!(
+            build_export_text(
+                &sidecar,
+                &profile,
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                seed,
+                ExportContent::CaptionTags
+            )
+            .as_deref(),
+            Some("A girl under the sky.\n\n1girl, solo")
+        );
+    }
+
+    #[test]
+    fn build_export_text_combined_without_caption_is_none() {
+        // The skip rule: no caption body → combined export skips the image,
+        // even when tags are present.
+        let sidecar = sidecar_with(&["1girl"], None);
+        assert_eq!(
+            build_export_text(
+                &sidecar,
+                &no_shuffle(ExportProfile::default()),
+                &BTreeMap::new(),
+                &CommonTags::default(),
+                AffixSeed::default(),
+                ExportContent::TagsCaption
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn build_export_text_combined_without_tags_is_caption_only() {
+        // Empty tag set → no empty block, no leading blank line: just the
+        // caption, same bytes a `caption` export would write.
+        let sidecar = sidecar_with(&[], Some("only a caption"));
+        for content in [ExportContent::TagsCaption, ExportContent::CaptionTags] {
+            assert_eq!(
+                build_export_text(
+                    &sidecar,
+                    &no_shuffle(ExportProfile::default()),
+                    &BTreeMap::new(),
+                    &CommonTags::default(),
+                    AffixSeed::default(),
+                    content
+                )
+                .as_deref(),
+                Some("only a caption")
+            );
+        }
+    }
+
+    #[test]
+    fn export_file_writes_content_to_custom_extension() {
+        let dir = std::env::temp_dir().join(format!(
+            "fwaun-export-file-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.png");
+        fs::write(&image, b"").unwrap();
+
+        let sidecar = sidecar_with(&["1girl", "solo"], Some("A girl."));
+        let out = export_file(
+            &image,
+            &sidecar,
+            &no_shuffle(ExportProfile::default()),
+            &BTreeMap::new(),
+            &CommonTags::default(),
+            AffixSeed::default(),
+            ExportContent::TagsCaption,
+            "tags+caption.txt",
+        )
+        .unwrap()
+        .expect("caption present");
+        assert_eq!(out, dir.join("a.tags+caption.txt"));
+        assert_eq!(fs::read_to_string(&out).unwrap(), "1girl, solo\n\nA girl.");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_file_combined_skips_image_without_caption() {
+        let dir = std::env::temp_dir().join(format!(
+            "fwaun-export-file-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.png");
+        fs::write(&image, b"").unwrap();
+
+        let sidecar = sidecar_with(&["1girl"], None);
+        let out = export_file(
+            &image,
+            &sidecar,
+            &no_shuffle(ExportProfile::default()),
+            &BTreeMap::new(),
+            &CommonTags::default(),
+            AffixSeed::default(),
+            ExportContent::CaptionTags,
+            "tags.txt",
+        )
+        .unwrap();
+        assert!(out.is_none());
+        assert!(!dir.join("a.tags.txt").exists());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn export_text_path_with_ext_replaces_extension() {
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a.png"), "tags.txt").unwrap(),
+            PathBuf::from("/d/a.tags.txt")
+        );
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a.png"), "tags").unwrap(),
+            PathBuf::from("/d/a.tags")
+        );
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a"), "txt").unwrap(),
+            PathBuf::from("/d/a.txt")
+        );
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a.png"), "txt").unwrap(),
+            export_text_path(Path::new("/d/a.png"))
+        );
+    }
+
+    #[test]
+    fn export_text_path_with_ext_uses_whole_extension() {
+        // A composite extension with an inner dot is used verbatim — the
+        // whole `extension` replaces the image's own extension.
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a.png"), "caption.txt").unwrap(),
+            PathBuf::from("/d/a.caption.txt")
+        );
+        // A single-component extension keeps the old behavior.
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/a.png"), "txt").unwrap(),
+            export_text_path(Path::new("/d/a.png"))
+        );
+        // A trailing slash is not pathless — the trailing component is the
+        // file name, so the sibling is derived normally (unlike
+        // `Path::with_extension`, which would overwrite the input itself).
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/e.png/"), "tags.txt").unwrap(),
+            PathBuf::from("/d/e.tags.txt")
+        );
+        // The stem is preserved verbatim, dotfiles included.
+        assert_eq!(
+            export_text_path_with_ext(Path::new("/d/.hidden"), "caption.txt").unwrap(),
+            PathBuf::from("/d/.hidden.caption.txt")
+        );
+    }
+
+    #[test]
+    fn export_text_path_with_ext_rejects_pathless_image_and_bad_extension() {
+        // A pathless image (no file name) has no stem to keep — there is no
+        // sibling to write.
+        assert!(export_text_path_with_ext(Path::new(".."), "tags.txt").is_err());
+        assert!(export_text_path_with_ext(Path::new("."), "tags.txt").is_err());
+        assert!(export_text_path_with_ext(Path::new("/"), "tags.txt").is_err());
+        // An empty or separator-bearing extension isn't an extension.
+        assert!(export_text_path_with_ext(Path::new("/d/a.png"), "").is_err());
+        assert!(export_text_path_with_ext(Path::new("/d/a.png"), "tags.txt/caption").is_err());
+        // The legacy compat fn keeps `with_extension` semantics, which
+        // likewise refuses to extend a pathless path (it returns the input
+        // unchanged rather than inventing a sibling).
+        assert_eq!(export_text_path(Path::new("..")), PathBuf::from(".."));
+    }
+
+    #[test]
+    fn export_content_parses_all_values() {
+        assert_eq!(
+            ExportContent::from_str("tags").unwrap(),
+            ExportContent::Tags
+        );
+        assert_eq!(
+            ExportContent::from_str("caption").unwrap(),
+            ExportContent::Caption
+        );
+        assert_eq!(
+            ExportContent::from_str("tags+caption").unwrap(),
+            ExportContent::TagsCaption
+        );
+        assert_eq!(
+            ExportContent::from_str("caption+tags").unwrap(),
+            ExportContent::CaptionTags
+        );
+        // Case-insensitive; the kebab spelling is accepted too.
+        assert_eq!(
+            ExportContent::from_str("Tags+Caption").unwrap(),
+            ExportContent::TagsCaption
+        );
+        assert_eq!(
+            ExportContent::from_str("caption-tags").unwrap(),
+            ExportContent::CaptionTags
+        );
+        assert!(ExportContent::from_str("tags_caption").is_err());
+        assert!(ExportContent::from_str("").is_err());
+        assert!(ExportContent::from_str("tags,caption").is_err());
     }
 }

@@ -48,10 +48,13 @@ fwaun モデル群の学習を支えるツール群です。1つのバイナリ�
   できます。
 - **データセット単位の設定 (`fwaun-tools.toml`)。** タガーモデル、
   キャプショナー、エクスポートプロファイル、しきい値などをディレクトリごとに切り替え可能。
-- **2つの書き出しモード。** `export` は `<image>.txt` を画像ごとに出力
+- **4つの書き出しモード。** `export` は画像ごとにテキストファイルを1枚出力
   （sd-scripts の DreamBooth / LoRA caption-file モード。既定はタグだが、
   Qwen Image や Flux など danbooru タグを学習していない自然言語モデル向けに
-  `--content caption` でキャプションのみの出力に切り替え可能）。
+  `--content caption`、タグとキャプションを1ファイルに両方入れる場合は
+  `--content tags+caption` / `caption+tags` を選択可能。`--ext` で出力拡張子も
+  変えられ、例えば `--ext tags.txt` とすると `a.tags.txt` のように複数の
+  書き出し種別を1つのフォルダに重複せず共存させられる）。
   `metadata` はディレクトリ全体で1つの `meta.json` を出力（sd-scripts ファインチューンモード）。
 - **開き直しが速い。** GUI の**再読み込み**ボタンは開いているフォルダを再スキャン
   し、実際に変更のあった画像だけサムネイルを作り直します。CLI での一括処理や
@@ -239,7 +242,7 @@ prompt = "Describe this image in detail."
 fwaun-tools dataset tag <dir>      [--model NAME] [--threshold X] [--force]
 fwaun-tools dataset caption <dir>  [--model NAME] [--force]
 fwaun-tools dataset booru <dir>    [--source danbooru] [--force]
-fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X] [--content tags|caption]
+fwaun-tools dataset export <dir>   [--profile NAME] [--threshold X] [--content tags|caption|tags+caption|caption+tags] [--ext txt]
 fwaun-tools dataset metadata <dir> [--profile NAME] [--threshold X] [--output PATH]
 fwaun-tools dataset add-tag <dir>    --tags TAG[,...] [--dry-run] [--per-image]
 fwaun-tools dataset remove-tag <dir> --tags TAG[,...] [--dry-run] [--per-image]

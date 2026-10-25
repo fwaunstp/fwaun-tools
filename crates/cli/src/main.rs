@@ -38,17 +38,15 @@ enum PromoteMode {
     Always,
 }
 
-/// What the `export` command writes into each `<image>.txt`.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum ExportContent {
-    /// Merged manual + auto + booru tags (the historical default), for
-    /// tag-trained models (e.g. anime checkpoints via sd-scripts/musubi).
-    Tags,
-    /// The export caption — manual caption if set, else the joined active
-    /// auto captions, with any configured prefixes/suffixes applied. For
-    /// natural-language models (e.g. Qwen Image, Flux) that were never
-    /// trained on danbooru-style tags. Images without a caption are skipped.
-    Caption,
+/// What the `export` command writes into each text file. Lives in core
+/// (where the writing happens); re-exported here so the `export`
+/// subcommand can take it as a value.
+pub use fwaun_tools_core::export::ExportContent;
+
+/// `value_parser` for the `export --content` flag: parses via core's
+/// [`std::str::FromStr`] impl, whose error already lists the valid values.
+fn export_content_parser(s: &str) -> Result<ExportContent, String> {
+    s.parse()
 }
 
 /// Output layout for the `metadata` command.
@@ -212,17 +210,26 @@ enum DatasetCommand {
         #[arg(long)]
         base_url: Option<String>,
     },
-    /// Write `<image>.txt` for training: merged tags by default, or the
-    /// export caption with `--content caption` for models not trained on
-    /// danbooru-style tags.
+    /// Write one text file per image for training: merged tags by default,
+    /// the export caption with `--content caption`, or both blocks in one
+    /// file with `--content tags+caption` / `caption+tags`. Output files
+    /// are `<image-stem>.<ext>` (default `txt` → `a.txt`); `--ext` steers
+    /// the whole extension (e.g. `--ext tags.txt` → `a.tags.txt`) so
+    /// several content kinds can coexist in one dataset folder.
     Export {
         dir: PathBuf,
         #[arg(long)]
         profile: Option<String>,
         #[arg(long)]
         threshold: Option<f32>,
-        #[arg(long, value_enum, default_value = "tags")]
+        #[arg(long, default_value = "tags", value_parser = export_content_parser)]
         content: ExportContent,
+        /// Extension of the written files, replacing the image's own —
+        /// `tags.txt` / `caption.txt` / `tags+caption.txt` style composite
+        /// extensions work (the stem is kept: `--ext tags.txt` on `a.png`
+        /// writes `a.tags.txt`). Default `txt`.
+        #[arg(long, default_value = "txt")]
+        ext: String,
     },
     /// Write a dataset metadata file for every image with a sidecar.
     /// `--format sd-scripts` (default) emits a kohya-ss/sd-scripts
@@ -511,7 +518,8 @@ fn run_dataset(command: DatasetCommand) -> Result<()> {
             profile,
             threshold,
             content,
-        } => cmd_export(dir, profile, threshold, content),
+            ext,
+        } => cmd_export(dir, profile, threshold, content, ext),
         DatasetCommand::Metadata {
             dir,
             profile,
@@ -1235,11 +1243,16 @@ fn cmd_upscale_models(profile_name: Option<String>, base_url: Option<String>) ->
     Ok(())
 }
 
+/// Write one export text file per image with a sidecar (CLI `export`).
+/// `content` picks the text (see [`export::build_export_text`]), `ext` the
+/// whole output extension (see [`export::export_text_path_with_ext`] —
+/// stem kept, e.g. `--ext tags.txt` → `a.tags.txt`).
 fn cmd_export(
     dir: PathBuf,
     profile_name: Option<String>,
     threshold: Option<f32>,
     content: ExportContent,
+    ext: String,
 ) -> Result<()> {
     let cfg = ProjectConfig::load_or_default(&dir)
         .with_context(|| format!("loading config in {}", dir.display()))?;
@@ -1248,59 +1261,47 @@ fn cmd_export(
     if let Some(t) = threshold {
         profile.threshold = t;
     }
+    let root = ProjectConfig::project_root(&dir);
 
-    match content {
-        ExportContent::Tags => {
-            let mut written = 0usize;
-            let mut skipped = 0usize;
-            for image in iter_images(&dir) {
-                let sidecar = match Sidecar::load(&image)? {
-                    Some(s) => s,
-                    None => {
-                        skipped += 1;
-                        continue;
-                    }
-                };
-                let out = export::export_image(&image, &sidecar, &profile, &common)?;
+    let mut written = 0usize;
+    let mut skipped = 0usize;
+    let mut no_sidecar = 0usize;
+    for image in iter_images(&dir) {
+        let sidecar = match Sidecar::load(&image)? {
+            Some(s) => s,
+            None => {
+                no_sidecar += 1;
+                continue;
+            }
+        };
+        let seed = AffixSeed::for_image(root.as_deref(), &image);
+        match export::export_file(
+            &image,
+            &sidecar,
+            &profile,
+            &cfg.tag_groups,
+            &common,
+            seed,
+            content,
+            &ext,
+        )
+        .with_context(|| format!("exporting {}", image.display()))? {
+            Some(out) => {
                 println!("wrote {}", out.display());
                 written += 1;
             }
-            println!("done: {written} written, {skipped} skipped (no sidecar)");
+            None => skipped += 1,
         }
-        ExportContent::Caption => {
-            let root = ProjectConfig::project_root(&dir);
-            let mut written = 0usize;
-            let mut no_sidecar = 0usize;
-            let mut no_caption = 0usize;
-            for image in iter_images(&dir) {
-                let sidecar = match Sidecar::load(&image)? {
-                    Some(s) => s,
-                    None => {
-                        no_sidecar += 1;
-                        continue;
-                    }
-                };
-                let seed = AffixSeed::for_image(root.as_deref(), &image);
-                match export::export_caption_file(
-                    &image,
-                    &sidecar,
-                    &profile,
-                    &cfg.tag_groups,
-                    &common,
-                    seed,
-                )? {
-                    Some(out) => {
-                        println!("wrote {}", out.display());
-                        written += 1;
-                    }
-                    None => no_caption += 1,
-                }
-            }
-            println!(
-                "done: {written} written, {no_caption} skipped (no caption), \
-                 {no_sidecar} skipped (no sidecar)"
-            );
-        }
+    }
+    // `skipped` is the caption-skip count — it only ever counts anything
+    // when the content kind carries a caption, so name it accordingly.
+    if matches!(content, ExportContent::Tags) {
+        println!("done: {written} written");
+    } else {
+        println!(
+            "done: {written} written, {skipped} skipped (no caption), \
+             {no_sidecar} skipped (no sidecar)"
+        );
     }
     Ok(())
 }
@@ -2041,4 +2042,69 @@ fn cmd_tokens(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_accepts_all_four_content_kinds() {
+        for (args, want) in [
+            ("fwaun-tools dataset export /d", ExportContent::Tags),
+            ("fwaun-tools dataset export /d --content tags", ExportContent::Tags),
+            ("fwaun-tools dataset export /d --content caption", ExportContent::Caption),
+            (
+                "fwaun-tools dataset export /d --content tags+caption",
+                ExportContent::TagsCaption,
+            ),
+            (
+                "fwaun-tools dataset export /d --content caption+tags",
+                ExportContent::CaptionTags,
+            ),
+        ] {
+            let argv: Vec<String> = args.split(' ').map(str::to_string).collect();
+            let cli = Cli::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("parsing {args:?}: {e}"));
+            match cli.command {
+                Command::Dataset(DatasetCommand::Export { content, .. }) => {
+                    assert_eq!(content, want, "for {args:?}");
+                }
+                _ => panic!("unexpected command for {args:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn export_ext_defaults_to_txt_and_accepts_composites() {
+        let parse = |args: &str| match Cli::try_parse_from(
+            args.split(' ').map(str::to_string).collect::<Vec<_>>(),
+        )
+        .unwrap()
+        .command
+        {
+            Command::Dataset(DatasetCommand::Export { ext, .. }) => ext,
+            _ => unreachable!(),
+        };
+        assert_eq!(parse("fwaun-tools dataset export /d"), "txt");
+        assert_eq!(
+            parse("fwaun-tools dataset export /d --ext tags.txt"),
+            "tags.txt"
+        );
+        assert_eq!(
+            parse("fwaun-tools dataset export /d --ext tags+caption.txt"),
+            "tags+caption.txt"
+        );
+        // A separator-bearing ext now fails at export time (InvalidPath),
+        // not at argument parsing.
+        assert!(
+            Cli::try_parse_from(
+                "fwaun-tools dataset export /d --ext tags.txt;caption"
+                    .split(' ')
+                    .map(str::to_string)
+                    .collect::<Vec<_>>(),
+            )
+            .is_ok()
+        );
+    }
 }

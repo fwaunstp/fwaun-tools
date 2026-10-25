@@ -47,6 +47,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rounding error. (#57)
   - core: `model::dequant`.
 
+- **`dataset export`: combined tag+caption content and `--ext`.** Two new
+  `--content` kinds put both blocks into one file — `tags+caption` writes
+  the merged-tag block, a blank line, then the export caption;
+  `caption+tags` is the same in the other order (for prompt templates that
+  expect a trailing trigger/tag block). The blank line is deliberate: a
+  single `\n` would be read as a caption-variation separator by trainers
+  that split on newlines, silently training half a block as a whole
+  caption. Combined exports follow the caption skip rule (an image with no
+  caption is skipped, since the caption is the part being completed; an
+  empty tag set just exports caption-only). A new `--ext` sets the whole
+  output extension so several content kinds can coexist in one dataset
+  folder without overwriting each other: `--ext tags.txt` writes
+  `a.tags.txt` for `a.png` (the stem is kept; default stays `txt`).
+  - core: `export::ExportContent` (now the CLI's `--content` value type,
+    moved here and parsing via `FromStr`), `export::build_tags_text`,
+    `export::build_export_text`, `export::export_file`,
+    `export::export_text_path_with_ext` (whole-extension sibling paths, via
+    `file_stem` + `set_extension`, rejecting pathless images).
+
 - **`dataset export --content caption`.** `export` used to always write the
   merged tag string to `<image>.txt`; models that were never trained on
   danbooru-style tags (Qwen Image, Flux, and other natural-language

@@ -6,10 +6,12 @@ use clap::{Parser, Subcommand, ValueEnum};
 use fwaun_tools_booru::{BooruClient, BooruError};
 use fwaun_tools_captioner::{Captioner, CaptionerError};
 use fwaun_tools_comfyui::Client as ComfyClient;
-use fwaun_tools_comfyui::edit::{Editor, Options as EditOptions};
+use fwaun_tools_comfyui::edit::{
+    Backend as EditBackend, Editor, MiniMaxH3Options, Options as EditOptions,
+};
 use fwaun_tools_comfyui::upscale::{Options as UpscaleOptions, Upscaler};
 use fwaun_tools_core::common_tags;
-use fwaun_tools_core::config::ProjectConfig;
+use fwaun_tools_core::config::{EditBackend as ConfigEditBackend, ProjectConfig};
 use fwaun_tools_core::export;
 use fwaun_tools_core::sidecar::{Sidecar, TaggerInfo};
 use fwaun_tools_core::tag_group::AffixSeed;
@@ -199,9 +201,11 @@ enum DatasetCommand {
     /// have an output are skipped unless `--force`; use `--dry-run` to see the
     /// count first and `--limit` to try a handful before committing the batch.
     Edit(EditArgs),
-    /// List the `model` values the ComfyUI server's Gemini image node offers
-    /// (read from its `/object_info`). Use one of these as `--model` / the
-    /// profile's `model`; it also confirms the API node is installed at all.
+    /// List the models the editor profile's backend can use on the ComfyUI
+    /// server (read from its `/object_info`): the Gemini image node's `model`
+    /// values for `backend = "gemini"`, or the MiniMax H3 diffusion model /
+    /// text encoder / VAE files for `backend = "minimax_h3"`. Also confirms
+    /// the backend's nodes are installed at all.
     EditModels {
         /// Name of an `[editor.<name>]` profile to read `base_url` from.
         #[arg(long)]
@@ -411,6 +415,23 @@ enum DatasetCommand {
     },
 }
 
+/// `--backend` values for `dataset edit`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackendArg {
+    Gemini,
+    #[value(name = "minimax-h3", alias = "minimax_h3")]
+    MiniMaxH3,
+}
+
+impl From<BackendArg> for ConfigEditBackend {
+    fn from(b: BackendArg) -> Self {
+        match b {
+            BackendArg::Gemini => ConfigEditBackend::Gemini,
+            BackendArg::MiniMaxH3 => ConfigEditBackend::MiniMaxH3,
+        }
+    }
+}
+
 /// Flags for [`DatasetCommand::Edit`]. Kept in its own struct because the pass
 /// has enough knobs that threading them through as positional arguments stops
 /// being readable.
@@ -427,6 +448,11 @@ struct EditArgs {
     /// Override the ComfyUI server root (e.g. `http://127.0.0.1:8188`).
     #[arg(long)]
     base_url: Option<String>,
+    /// Built-in graph to run: `gemini` (Nano Banana API node) or
+    /// `minimax-h3` (MiniMax-H3-Image on the server's GPU). Overrides the
+    /// profile's `backend`.
+    #[arg(long, value_enum)]
+    backend: Option<BackendArg>,
     /// The edit instruction applied to every image. Overrides the profile.
     #[arg(long)]
     prompt: Option<String>,
@@ -967,6 +993,7 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
         profile: profile_name,
         output,
         base_url,
+        backend,
         prompt,
         model,
         resolution,
@@ -986,6 +1013,9 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
     // CLI flags override the resolved profile.
     if let Some(u) = base_url {
         profile.base_url = u;
+    }
+    if let Some(b) = backend {
+        profile.backend = b.into();
     }
     if let Some(p) = prompt {
         profile.prompt = Some(p);
@@ -1029,7 +1059,22 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
         .filter(|k| !k.trim().is_empty())
         .or_else(|| std::env::var("COMFY_API_KEY").ok());
 
+    let mm = &profile.minimax_h3;
     let editor = Editor::new(EditOptions {
+        backend: match profile.backend {
+            ConfigEditBackend::Gemini => EditBackend::Gemini,
+            ConfigEditBackend::MiniMaxH3 => EditBackend::MiniMaxH3,
+        },
+        minimax_h3: MiniMaxH3Options {
+            unet: mm.unet.clone(),
+            clip: mm.clip.clone(),
+            vae: mm.vae.clone(),
+            megapixels: mm.megapixels,
+            steps: mm.steps,
+            cfg: mm.cfg,
+            sampler: mm.sampler.clone(),
+            scheduler: mm.scheduler.clone(),
+        },
         base_url: profile.base_url.clone(),
         api_key,
         prompt: profile.prompt.clone().unwrap_or_default(),
@@ -1046,9 +1091,15 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
     })
     .context("configuring the ComfyUI image editor")?;
 
-    let how = match &profile.workflow_template {
-        Some(t) => format!("workflow template {}", t.display()),
-        None => format!("{} at {}", profile.model, profile.resolution),
+    let how = match (&profile.workflow_template, profile.backend) {
+        (Some(t), _) => format!("workflow template {}", t.display()),
+        (None, ConfigEditBackend::Gemini) => {
+            format!("{} at {}", profile.model, profile.resolution)
+        }
+        (None, ConfigEditBackend::MiniMaxH3) => format!(
+            "local MiniMax H3 {} at {} MP, {} steps",
+            mm.unet, mm.megapixels, mm.steps
+        ),
     };
     eprintln!(
         "editing via ComfyUI at {} (profile `{name}`, {how}) → {}",
@@ -1059,8 +1110,10 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
         eprintln!("prompt: {}", editor.prompt());
     }
     // Say this before the batch rather than after N identical failures. Only a
-    // warning: a custom template need not contain a paid API node at all.
-    if !editor.has_api_key() {
+    // warning: a custom template need not contain a paid API node at all. The
+    // local MiniMax graph has none, so there's nothing to warn about.
+    let may_need_key = editor.needs_api_key() || profile.workflow_template.is_some();
+    if may_need_key && !editor.has_api_key() {
         eprintln!(
             "warning: no comfy.org API key configured — paid API nodes (the built-in \
              Nano Banana graph among them) will answer \"Please login first to use this \
@@ -1183,34 +1236,89 @@ fn cmd_edit(args: EditArgs) -> Result<()> {
 }
 
 fn cmd_edit_models(profile_name: Option<String>, base_url: Option<String>) -> Result<()> {
-    use fwaun_tools_comfyui::edit::EDIT_NODE_CLASS;
+    use fwaun_tools_comfyui::edit::{EDIT_NODE_CLASS, MINIMAX_COND_CLASS};
     use std::time::Duration;
 
-    // Resolve base_url from the profile if present; a flag overrides it. Fall
-    // back to the built-in default when there's no config at all.
-    let base = base_url.unwrap_or_else(|| {
-        let cfg = ProjectConfig::load_or_default(std::path::Path::new(".")).unwrap_or_default();
-        let (_, profile) = cfg.resolve_editor(profile_name.as_deref());
-        profile.base_url
-    });
+    // Resolve the profile (for its backend and base_url); a flag overrides the
+    // URL. Fall back to the built-in default when there's no config at all.
+    // A broken config is reported rather than defaulted away: the profile
+    // decides which backend's models to list.
+    let cfg = ProjectConfig::load_or_default(std::path::Path::new("."))
+        .context("loading config in the current directory")?;
+    let (_, profile) = cfg.resolve_editor(profile_name.as_deref());
+    let base = base_url.unwrap_or_else(|| profile.base_url.clone());
 
     eprintln!("querying ComfyUI at {base} …");
     let client = ComfyClient::new(&base, Duration::from_secs(30));
-    let models = client
-        .list_node_enum(EDIT_NODE_CLASS, "model")
-        .with_context(|| {
-            format!(
-                "listing `{EDIT_NODE_CLASS}` models from {base} (is the Gemini API node installed?)"
-            )
-        })?;
 
-    if models.is_empty() {
-        println!("(the node reports no models — check the server's API node version)");
-    } else {
-        for m in &models {
-            println!("{m}");
+    match profile.backend {
+        ConfigEditBackend::Gemini => {
+            let models = client
+                .list_node_enum(EDIT_NODE_CLASS, "model")
+                .with_context(|| {
+                    format!(
+                        "listing `{EDIT_NODE_CLASS}` models from {base} (is the Gemini API \
+                         node installed?)"
+                    )
+                })?;
+            if models.is_empty() {
+                println!("(the node reports no models — check the server's API node version)");
+            } else {
+                for m in &models {
+                    println!("{m}");
+                }
+                eprintln!("{} model(s)", models.len());
+            }
         }
-        eprintln!("{} model(s)", models.len());
+        ConfigEditBackend::MiniMaxH3 => {
+            // Confirm the local nodes exist before listing files for them.
+            client
+                .list_node_enum("CLIPLoader", "type")
+                .ok()
+                .filter(|types| types.iter().any(|t| t == "minimax"))
+                .with_context(|| {
+                    format!(
+                        "{base} has no `minimax` text-encoder type; update ComfyUI to a \
+                         version with MiniMax H3 support"
+                    )
+                })?;
+            if !client
+                .has_node(MINIMAX_COND_CLASS)
+                .with_context(|| format!("checking for `{MINIMAX_COND_CLASS}` on {base}"))?
+            {
+                anyhow::bail!(
+                    "{base} has no `{MINIMAX_COND_CLASS}` node; update ComfyUI to a version \
+                     with MiniMax-H3-Image support"
+                );
+            }
+
+            let sections = [
+                ("unet", "UNETLoader", "unet_name", &profile.minimax_h3.unet),
+                ("clip", "CLIPLoader", "clip_name", &profile.minimax_h3.clip),
+                ("vae", "VAELoader", "vae_name", &profile.minimax_h3.vae),
+            ];
+            for (key, class, input, current) in sections {
+                let files = client
+                    .list_node_enum(class, input)
+                    .with_context(|| format!("listing {class}.{input} from {base}"))?;
+                println!("[{key}]");
+                let mut any = false;
+                for f in files
+                    .iter()
+                    .filter(|f| f.to_lowercase().contains("minimax"))
+                {
+                    any = true;
+                    let mark = if f == current { "  (configured)" } else { "" };
+                    println!("  {f}{mark}");
+                }
+                if !any {
+                    println!("  (no file with \"minimax\" in its name)");
+                }
+                if !files.iter().any(|f| f == current) {
+                    eprintln!("warning: configured {key} = {current:?} is not on the server");
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1285,7 +1393,8 @@ fn cmd_export(
             content,
             &ext,
         )
-        .with_context(|| format!("exporting {}", image.display()))? {
+        .with_context(|| format!("exporting {}", image.display()))?
+        {
             Some(out) => {
                 println!("wrote {}", out.display());
                 written += 1;
@@ -2052,8 +2161,14 @@ mod tests {
     fn export_accepts_all_four_content_kinds() {
         for (args, want) in [
             ("fwaun-tools dataset export /d", ExportContent::Tags),
-            ("fwaun-tools dataset export /d --content tags", ExportContent::Tags),
-            ("fwaun-tools dataset export /d --content caption", ExportContent::Caption),
+            (
+                "fwaun-tools dataset export /d --content tags",
+                ExportContent::Tags,
+            ),
+            (
+                "fwaun-tools dataset export /d --content caption",
+                ExportContent::Caption,
+            ),
             (
                 "fwaun-tools dataset export /d --content tags+caption",
                 ExportContent::TagsCaption,
@@ -2064,8 +2179,8 @@ mod tests {
             ),
         ] {
             let argv: Vec<String> = args.split(' ').map(str::to_string).collect();
-            let cli = Cli::try_parse_from(&argv)
-                .unwrap_or_else(|e| panic!("parsing {args:?}: {e}"));
+            let cli =
+                Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("parsing {args:?}: {e}"));
             match cli.command {
                 Command::Dataset(DatasetCommand::Export { content, .. }) => {
                     assert_eq!(content, want, "for {args:?}");

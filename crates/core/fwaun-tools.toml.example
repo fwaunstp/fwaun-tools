@@ -499,6 +499,56 @@ timeout_secs = 600
 # Pause between /history status polls, in milliseconds.
 poll_interval_ms = 750
 
+# Local editor: the same pass through MiniMax-H3-Image running on the ComfyUI
+# server's own GPU instead of a paid API node — no API key, no per-image bill,
+# just the model files in the server's models/ folders. The built-in graph
+# follows ComfyUI's bundled "MiniMax-H3-Image: Image Edit" template:
+#
+#   LoadImage → ImageScaleToTotalPixels → MiniMaxH3ImageConditioning → KSampler → VAEDecode → SaveImage
+#
+# (without the template's optional prompt-enhancer LLM: the prompt below is sent
+# as-is). `model` / `aspect_ratio` / `resolution` / `system_prompt` / `api_key`
+# don't apply to this backend; the output keeps each input's aspect ratio.
+[editor.minimax]
+backend = "minimax_h3"
+base_url = "http://127.0.0.1:8188"
+# The model refers to the input as <Picture 1>; naming it explicitly helps it
+# tell what to keep apart from what to change.
+prompt = """
+Replace the background of <Picture 1> with a photorealistic photograph of the \
+same setting, matching the original's lighting direction, colour temperature \
+and perspective. Keep the character exactly as drawn: same illustrated \
+rendering, line art, cel shading, colours, pose, expression and position in \
+the frame.
+"""
+# KSampler seed — unlike the API node, a local run reproduces exactly.
+seed = 42
+# The model works at ~4 MP (see `megapixels`); cap the saved result here if the
+# dataset should stay smaller. 0 keeps the generated size.
+max_edge = 0
+# Generous: the first image also waits for the server to load the model weights.
+timeout_secs = 1800
+poll_interval_ms = 750
+
+# Every key is optional; these are the defaults. `dataset edit-models
+# --profile minimax` lists the MiniMax H3 files the server actually has.
+[editor.minimax.minimax_h3]
+# Diffusion model (UNETLoader). `minimax_h3_image_pruned_bf16.safetensors` is
+# the full-precision alternative if VRAM allows.
+unet = "minimax_h3_image_pruned_int8_convrot.safetensors"
+# Text encoder (CLIPLoader, type "minimax").
+clip = "qwen3vl_32b_minimax_h3_int8_convrot.safetensors"
+vae = "minimax_h3_image_vae_fp16.safetensors"
+# Each input is rescaled to this many megapixels (sides snapped to multiples of
+# 32) before editing; the result comes back at that size. The model is poor at
+# low resolution — MiniMax quote ~4–20 MP as its working range.
+megapixels = 4.0
+# The distilled release is tuned for few steps at cfg 1.0.
+steps = 6
+cfg = 1.0
+sampler = "euler"
+scheduler = "simple"
+
 # Custom-workflow editor: drives your own API-format ComfyUI workflow instead of
 # the built-in `LoadImage → Nano Banana → SaveImage` graph. Use it for anything
 # the built-in can't express — a reference background wired in through Batch
@@ -508,6 +558,9 @@ poll_interval_ms = 750
 # `aspect_ratio` / `resolution` / `seed` are ignored — the template's own widget
 # values apply.
 [editor.custom]
+# "gemini" (default) or "minimax_h3" picks the built-in graph; it has no effect
+# here because `workflow_template` replaces the built-in graph entirely.
+backend = "gemini"
 base_url = "http://127.0.0.1:8188"
 # Read before the COMFY_API_KEY environment variable. Prefer the variable —
 # see the note above.

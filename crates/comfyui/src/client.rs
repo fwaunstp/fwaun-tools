@@ -242,6 +242,14 @@ impl Client {
     /// `ckpt_name` of `CheckpointLoaderSimple`). Generic so future ComfyUI
     /// batch features can discover their own model lists. On a name mismatch
     /// the error lists the node's actual input names, so the fix is obvious.
+    /// Whether the server has a node class installed (`/object_info/{class}`
+    /// answers with an empty object for unknown classes).
+    pub fn has_node(&self, class_type: &str) -> Result<bool> {
+        let url = format!("{}/object_info/{}", self.base_url, class_type);
+        let v: Value = json(check(self.agent.get(&url).call())?)?;
+        Ok(v.get(class_type).is_some())
+    }
+
     pub fn list_node_enum(&self, class_type: &str, input: &str) -> Result<Vec<String>> {
         let url = format!("{}/object_info/{}", self.base_url, class_type);
         let v: Value = json(check(self.agent.get(&url).call())?)?;

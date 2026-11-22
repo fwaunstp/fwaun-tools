@@ -122,7 +122,7 @@ jobs:
 
           ls -la staging
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target.name }}
           path: staging/*

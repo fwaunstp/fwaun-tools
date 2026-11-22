@@ -20,7 +20,7 @@ jobs:
       pull-requests: read # detect the release PR and its commits
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # Full history: release-plz needs the commits since the last tag,
           # and releases from the release commit rather than HEAD.
@@ -52,7 +52,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false

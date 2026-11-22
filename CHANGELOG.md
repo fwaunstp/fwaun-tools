@@ -169,6 +169,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     trip, and the `max_edge` downscale move into a shared `workflow` module
     that both `upscale` and the new `edit` build on.
 
+### Other
+
+- **Releases run through release-plz now** (see *Releases (release-plz)* in
+  DEVELOPMENT.md): `release-pr` opens a version-bump + changelog-move PR on every
+  merge to main, the PAT-driven `release` job tags the merged release, and
+  `release.yml` builds the binaries off that tag exactly as before. The manual
+  Cargo.toml bump and the manual `## [Unreleased]` → `## [X.Y.Z]` move are
+  gone; what is left to do by hand is the prose inside the open PR, and the
+  `git tag` that decides *when* a release ships.
+
 ## [0.7.0] - 2026-08-08
 
 ### Added

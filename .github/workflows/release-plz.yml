@@ -1,0 +1,68 @@
+name: Release-plz
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Releases the workspace: moves `## [Unreleased]` into a `## [X.Y.Z]`
+  # section, bumps `[workspace.package] version`, then tags `vX.Y.Z` and
+  # publishes the GitHub release for the merged release PR.
+  release-plz-release:
+    name: Release-plz release
+    runs-on: ubuntu-24.04
+    if: github.repository_owner == 'fwaunstp'
+    permissions:
+      contents: write # push the tag, create the release
+      pull-requests: read # detect the release PR and its commits
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history: release-plz needs the commits since the last tag,
+          # and releases from the release commit rather than HEAD.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          # PAT (repo secret), NOT the workflow token: a tag created by
+          # GITHUB_TOKEN would not fire release.yml's `on: push: tags`.
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+
+  # Prepares the next release: opens (and keeps updating) one release PR
+  # holding the new version and the drafted changelog entries.
+  release-plz-pr:
+    name: Release-plz PR
+    runs-on: ubuntu-24.04
+    if: github.repository_owner == 'fwaunstp'
+    permissions:
+      contents: write # push to the release-plz-* branch
+      pull-requests: write # create and update the PR
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          # This job only opens a PR, so the default token is fine.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

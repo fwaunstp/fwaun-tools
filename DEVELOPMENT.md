@@ -489,6 +489,47 @@ Re-verify these on any version bump.
 
 ---
 
+## Releases (release-plz)
+
+Shipping here is binaries plus GitHub Release notes — no crate goes to a cargo
+registry — so `git_only = true` in `release-plz.toml` is the line that makes
+the rest of this section work: the current version comes from the existing `v*`
+tags instead of from crates.io, and no `cargo publish` ever runs.
+
+`git_tag_name = "v{{ version }}"` matters just as much. The multi-crate default is
+a per-crate tag (`fwaun-tools-core-vX.Y.Z`, …) — seven tags per release,
+and an ambiguous trigger for `release.yml`’s `push: tags: ["v*"]`.
+
+The bump stays whole-workspace: release-plz rewrites the root `[workspace.package]
+version`, the seven `version.workspace = true` crates follow it, and the
+`[workspace.dependencies]` entries that also carry a version move in the same diff —
+one change seen twice, not a per-crate bump.
+
+`release.yml` stays the binary builder, `push: tags: ["v*"]` untouched; the new
+`release-plz.yml` only feeds it a tag. Two ordering facts behind that split:
+
+- **A release reads `release-plz.toml` from the release commit, not from HEAD.** A
+  config change does nothing until it rides along with a version bump — which is
+  exactly what the release PR produced by the `release-pr` job carries.
+- **A tag made with `GITHUB_TOKEN` cannot fire `release.yml`** — a workflow run
+  triggered by the action’s own event does not see default-token events. So the
+  `release` job runs on `RELEASE_PLZ_TOKEN` (a fine-grained PAT: Contents: Read and
+  write). Dependabot never uses a PAT, so a dependabot merge alone could never build
+  the binaries. The `release-pr` job needs no secret beyond the default token; a fork
+  without the PAT secret only ever sees the PR job, and that cannot tag or release.
+
+`changelog_update` stays at its default true, so a release PR moves `## [Unreleased]`
+into `## [X.Y.Z]`. What release-plz writes is one mechanical line per commit
+(conventional-commit type → Added/Changed/Fixed/Other) landed above the
+hand-written body — the same release described twice, and the open PR is where the
+two halves get merged into one prose by hand before merging. GitHub’s own generated
+release notes would be a third voice over the same commits, so `git_release_generate_notes`
+is left at its default false and the old `generate_release_notes: true` is gone from
+`release.yml`'s action-gh-release step: with no name/body set there, the action keeps
+the release info release-plz already wrote and only uploads the assets.
+
+---
+
 ## Output formats
 
 | Mode      | Files written                       | Use case                              |

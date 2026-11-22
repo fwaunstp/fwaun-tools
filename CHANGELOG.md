@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
+
 ### Added
 
 - **`model info`: inspect a checkpoint without loading it.** Checking whether
@@ -37,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with an int8 fine-tune (or vice versa) logs a warning. fp8_scaled inputs
   are still rejected, now with an accurate message. (#55)
   - core: `model::quantized::ModelFile`, `quant::dequantize_int8`.
+
 - **`model dequant`: int8_convrot → bf16.** int8_convrot checkpoints only run
   on GPUs with comfy-kitchen int8 support, and a fine-tune of an int8_convrot
   base has no bf16 original to hand out. `fwaun-tools model dequant SRC [DST]
@@ -76,48 +79,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caption are skipped (reported separately from "no sidecar" in the
   summary line), the same way `metadata --format musubi` already handles it.
   - core: `export::export_caption_file`.
-
-### Changed
-
-- **Minimum Rust version is now 1.88.** The code already needed it (it uses
-  `if let … &&` chains), but `rust-version` still said 1.87. Because Cargo
-  resolves dependencies against `rust-version`, the stale value held some
-  dependencies back (`image` 0.25.10, for one). Dependencies are refreshed
-  to their latest semver-compatible versions, including `ort` 2.0.0-rc.13.
-- **Major dependency bumps:** eframe/egui/egui_extras 0.33, rfd 0.17,
-  ureq 3, tokenizers 0.23, ndarray 0.17, ron 0.12, toml_edit 0.25,
-  rand 0.10, base64 0.23, md5 0.8, dirs 7, opener 0.9. Sidecar `.ron`
-  files are written byte-for-byte as before, and existing ones load
-  unchanged. HTTP behavior (captioner retries on 5xx, server error bodies
-  in ComfyUI / captioner errors) is unchanged; ComfyUI JSON responses are
-  no longer subject to ureq's new 10 MB default body cap.
-
-- **Equal-priority caption prefixes now vary per image instead of always
-  sorting by group name.** For a style LoRA over independent axes — "chibi
-  style" or not, "realistic background" or not — every image carrying both
-  used to get the two prefixes in the same fixed order, which trains the
-  order along with the concepts. Groups that share a `priority` are now
-  ordered per image, so roughly half the set reads `"chibi style. realistic
-  background. "` and the rest `"realistic background. chibi style. "`. Give
-  the groups different priorities if you want a fixed order — that is what
-  `priority` is for; sharing one now means "order doesn't matter".
-
-  The pick is pseudo-random, not random: it hashes the image's path relative
-  to the directory holding `fwaun-tools.toml`, with the extension dropped.
-  So the prefix the captioner is primed with is the one `metadata` prepends
-  later, re-running `metadata` over an unchanged dataset rewrites the file
-  byte-for-byte, and moving or cloning the dataset (or re-encoding an image
-  via `dataset edit` / `upscale`) keeps every image's order. Renaming an
-  image or moving it between subdirectories rerolls that one image.
-  Suffixes work the same way, with an independent permutation.
-
-  - Datasets with several equal-priority prefix groups will see a one-time
-    reshuffle of their exported captions. Nothing else moves.
-  - core: `tag_group::AffixSeed`, plus a `seed` parameter on
-    `export::build_caption` / `tag_group::resolved_caption_{prefix,suffix}`
-    and the new `ProjectConfig::project_root` that anchors it.
-
-### Added
 
 - **Batch image editing via ComfyUI.** `fwaun-tools dataset edit <dir>` applies
   one text instruction to every image in a directory through an existing
@@ -169,6 +130,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     trip, and the `max_edge` downscale move into a shared `workflow` module
     that both `upscale` and the new `edit` build on.
 
+- **`dataset edit` gained a local backend: `backend = "gemini" |
+  "minimax_h3"`. MiniMax-H3-Image runs the edit on the ComfyUI server's
+  own GPU, following the bundled "MiniMax-H3-Image: Image Edit" template
+  (minus its optional prompt-enhancer LLM) — no comfy.org API key, no
+  per-image charge. Model files and sampler settings live in an optional
+  `[editor.<name>.minimax_h3]` table whose defaults match the template;
+  `--backend` overrides the profile, `dataset edit-models` lists the server's
+  MiniMax H3 files (and reports config parse errors instead of ignoring them),
+  and the missing-API-key warning is skipped for the local backend. (#82)
+  - comfyui: `Client::has_node`.
+
+### Changed
+
+- **Minimum Rust version is now 1.88.** The code already needed it (it uses
+  `if let … &&` chains), but `rust-version` still said 1.87. Because Cargo
+  resolves dependencies against `rust-version`, the stale value held some
+  dependencies back (`image` 0.25.10, for one). Dependencies are refreshed
+  to their latest semver-compatible versions, including `ort` 2.0.0-rc.13.
+
+- **Major dependency bumps:** eframe/egui/egui_extras 0.33, rfd 0.17,
+  ureq 3, tokenizers 0.23, ndarray 0.17, ron 0.12, toml_edit 0.25,
+  rand 0.10, base64 0.23, md5 0.8, dirs 7, opener 0.9. Sidecar `.ron`
+  files are written byte-for-byte as before, and existing ones load
+  unchanged. HTTP behavior (captioner retries on 5xx, server error bodies
+  in ComfyUI / captioner errors) is unchanged; ComfyUI JSON responses are
+  no longer subject to ureq's new 10 MB default body cap.
+
+- **Equal-priority caption prefixes now vary per image instead of always
+  sorting by group name.** For a style LoRA over independent axes — "chibi
+  style" or not, "realistic background" or not — every image carrying both
+  used to get the two prefixes in the same fixed order, which trains the
+  order along with the concepts. Groups that share a `priority` are now
+  ordered per image, so roughly half the set reads `"chibi style. realistic
+  background. "` and the rest `"realistic background. chibi style. "`. Give
+  the groups different priorities if you want a fixed order — that is what
+  `priority` is for; sharing one now means "order doesn't matter".
+
+  The pick is pseudo-random, not random: it hashes the image's path relative
+  to the directory holding `fwaun-tools.toml`, with the extension dropped.
+  So the prefix the captioner is primed with is the one `metadata` prepends
+  later, re-running `metadata` over an unchanged dataset rewrites the file
+  byte-for-byte, and moving or cloning the dataset (or re-encoding an image
+  via `dataset edit` / `upscale`) keeps every image's order. Renaming an
+  image or moving it between subdirectories rerolls that one image.
+  Suffixes work the same way, with an independent permutation.
+
+  - Datasets with several equal-priority prefix groups will see a one-time
+    reshuffle of their exported captions. Nothing else moves.
+  - core: `tag_group::AffixSeed`, plus a `seed` parameter on
+    `export::build_caption` / `tag_group::resolved_caption_{prefix,suffix}`
+    and the new `ProjectConfig::project_root` that anchors it.
+
 ### Other
 
 - **Releases run through release-plz now** (see *Releases (release-plz)* in
@@ -176,130 +189,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merge to main, the PAT-driven `release` job tags the merged release, and
   `release.yml` builds the binaries off that tag exactly as before. The manual
   Cargo.toml bump and the manual `## [Unreleased]` → `## [X.Y.Z]` move are
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- *(gui)* bump eframe/egui/egui_extras to 0.33 and rfd to 0.17
-- bump md5, ron, toml_edit, rand, base64, dirs, opener
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump md5, ron, toml_edit, rand, base64, dirs, opener
-- bump MSRV to 1.88 and update dependencies
-- *(core)* spell out the built-in default caption prompt in the example config
   gone; what is left to do by hand is the prose inside the open PR, and the
   `git tag` that decides *when* a release ships.
+
+- *(core)* spell out the built-in default caption prompt in the example config
 
 ## [0.7.0] - 2026-08-08
 

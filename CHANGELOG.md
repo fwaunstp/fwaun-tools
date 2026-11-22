@@ -1,11 +1,11 @@
+
 # Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [Unreleased]
+## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
 
 ### Added
 
@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   download opens fine but is missing tensor data). `--json` for scripts,
   `--tensors [REGEX]` to list key/dtype/shape, `--metadata-only` for the
   full metadata. The GUI gets a matching "Model info" mode with a filterable
+
   tensor list and "Copy as JSON". `quant-int8` now uses the same detection,
   so an int8_convrot source is reported as such (pointing to `dequant`)
   instead of as "fp8_scaled". (#56)
@@ -30,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   output is int8_convrot too) could be neither merged nor extracted. int8
   layers (`quant-int8` / comfy-kitchen `int8_tensorwise`, with or without
   ConvRot) are now dequantized to f32 on load and go through the same math.
+
   An int8 target is written dequantized (bf16 by default, or
   `--save-dtype`); `merge-diff --requantize` (GUI: "Re-quantize to
   int8_convrot") instead re-quantizes the merged layers at their original
@@ -145,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     over the HTTP API — without a key every image comes back "Please login
     first to use this node". Generate one at <https://platform.comfy.org> and
     export it as `COMFY_API_KEY` (or set `api_key` on the profile; the
+
     environment variable is preferred, since a dataset-local
     `fwaun-tools.toml` travels with the dataset). The key rides in the
     `/prompt` request's `extra_data.api_key_comfy_org`, where ComfyUI's
@@ -161,6 +164,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `resolution`, `seed`, `system_prompt`. `default_editor` picks one without
     `--profile`; every field has a CLI override.
   - `workflow_template` drives your own API-format export instead of the
+
     built-in `LoadImage → Nano Banana → SaveImage` graph, exactly as for the
     upscaler. The prompt is written into the node with a string `prompt`
     widget (auto-detected, or named with `prompt_node`), so one graph can back
@@ -169,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     trip, and the `max_edge` downscale move into a shared `workflow` module
     that both `upscale` and the new `edit` build on.
 
+- **`dataset edit` gained a local MiniMax-H3-Image backend.** The profile
+  gains `backend = "gemini" | "minimax_h3"`. `minimax_h3` runs the model on
+  the ComfyUI server's own GPU, following the bundled "MiniMax-H3-Image:
+  Image Edit" template (minus its optional prompt-enhancer LLM) — no comfy.org
+  API key, no per-image charge. Model files and sampler settings live in an
+  optional `[editor.<name>.minimax_h3]` table, `--backend` overrides the profile,
+  `dataset edit-models` lists the server's MiniMax H3 files, and the
+  missing-API-key warning is skipped for the local backend. (#82)
+
+- `fwaun-tools.toml.example` now spells out the built-in default caption
+  prompt instead of leaving it implicit.
+
 ### Other
 
 - **Releases run through release-plz now** (see *Releases (release-plz)* in
@@ -176,131 +192,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merge to main, the PAT-driven `release` job tags the merged release, and
   `release.yml` builds the binaries off that tag exactly as before. The manual
   Cargo.toml bump and the manual `## [Unreleased]` → `## [X.Y.Z]` move are
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- *(gui)* bump eframe/egui/egui_extras to 0.33 and rfd to 0.17
-- bump md5, ron, toml_edit, rand, base64, dirs, opener
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- migrate to ureq 3
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump MSRV to 1.88 and update dependencies
-
-## [0.7.1](https://github.com/fwaunstp/fwaun-tools/compare/v0.7.0...v0.7.1) - 2026-11-22
-
-### Added
-
-- *(edit)* add local MiniMax-H3-Image backend for dataset edit
-- *(export)* combined tags+caption content kinds and --ext
-- *(core,cli,gui)* add model info to inspect checkpoint headers
-- *(core,cli,gui)* add model dequant for int8_convrot -> bf16
-- *(core,cli,gui)* accept int8_convrot checkpoints in merge-diff and extract-lora
-- *(core,cli)* add --content caption to dataset export
-- *(core,cli,gui)* scatter equal-priority caption prefixes per image
-- *(comfyui,core,cli)* dataset edit — batch image editing via ComfyUI
-
-### Other
-
-- bump md5, ron, toml_edit, rand, base64, dirs, opener
-- bump MSRV to 1.88 and update dependencies
-- *(core)* spell out the built-in default caption prompt in the example config
-  gone; what is left to do by hand is the prose inside the open PR, and the
-  `git tag` that decides *when* a release ships.
-
 ## [0.7.0] - 2026-08-08
 
 ### Added

@@ -264,7 +264,7 @@ interrupted run resumes where it stopped:
 ```
 fwaun-tools dataset upscale <dir> [--profile NAME] [--upscale-model FILE] [--workflow JSON] [--max-edge N] [--force] [--dry-run]
 fwaun-tools dataset upscale-models     [--profile NAME] [--base-url URL]
-fwaun-tools dataset edit <dir>    [--profile NAME] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
+fwaun-tools dataset edit <dir>    [--profile NAME] [--backend gemini|minimax-h3] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
 fwaun-tools dataset edit-models        [--profile NAME] [--base-url URL]
 ```
 
@@ -283,6 +283,15 @@ export it (the `api_key` profile field works too, but a dataset-local
 ```sh
 export COMFY_API_KEY=comfyui-...        # PowerShell: $env:COMFY_API_KEY='comfyui-...'
 ```
+
+To edit locally instead, set `backend = "minimax_h3"` on the editor profile
+(or pass `--backend minimax-h3`): the same pass then runs MiniMax-H3-Image on
+the ComfyUI server's own GPU, following its bundled *MiniMax-H3-Image: Image
+Edit* template — no API key and no per-image charge, just the model files on
+the server. The prompt refers to the input as `<Picture 1>`, and each image is
+rescaled to `megapixels` (default 4 MP) before editing. `edit-models` lists the
+MiniMax files the server has for such a profile; see `[editor.minimax]` in
+`crates/core/fwaun-tools.toml.example` for every setting.
 
 `tag`, `caption`, `booru`, `upscale`, and `edit` work one image at a time, so
 they print a progress counter while they run:

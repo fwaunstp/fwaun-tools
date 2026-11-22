@@ -1,0 +1,46 @@
+# release-plz configuration — https://release-plz.dev/docs/config
+#
+# fwaun-tools ships as binaries only; the crates are never published to a
+# cargo registry. `git_only` makes release-plz determine the current version
+# from the existing `v*` git tags (instead of from crates.io) and skip
+# `cargo publish` entirely.
+#
+# NOTE (the trap from phpboyscout.uk/three-traps-release-plz-workspace):
+# a release reads this file from the *release commit*, not from HEAD. Any
+# change to this file only takes effect once it rides along with a version
+# bump — which is exactly what the release PR produced by the `release-pr`
+# command does.
+
+[workspace]
+# Version detection comes from git tags, no registry involved.
+git_only = true
+
+# Keep the single unified `vX.Y.Z` tag we already use — all seven crates share
+# the root `[workspace.package] version`, so one tag names the whole
+# release. Without these the default in a multi-crate workspace is a per-crate
+# tag (`fwaun-tools-core-vX.Y.Z`, …), which would stand seven tags per
+# release and make `release.yml`'s `on: push: tags: ['v*']` ambiguous.
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+
+# The whole workspace shares this one hand-detailed Keep-a-Changelog file.
+# `changelog_update` stays at its default (true): release-plz moves the
+# `## [Unreleased]` entries into a `## [X.Y.Z]` section and opens the
+# release PR. The entries it writes are mechanical (one line per commit,
+# conventional-commit type → Added/Changed/Fixed/Other, crate scope in
+# parentheses) and are placed above the body already written by hand — so
+# the two are the same release described twice. That is deliberate: the
+# auto-draft says nothing got dropped, and the PR is where the two halves
+# get merged into one prose by hand before merging. Re-running release-plz
+# on the same commit is safe (idempotent), so a reworded commit does not
+# double the entry.
+changelog_path = "CHANGELOG.md"
+
+# The release body release-plz gives the GitHub Release is this changelog
+# section (same content, Keep-a-Changelog headings), so leave
+# `git_release_generate_notes` at its default false: GitHub's own generated notes
+# are a second, worse prose over the same commits, and the old
+# `generate_release_notes: true` on `release.yml`'s action-gh-release step was
+# doing exactly that on top of the changelog.
+semver_check = false
+pr_labels = ["release"]

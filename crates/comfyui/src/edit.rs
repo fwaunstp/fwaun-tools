@@ -1,14 +1,26 @@
 //! Batch image *editing* over a ComfyUI server — one prompt applied to every
 //! image in a dataset.
 //!
-//! The built-in graph drives ComfyUI's Gemini image API node
-//! ([`EDIT_NODE_CLASS`], shown in the UI as *Nano Banana Pro (Google Gemini
-//! Image)*), whose `model` widget covers both Nano Banana 2 and Nano Banana
-//! Pro:
+//! Two built-in graphs are available, picked by [`Backend`]:
 //!
-//! ```text
-//! LoadImage → GeminiImage2Node(prompt, model, …) → SaveImage
-//! ```
+//! * [`Backend::Gemini`] drives ComfyUI's Gemini image API node
+//!   ([`EDIT_NODE_CLASS`], shown in the UI as *Nano Banana Pro (Google Gemini
+//!   Image)*), whose `model` widget covers both Nano Banana 2 and Nano Banana
+//!   Pro:
+//!
+//!   ```text
+//!   LoadImage → GeminiImage2Node(prompt, model, …) → SaveImage
+//!   ```
+//!
+//! * [`Backend::MiniMaxH3`] runs MiniMax-H3-Image locally on the server's GPU,
+//!   following ComfyUI's bundled *MiniMax-H3-Image: Image Edit* template (minus
+//!   its optional prompt-enhancer LLM):
+//!
+//!   ```text
+//!   LoadImage → ImageScaleToTotalPixels → GetImageSize ─┐
+//!   UNETLoader / CLIPLoader / VAELoader ──→ MiniMaxH3ImageConditioning
+//!     → KSampler (negative = ConditioningZeroOut) → VAEDecode → SaveImage
+//!   ```
 //!
 //! The motivating case is a dataset of illustrated characters drawn against
 //! illustrated backgrounds, re-rendered with photographic backgrounds so a LoRA
@@ -22,9 +34,10 @@
 //! `SaveImage` works, and the prompt is injected into a node carrying a string
 //! `prompt` widget (auto-detected, or named via [`Options::prompt_node`]).
 //!
-//! **This node bills per image.** A run over a whole dataset is a real charge on
-//! the ComfyUI account, so callers should offer a dry run and a way to cap the
-//! batch before pointing it at a few hundred images.
+//! **The Gemini node bills per image.** A run over a whole dataset is a real
+//! charge on the ComfyUI account, so callers should offer a dry run and a way
+//! to cap the batch before pointing it at a few hundred images. The MiniMax
+//! backend costs only GPU time.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -39,15 +52,65 @@ use crate::{Client, ComfyError, Result};
 /// [`Editor::list_models`] to read the exact strings this server offers.
 pub const EDIT_NODE_CLASS: &str = "GeminiImage2Node";
 
-/// Node ids of the built-in graph.
+/// ComfyUI class name of the local MiniMax-H3-Image edit conditioning node.
+pub const MINIMAX_COND_CLASS: &str = "MiniMaxH3ImageConditioning";
+
+/// Node ids of the built-in Gemini graph.
 const BUILTIN_LOAD_NODE: &str = "1";
 const BUILTIN_EDIT_NODE: &str = "2";
 const BUILTIN_SAVE_NODE: &str = "3";
+
+/// Node ids of the built-in MiniMax H3 graph.
+mod mm {
+    pub const LOAD: &str = "1";
+    pub const SCALE: &str = "2";
+    pub const SIZE: &str = "3";
+    pub const UNET: &str = "4";
+    pub const CLIP: &str = "5";
+    pub const VAE: &str = "6";
+    pub const COND: &str = "7";
+    pub const NEG: &str = "8";
+    pub const SAMPLER: &str = "9";
+    pub const DECODE: &str = "10";
+    pub const SAVE: &str = "11";
+}
+
+/// Which built-in graph does the edit. Irrelevant when
+/// [`Options::workflow_template`] is set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend {
+    /// The Gemini image (Nano Banana) API node — paid, needs an API key.
+    #[default]
+    Gemini,
+    /// MiniMax-H3-Image run locally, configured by [`MiniMaxH3Options`].
+    MiniMaxH3,
+}
+
+/// Knobs for [`Backend::MiniMaxH3`]. Defaults live in the config layer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MiniMaxH3Options {
+    /// `UNETLoader` diffusion model file.
+    pub unet: String,
+    /// `CLIPLoader` text encoder file (loaded as type `minimax`).
+    pub clip: String,
+    /// `VAELoader` VAE file.
+    pub vae: String,
+    /// Target area, in megapixels, each input is rescaled to before editing.
+    pub megapixels: f64,
+    pub steps: u32,
+    pub cfg: f64,
+    pub sampler: String,
+    pub scheduler: String,
+}
 
 /// How to run the edit. Mirrors the configurable knobs; the CLI builds this
 /// from an `[editor.<name>]` profile plus flag overrides.
 #[derive(Debug, Clone)]
 pub struct Options {
+    /// Which built-in graph to run when no `workflow_template` is set.
+    pub backend: Backend,
+    /// Settings for [`Backend::MiniMaxH3`]; ignored by the other backends.
+    pub minimax_h3: MiniMaxH3Options,
     /// ComfyUI server root, e.g. `http://127.0.0.1:8188`.
     pub base_url: String,
     /// comfy.org account API key. Required in practice: the Gemini node is a
@@ -97,6 +160,8 @@ enum Workflow {
         seed: u64,
         system_prompt: Option<String>,
     },
+    /// Built-in local MiniMax-H3-Image graph.
+    MiniMaxH3 { opts: MiniMaxH3Options, seed: u64 },
     /// A user template, with the node to inject the prompt into (`None` when
     /// no prompt was configured — the template supplies its own).
     Custom {
@@ -109,6 +174,7 @@ impl Workflow {
     fn save_node(&self) -> &str {
         match self {
             Workflow::Builtin { .. } => BUILTIN_SAVE_NODE,
+            Workflow::MiniMaxH3 { .. } => mm::SAVE,
             Workflow::Custom { template, .. } => template.save_node(),
         }
     }
@@ -157,6 +223,85 @@ impl Workflow {
                     }
                 })
             }
+            Workflow::MiniMaxH3 { opts, seed } => json!({
+                mm::LOAD: {
+                    "class_type": "LoadImage",
+                    "inputs": { "image": input_image }
+                },
+                // The model is poor at low resolution, so every input is
+                // brought to a fixed area first (sides snapped to the latent's
+                // multiple of 32), as the stock template does.
+                mm::SCALE: {
+                    "class_type": "ImageScaleToTotalPixels",
+                    "inputs": {
+                        "image": [mm::LOAD, 0],
+                        "upscale_method": "area",
+                        "megapixels": opts.megapixels,
+                        "resolution_steps": 32,
+                    }
+                },
+                mm::SIZE: {
+                    "class_type": "GetImageSize",
+                    "inputs": { "image": [mm::SCALE, 0] }
+                },
+                mm::UNET: {
+                    "class_type": "UNETLoader",
+                    "inputs": { "unet_name": opts.unet, "weight_dtype": "default" }
+                },
+                mm::CLIP: {
+                    "class_type": "CLIPLoader",
+                    "inputs": { "clip_name": opts.clip, "type": "minimax", "device": "default" }
+                },
+                mm::VAE: {
+                    "class_type": "VAELoader",
+                    "inputs": { "vae_name": opts.vae }
+                },
+                // image_1 is the picture to edit (`<Picture 1>` in the
+                // prompt); with the VAE connected it is also anchored as a
+                // reference latent. Outputs: 0 = positive, 1 = empty latent
+                // at width × height.
+                mm::COND: {
+                    "class_type": MINIMAX_COND_CLASS,
+                    "inputs": {
+                        "clip": [mm::CLIP, 0],
+                        "vae": [mm::VAE, 0],
+                        "images.image_1": [mm::SCALE, 0],
+                        "prompt": prompt,
+                        "width": [mm::SIZE, 0],
+                        "height": [mm::SIZE, 1],
+                    }
+                },
+                mm::NEG: {
+                    "class_type": "ConditioningZeroOut",
+                    "inputs": { "conditioning": [mm::COND, 0] }
+                },
+                mm::SAMPLER: {
+                    "class_type": "KSampler",
+                    "inputs": {
+                        "model": [mm::UNET, 0],
+                        "positive": [mm::COND, 0],
+                        "negative": [mm::NEG, 0],
+                        "latent_image": [mm::COND, 1],
+                        "seed": seed,
+                        "steps": opts.steps,
+                        "cfg": opts.cfg,
+                        "sampler_name": opts.sampler,
+                        "scheduler": opts.scheduler,
+                        "denoise": 1.0,
+                    }
+                },
+                mm::DECODE: {
+                    "class_type": "VAEDecode",
+                    "inputs": { "samples": [mm::SAMPLER, 0], "vae": [mm::VAE, 0] }
+                },
+                mm::SAVE: {
+                    "class_type": "SaveImage",
+                    "inputs": {
+                        "images": [mm::DECODE, 0],
+                        "filename_prefix": "fwaun_edited"
+                    }
+                }
+            }),
             Workflow::Custom {
                 template,
                 prompt_node,
@@ -210,12 +355,34 @@ impl Editor {
                             .into(),
                     ));
                 }
-                Workflow::Builtin {
-                    model: opts.model.clone(),
-                    aspect_ratio: opts.aspect_ratio.clone(),
-                    resolution: opts.resolution.clone(),
-                    seed: opts.seed,
-                    system_prompt: opts.system_prompt.clone(),
+                match opts.backend {
+                    Backend::Gemini => Workflow::Builtin {
+                        model: opts.model.clone(),
+                        aspect_ratio: opts.aspect_ratio.clone(),
+                        resolution: opts.resolution.clone(),
+                        seed: opts.seed,
+                        system_prompt: opts.system_prompt.clone(),
+                    },
+                    Backend::MiniMaxH3 => {
+                        let m = &opts.minimax_h3;
+                        // ImageScaleToTotalPixels accepts at most 16 MP; catching
+                        // it here fails before any image is uploaded.
+                        if m.megapixels <= 0.0 || m.megapixels > 16.0 || m.megapixels.is_nan() {
+                            return Err(ComfyError::Config(format!(
+                                "minimax_h3: megapixels must be in (0, 16], got {}",
+                                m.megapixels
+                            )));
+                        }
+                        if m.steps == 0 {
+                            return Err(ComfyError::Config(
+                                "minimax_h3: steps must be at least 1".into(),
+                            ));
+                        }
+                        Workflow::MiniMaxH3 {
+                            opts: m.clone(),
+                            seed: opts.seed,
+                        }
+                    }
                 }
             }
         };
@@ -234,6 +401,15 @@ impl Editor {
     /// cheap check that the API node is installed at all.
     pub fn list_models(&self) -> Result<Vec<String>> {
         self.client.list_node_enum(EDIT_NODE_CLASS, "model")
+    }
+
+    /// Whether this editor runs a paid API node that needs a comfy.org key:
+    /// true for the built-in Gemini graph, false for the local MiniMax one.
+    /// Unknown for a custom template, which is reported as `false` — callers
+    /// should only warn about a missing key when this is true or a template
+    /// is in use.
+    pub fn needs_api_key(&self) -> bool {
+        matches!(self.workflow, Workflow::Builtin { .. })
     }
 
     /// The prompt every image is edited with (trimmed; empty when a custom
@@ -428,9 +604,113 @@ mod tests {
         assert!(resolve_prompt_node(&template, None).is_err());
     }
 
+    fn minimax_opts() -> MiniMaxH3Options {
+        MiniMaxH3Options {
+            unet: "u.safetensors".into(),
+            clip: "c.safetensors".into(),
+            vae: "v.safetensors".into(),
+            megapixels: 4.0,
+            steps: 6,
+            cfg: 1.0,
+            sampler: "euler".into(),
+            scheduler: "simple".into(),
+        }
+    }
+
+    #[test]
+    fn minimax_graph_wires_image_prompt_and_models() {
+        let wf = Workflow::MiniMaxH3 {
+            opts: minimax_opts(),
+            seed: 7,
+        };
+        let g = wf.build_graph("cat.png", "Replace the background of <Picture 1>");
+        assert_eq!(wf.save_node(), mm::SAVE);
+        assert_eq!(g[mm::LOAD]["inputs"]["image"], json!("cat.png"));
+        assert_eq!(g[mm::SCALE]["inputs"]["image"], json!([mm::LOAD, 0]));
+        assert_eq!(g[mm::SCALE]["inputs"]["megapixels"], json!(4.0));
+        assert_eq!(g[mm::UNET]["inputs"]["unet_name"], json!("u.safetensors"));
+        assert_eq!(g[mm::CLIP]["inputs"]["clip_name"], json!("c.safetensors"));
+        assert_eq!(g[mm::CLIP]["inputs"]["type"], json!("minimax"));
+        assert_eq!(g[mm::VAE]["inputs"]["vae_name"], json!("v.safetensors"));
+
+        let cond = &g[mm::COND];
+        assert_eq!(cond["class_type"], json!(MINIMAX_COND_CLASS));
+        assert_eq!(
+            cond["inputs"]["prompt"],
+            json!("Replace the background of <Picture 1>")
+        );
+        assert_eq!(cond["inputs"]["images.image_1"], json!([mm::SCALE, 0]));
+        assert_eq!(cond["inputs"]["width"], json!([mm::SIZE, 0]));
+        assert_eq!(cond["inputs"]["height"], json!([mm::SIZE, 1]));
+
+        let ks = &g[mm::SAMPLER]["inputs"];
+        assert_eq!(ks["seed"], json!(7));
+        assert_eq!(ks["steps"], json!(6));
+        assert_eq!(ks["positive"], json!([mm::COND, 0]));
+        assert_eq!(ks["negative"], json!([mm::NEG, 0]));
+        assert_eq!(ks["latent_image"], json!([mm::COND, 1]));
+        assert_eq!(g[mm::SAVE]["inputs"]["images"], json!([mm::DECODE, 0]));
+
+        // Every link points at a node that exists in the graph.
+        let obj = g.as_object().unwrap();
+        for node in obj.values() {
+            for v in node["inputs"].as_object().unwrap().values() {
+                if let Some([Value::String(id), _]) = v.as_array().map(Vec::as_slice) {
+                    assert!(obj.contains_key(id), "dangling link to {id}");
+                }
+            }
+        }
+    }
+
+    fn options(backend: Backend, prompt: &str) -> Options {
+        Options {
+            backend,
+            minimax_h3: minimax_opts(),
+            base_url: "http://127.0.0.1:8188".into(),
+            api_key: None,
+            prompt: prompt.into(),
+            model: "m".into(),
+            aspect_ratio: "auto".into(),
+            resolution: "1K".into(),
+            seed: 42,
+            system_prompt: None,
+            workflow_template: None,
+            prompt_node: None,
+            max_edge: 0,
+            timeout_secs: 600,
+            poll_interval_ms: 750,
+        }
+    }
+
+    #[test]
+    fn backend_selects_graph_and_key_requirement() {
+        let gemini = Editor::new(options(Backend::Gemini, "p")).expect("gemini editor");
+        assert!(gemini.needs_api_key());
+        let local = Editor::new(options(Backend::MiniMaxH3, "p")).expect("minimax editor");
+        assert!(!local.needs_api_key());
+        assert_eq!(local.workflow.save_node(), mm::SAVE);
+    }
+
+    #[test]
+    fn minimax_rejects_degenerate_settings() {
+        let mut o = options(Backend::MiniMaxH3, "p");
+        o.minimax_h3.megapixels = 0.0;
+        assert!(Editor::new(o).is_err());
+        let mut o = options(Backend::MiniMaxH3, "p");
+        o.minimax_h3.megapixels = 20.0;
+        assert!(Editor::new(o).is_err());
+        let mut o = options(Backend::MiniMaxH3, "p");
+        o.minimax_h3.steps = 0;
+        assert!(Editor::new(o).is_err());
+        // The prompt requirement applies to every built-in backend.
+        assert!(Editor::new(options(Backend::MiniMaxH3, " ")).is_err());
+    }
+
     #[test]
     fn builtin_requires_a_prompt() {
         let made = Editor::new(Options {
+            backend: Backend::Gemini,
+            minimax_h3: minimax_opts(),
             base_url: "http://127.0.0.1:8188".into(),
             api_key: None,
             prompt: "   ".into(),

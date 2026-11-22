@@ -12,8 +12,8 @@
 //! * [`upscale`] — runs each dataset image through a model-based
 //!   (ESRGAN-style) workflow, or a user-supplied API-format template.
 //! * [`edit`] — applies one text instruction to every image through ComfyUI's
-//!   Gemini image (Nano Banana) API node, e.g. re-rendering illustrated
-//!   backgrounds as photographic ones.
+//!   Gemini image (Nano Banana) API node or a local MiniMax-H3-Image graph,
+//!   e.g. re-rendering illustrated backgrounds as photographic ones.
 //!
 //! Further passes (background removal, img2img, …) can reuse the same pieces.
 

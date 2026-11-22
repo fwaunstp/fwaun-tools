@@ -25,7 +25,7 @@ jobs:
       matrix:
         target:
           - name: macos-arm64
-            runner: macos-14
+            runner: macos-15
             os: macos
             archive_ext: tar.gz
           - name: linux-x64

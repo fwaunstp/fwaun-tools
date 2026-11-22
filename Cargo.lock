@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-booru"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "fwaun-tools-core",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-captioner"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64 0.23.1",
  "fwaun-tools-core",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-cli"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-comfyui"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "image",
  "serde",
@@ -1431,7 +1431,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-core"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-gui"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "fwaun-tools-tagger"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "csv",
  "fwaun-tools-core",

@@ -384,6 +384,13 @@ pub const DEFAULT_EDIT_MODEL: &str = "Nano Banana 2 (Gemini 3.1 Flash Image)";
 /// already have an output and offers `--dry-run` / `--limit`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorProfile {
+    /// Which built-in graph does the edit: `"gemini"` (the default — Google's
+    /// Nano Banana API node, billed per image) or `"minimax_h3"` (the
+    /// MiniMax-H3-Image model run locally on the ComfyUI server's GPU, tuned
+    /// by the [`minimax_h3`](Self::minimax_h3) table). Ignored when
+    /// `workflow_template` is set.
+    #[serde(default)]
+    pub backend: EditBackend,
     /// ComfyUI server root, e.g. `"http://127.0.0.1:8188"`.
     #[serde(default = "default_comfyui_base_url")]
     pub base_url: String,
@@ -448,6 +455,103 @@ pub struct EditorProfile {
     /// Pause between `/history` status polls, in milliseconds.
     #[serde(default = "default_upscaler_poll_ms")]
     pub poll_interval_ms: u64,
+    /// Settings for `backend = "minimax_h3"`: the model files the server
+    /// loads and the sampler knobs. Every field has a default matching the
+    /// stock ComfyUI *MiniMax-H3-Image: Image Edit* template, so the table can
+    /// be left out entirely. Ignored by the other backends.
+    #[serde(default)]
+    pub minimax_h3: MiniMaxH3Settings,
+}
+
+/// Built-in edit graph an [`EditorProfile`] drives.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EditBackend {
+    /// ComfyUI's Gemini image (Nano Banana) API node. Paid, needs a comfy.org
+    /// API key.
+    #[default]
+    Gemini,
+    /// MiniMax-H3-Image run locally through `MiniMaxH3ImageConditioning` and a
+    /// `KSampler`. Free per image, but needs the model files on the server.
+    #[serde(rename = "minimax_h3")]
+    MiniMaxH3,
+}
+
+/// Local MiniMax-H3-Image edit settings (`[editor.<name>.minimax_h3]`).
+/// Defaults mirror ComfyUI's bundled *MiniMax-H3-Image: Image Edit* template.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MiniMaxH3Settings {
+    /// Diffusion model file (`UNETLoader` `unet_name`), e.g.
+    /// `"minimax_h3_image_pruned_int8_convrot.safetensors"`. `dataset
+    /// edit-models` lists the MiniMax H3 files the server has.
+    #[serde(default = "default_minimax_unet")]
+    pub unet: String,
+    /// Text encoder file (`CLIPLoader` `clip_name`, loaded as type `minimax`).
+    #[serde(default = "default_minimax_clip")]
+    pub clip: String,
+    /// VAE file (`VAELoader` `vae_name`).
+    #[serde(default = "default_minimax_vae")]
+    pub vae: String,
+    /// Each input is rescaled to this many megapixels (dimensions snapped to
+    /// multiples of 32) before editing, and the output comes back at that
+    /// size. The model degrades at low resolution — the stock template uses 4;
+    /// MiniMax quote ~4–20 MP as the working range. Use `max_edge` to shrink
+    /// the result afterwards.
+    #[serde(default = "default_minimax_megapixels")]
+    pub megapixels: f64,
+    /// Sampling steps. The distilled release is tuned for very few.
+    #[serde(default = "default_minimax_steps")]
+    pub steps: u32,
+    /// Classifier-free guidance. `1.0` (the default) disables the negative
+    /// branch, which is how the distilled model is meant to run.
+    #[serde(default = "default_minimax_cfg")]
+    pub cfg: f64,
+    /// `KSampler` `sampler_name`.
+    #[serde(default = "default_minimax_sampler")]
+    pub sampler: String,
+    /// `KSampler` `scheduler`.
+    #[serde(default = "default_minimax_scheduler")]
+    pub scheduler: String,
+}
+
+fn default_minimax_unet() -> String {
+    "minimax_h3_image_pruned_int8_convrot.safetensors".to_string()
+}
+fn default_minimax_clip() -> String {
+    "qwen3vl_32b_minimax_h3_int8_convrot.safetensors".to_string()
+}
+fn default_minimax_vae() -> String {
+    "minimax_h3_image_vae_fp16.safetensors".to_string()
+}
+fn default_minimax_megapixels() -> f64 {
+    4.0
+}
+fn default_minimax_steps() -> u32 {
+    6
+}
+fn default_minimax_cfg() -> f64 {
+    1.0
+}
+fn default_minimax_sampler() -> String {
+    "euler".to_string()
+}
+fn default_minimax_scheduler() -> String {
+    "simple".to_string()
+}
+
+impl Default for MiniMaxH3Settings {
+    fn default() -> Self {
+        Self {
+            unet: default_minimax_unet(),
+            clip: default_minimax_clip(),
+            vae: default_minimax_vae(),
+            megapixels: default_minimax_megapixels(),
+            steps: default_minimax_steps(),
+            cfg: default_minimax_cfg(),
+            sampler: default_minimax_sampler(),
+            scheduler: default_minimax_scheduler(),
+        }
+    }
 }
 
 fn default_edit_model() -> String {
@@ -473,6 +577,7 @@ fn default_editor_max_edge() -> u32 {
 impl Default for EditorProfile {
     fn default() -> Self {
         Self {
+            backend: EditBackend::default(),
             base_url: default_comfyui_base_url(),
             api_key: None,
             prompt: None,
@@ -486,6 +591,7 @@ impl Default for EditorProfile {
             max_edge: default_editor_max_edge(),
             timeout_secs: default_upscaler_timeout_secs(),
             poll_interval_ms: default_upscaler_poll_ms(),
+            minimax_h3: MiniMaxH3Settings::default(),
         }
     }
 }
@@ -1497,6 +1603,7 @@ mod tests {
         };
 
         let full_editor = EditorProfile {
+            backend: EditBackend::Gemini,
             base_url: "http://x".into(),
             api_key: Some("k".into()),
             prompt: Some("p".into()),
@@ -1510,6 +1617,7 @@ mod tests {
             max_edge: default_editor_max_edge(),
             timeout_secs: default_upscaler_timeout_secs(),
             poll_interval_ms: default_upscaler_poll_ms(),
+            minimax_h3: MiniMaxH3Settings::default(),
         };
 
         let expected_export = struct_keys(full_export);
@@ -1518,7 +1626,12 @@ mod tests {
         let expected_openai = struct_keys(full_openai);
         let expected_tag_group = struct_keys(full_tag_group);
         let expected_upscaler = struct_keys(full_upscaler);
-        let expected_editor = struct_keys(full_editor);
+        let mut expected_editor = struct_keys(full_editor);
+        // The `minimax_h3` sub-table only means something on a MiniMax profile,
+        // so it's checked separately below rather than forced onto the
+        // all-fields custom-template example.
+        expected_editor.remove("minimax_h3");
+        let expected_minimax = struct_keys(MiniMaxH3Settings::default());
 
         if let Err(missing) =
             missing_from_best_match(raw_table.get("export"), &expected_export, |_| true)
@@ -1580,6 +1693,25 @@ mod tests {
             panic!(
                 "no [editor.*] profile in crates/core/fwaun-tools.toml.example covers every \
                  EditorProfile field; closest match is missing {missing:?}"
+            );
+        }
+        let minimax_tables: toml::Table = raw_table
+            .get("editor")
+            .and_then(|v| v.as_table())
+            .into_iter()
+            .flat_map(|t| t.iter())
+            .filter(|(_, p)| p.get("backend").and_then(|v| v.as_str()) == Some("minimax_h3"))
+            .filter_map(|(k, p)| Some((k.clone(), p.get("minimax_h3")?.clone())))
+            .collect();
+        if let Err(missing) = missing_from_best_match(
+            Some(&toml::Value::Table(minimax_tables)),
+            &expected_minimax,
+            |_| true,
+        ) {
+            panic!(
+                "no [editor.*] profile with `backend = \"minimax_h3\"` in \
+                 crates/core/fwaun-tools.toml.example has a `minimax_h3` table covering every \
+                 MiniMaxH3Settings field; closest match is missing {missing:?}"
             );
         }
     }

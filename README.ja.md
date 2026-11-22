@@ -261,7 +261,7 @@ fwaun-tools dataset validate-tag-group <dir> --group NAME [--problems-only] [--j
 ```
 fwaun-tools dataset upscale <dir> [--profile NAME] [--upscale-model FILE] [--workflow JSON] [--max-edge N] [--force] [--dry-run]
 fwaun-tools dataset upscale-models     [--profile NAME] [--base-url URL]
-fwaun-tools dataset edit <dir>    [--profile NAME] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
+fwaun-tools dataset edit <dir>    [--profile NAME] [--backend gemini|minimax-h3] [--prompt TEXT] [--model NAME] [--resolution 1K|2K|4K] [--workflow JSON] [--limit N] [--force] [--dry-run]
 fwaun-tools dataset edit-models        [--profile NAME] [--base-url URL]
 ```
 
@@ -280,6 +280,16 @@ fwaun-tools dataset edit-models        [--profile NAME] [--base-url URL]
 ```sh
 export COMFY_API_KEY=comfyui-...        # PowerShell: $env:COMFY_API_KEY='comfyui-...'
 ```
+
+ローカルで編集したい場合は、エディタプロファイルに `backend = "minimax_h3"` を
+設定してください（または `--backend minimax-h3` を指定）。同じ処理を ComfyUI
+サーバー自身の GPU 上の MiniMax-H3-Image で実行します（同梱テンプレート
+*MiniMax-H3-Image: Image Edit* に準拠）。API キーも 1 枚ごとの課金も不要で、
+サーバーにモデルファイルがあれば動きます。プロンプトでは入力画像を
+`<Picture 1>` と呼び、各画像は編集前に `megapixels`（既定 4 MP）へリサイズ
+されます。このプロファイルでは `edit-models` がサーバー上の MiniMax 系ファイルを
+一覧表示します。全設定は `crates/core/fwaun-tools.toml.example` の
+`[editor.minimax]` を参照してください。
 
 `tag` / `caption` / `booru` / `upscale` / `edit` は 1 枚ずつ処理するため、実行中は
 進捗カウンタを表示します:
